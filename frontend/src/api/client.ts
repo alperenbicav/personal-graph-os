@@ -7,8 +7,18 @@ import type {
   GraphEdge,
   GraphNode,
   NodeType,
+  ProjectionItem,
+  ProjectionQuery,
+  ResearchDashboard,
+  Resource,
+  ResourceKind,
+  SavedView,
+  SearchResult,
   StatusDefinition,
+  ViewKind,
+  WorkflowChainStep,
   Workspace,
+  WorkspaceResearchSettings,
 } from '../types'
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
@@ -318,4 +328,139 @@ export function removeEdgeType(workspaceId: string, edgeTypeId: string): Promise
     `/edge-types/${encodeURIComponent(edgeTypeId)}?workspace_id=${encodeURIComponent(workspaceId)}`,
     { method: 'DELETE' },
   )
+}
+
+export function listResources(workspaceId: string): Promise<Resource[]> {
+  return request(`/resources?workspace_id=${encodeURIComponent(workspaceId)}`)
+}
+
+export function createOrReuseResource(
+  workspaceId: string,
+  title: string,
+  rawSource: string,
+  kind?: ResourceKind,
+): Promise<Resource> {
+  return request('/resources', {
+    method: 'POST',
+    body: JSON.stringify({ workspace_id: workspaceId, title, raw_source: rawSource, kind }),
+  })
+}
+
+export interface UpdateResourcePatch {
+  lifecycle_status?: string
+  next_action?: string
+  clear_next_action?: boolean
+  next_action_dismissed?: boolean
+  open_questions?: string[]
+  takeaways?: string[]
+  review_at?: string | null
+  clear_review_at?: boolean
+}
+
+export function updateResource(resourceId: string, patch: UpdateResourcePatch): Promise<Resource> {
+  return request(`/resources/${encodeURIComponent(resourceId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  })
+}
+
+export function archiveResource(resourceId: string): Promise<Resource> {
+  return request(`/resources/${encodeURIComponent(resourceId)}`, { method: 'DELETE' })
+}
+
+export function search(
+  workspaceId: string,
+  query: string,
+  limit = 20,
+  includeArchived = false,
+): Promise<SearchResult[]> {
+  const params = new URLSearchParams({
+    workspace_id: workspaceId,
+    q: query,
+    limit: String(limit),
+    include_archived: String(includeArchived),
+  })
+  return request(`/search?${params.toString()}`)
+}
+
+export function listSavedViews(workspaceId: string): Promise<SavedView[]> {
+  return request(`/saved-views?workspace_id=${encodeURIComponent(workspaceId)}`)
+}
+
+export function createSavedView(
+  workspaceId: string,
+  name: string,
+  viewKind: ViewKind,
+  query: ProjectionQuery = {},
+): Promise<SavedView> {
+  return request('/saved-views', {
+    method: 'POST',
+    body: JSON.stringify({ workspace_id: workspaceId, name, view_kind: viewKind, query }),
+  })
+}
+
+export function deleteSavedView(savedViewId: string): Promise<void> {
+  return request(`/saved-views/${encodeURIComponent(savedViewId)}`, { method: 'DELETE' })
+}
+
+interface ViewRequestBase {
+  workspace_id: string
+  query?: ProjectionQuery
+  saved_view_id?: string
+}
+
+export function evaluateTableView(payload: ViewRequestBase): Promise<ProjectionItem[]> {
+  return request('/views/table', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+export function evaluateKanbanView(
+  payload: ViewRequestBase & { group_by: string },
+): Promise<Record<string, ProjectionItem[]>> {
+  return request('/views/kanban', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+export function evaluateTimelineView(
+  payload: ViewRequestBase & { date_field: string },
+): Promise<ProjectionItem[]> {
+  return request('/views/timeline', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+export function getResearchDashboard(workspaceId: string): Promise<ResearchDashboard> {
+  return request(`/research/dashboard?workspace_id=${encodeURIComponent(workspaceId)}`)
+}
+
+export function getResearchSettings(workspaceId: string): Promise<WorkspaceResearchSettings> {
+  return request(`/research-settings?workspace_id=${encodeURIComponent(workspaceId)}`)
+}
+
+export function updateResearchSettings(
+  workspaceId: string,
+  staleAfterDays: number,
+): Promise<WorkspaceResearchSettings> {
+  return request(`/research-settings?workspace_id=${encodeURIComponent(workspaceId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ stale_after_days: staleAfterDays }),
+  })
+}
+
+export interface AdvanceWorkflowChainPatch {
+  title?: string
+  existing_target_node_id?: string
+}
+
+export function advanceWorkflowChain(
+  workspaceId: string,
+  sourceNodeId: string,
+  step: WorkflowChainStep,
+  patch: AdvanceWorkflowChainPatch,
+): Promise<{ node: GraphNode; edge: GraphEdge }> {
+  return request('/workflow-chain/advance', {
+    method: 'POST',
+    body: JSON.stringify({
+      workspace_id: workspaceId,
+      source_node_id: sourceNodeId,
+      step,
+      ...patch,
+    }),
+  })
 }

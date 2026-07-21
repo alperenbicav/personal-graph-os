@@ -105,6 +105,7 @@ beforeEach(() => {
   mockedApi.listCanvases.mockResolvedValue([canvasA])
   mockedApi.listNodes.mockResolvedValue([])
   mockedApi.listPlacements.mockResolvedValue([])
+  mockedApi.listResources.mockResolvedValue([])
 })
 
 afterEach(() => {

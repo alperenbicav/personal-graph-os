@@ -5,12 +5,32 @@ import { CanvasRail } from './components/CanvasRail'
 import { ConnectEdgeModal, type PendingConnection } from './components/ConnectEdgeModal'
 import { GraphCanvas } from './components/GraphCanvas'
 import { Inspector, type RelationRow } from './components/Inspector'
+import { KanbanView } from './components/KanbanView'
+import { NavTabs, type AppView } from './components/NavTabs'
 import { PlaceExistingNodeControl } from './components/PlaceExistingNodeControl'
+import { ResearchDetailPanel } from './components/ResearchDetailPanel'
+import { ResearchView } from './components/ResearchView'
+import { SearchView } from './components/SearchView'
+import { TableView } from './components/TableView'
+import { TimelineView } from './components/TimelineView'
 import { TopBar } from './components/TopBar'
+import { WorkflowChainPanel } from './components/WorkflowChainPanel'
 import { messageFor } from './lib/errors'
 import { neighborhoodWithinDepth } from './lib/neighborhood'
+import { NEXT_WORKFLOW_STEP } from './lib/workflowChain'
 import { SchemaEditor } from './components/SchemaEditor'
-import type { Canvas, CanvasPlacement, GraphEdge, GraphNode, StatusDefinition, Workspace } from './types'
+import type {
+  Canvas,
+  CanvasPlacement,
+  GraphEdge,
+  GraphNode,
+  ProjectionItem,
+  ResearchDashboard,
+  Resource,
+  StatusDefinition,
+  WorkflowChainStep,
+  Workspace,
+} from './types'
 
 const CAPTURE_TYPE_ORDER = ['Note', 'Task', 'Project', 'Resource']
 const MAX_FOCUS_DEPTH = 3
@@ -33,6 +53,13 @@ function App() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [isSchemaEditorOpen, setIsSchemaEditorOpen] = useState(false)
+
+  const [activeView, setActiveView] = useState<AppView>('canvas')
+  const [resources, setResources] = useState<Resource[]>([])
+  const [tableRows, setTableRows] = useState<ProjectionItem[]>([])
+  const [kanbanColumns, setKanbanColumns] = useState<Record<string, ProjectionItem[]>>({})
+  const [timelineRows, setTimelineRows] = useState<ProjectionItem[]>([])
+  const [researchDashboard, setResearchDashboard] = useState<ResearchDashboard | null>(null)
 
   // Per-placement move sequence: guards against an older, now-superseded save request
   // rolling back a position that a newer move already replaced (or is still in flight).
@@ -58,16 +85,18 @@ function App() {
         if (cancelled) return
         setWorkspace(workspaceResponse)
 
-        const [nodesResponse, edgesResponse, canvasesResponse] = await Promise.all([
+        const [nodesResponse, edgesResponse, canvasesResponse, resourcesResponse] = await Promise.all([
           api.listNodes(workspaceResponse.id),
           api.listEdges(workspaceResponse.id),
           api.listCanvases(workspaceResponse.id),
+          api.listResources(workspaceResponse.id),
         ])
         if (cancelled) return
         setNodes(nodesResponse)
         setEdges(edgesResponse)
         setCanvases(canvasesResponse)
         setActiveCanvasId(canvasesResponse[0]?.id ?? null)
+        setResources(resourcesResponse)
       } catch (error) {
         if (!cancelled) setLoadError(messageFor(error))
       }
@@ -98,6 +127,38 @@ function App() {
       cancelled = true
     }
   }, [activeCanvasId, recordPersisted])
+
+  // The one refresh path every projection (table/Kanban/timeline/research) shares: re-fetch
+  // whichever view is currently active from the backend's `ProjectionService`/
+  // `ResearchDashboardService`, so an edit made anywhere is reflected the next time this runs
+  // rather than each view keeping its own stale copy.
+  const refreshActiveViewData = useCallback(
+    async (workspaceId: string, view: AppView) => {
+      try {
+        if (view === 'table') {
+          setTableRows(await api.evaluateTableView({ workspace_id: workspaceId }))
+        } else if (view === 'kanban') {
+          setKanbanColumns(
+            await api.evaluateKanbanView({ workspace_id: workspaceId, group_by: 'status_id' }),
+          )
+        } else if (view === 'timeline') {
+          setTimelineRows(
+            await api.evaluateTimelineView({ workspace_id: workspaceId, date_field: 'created_at' }),
+          )
+        } else if (view === 'research') {
+          setResearchDashboard(await api.getResearchDashboard(workspaceId))
+        }
+      } catch (error) {
+        setActionError(`Could not load this view: ${messageFor(error)}`)
+      }
+    },
+    [],
+  )
+
+  useEffect(() => {
+    if (!workspace) return
+    refreshActiveViewData(workspace.id, activeView)
+  }, [workspace, activeView, refreshActiveViewData])
 
   const nodeTypeById = useMemo(
     () => new Map(workspace?.node_types.map((nodeType) => [nodeType.id, nodeType]) ?? []),
@@ -161,6 +222,13 @@ function App() {
 
   const selectedNode = selectedNodeId ? (nodesById.get(selectedNodeId) ?? null) : null
   const selectedNodeType = selectedNode ? nodeTypeById.get(selectedNode.node_type_id) : undefined
+  const selectedResource = useMemo(
+    () => resources.find((resource) => resource.node_id === selectedNodeId) ?? null,
+    [resources, selectedNodeId],
+  )
+  const nextWorkflowStep = selectedNodeType?.system_key
+    ? NEXT_WORKFLOW_STEP[selectedNodeType.system_key]
+    : undefined
 
   const relations = useMemo<RelationRow[]>(() => {
     if (!selectedNodeId) return []
@@ -260,15 +328,16 @@ function App() {
 
   const handleChangeStatus = useCallback(
     async (statusId: string) => {
-      if (!selectedNodeId) return
+      if (!selectedNodeId || !workspace) return
       try {
         const updated = await api.updateNode(selectedNodeId, { status_id: statusId })
         setNodes((current) => current.map((node) => (node.id === updated.id ? updated : node)))
+        refreshActiveViewData(workspace.id, activeView)
       } catch (error) {
         setActionError(`Could not update status: ${messageFor(error)}`)
       }
     },
-    [selectedNodeId],
+    [selectedNodeId, workspace, activeView, refreshActiveViewData],
   )
 
   const handleChangeField = useCallback(
@@ -286,6 +355,37 @@ function App() {
       }
     },
     [selectedNodeId],
+  )
+
+  const handleUpdateResource = useCallback(
+    async (patch: api.UpdateResourcePatch): Promise<boolean> => {
+      const resource = resources.find((r) => r.node_id === selectedNodeId)
+      if (!resource) return false
+      try {
+        const updated = await api.updateResource(resource.id, patch)
+        setResources((current) => current.map((r) => (r.id === updated.id ? updated : r)))
+        if (workspace) refreshActiveViewData(workspace.id, activeView)
+        return true
+      } catch (error) {
+        setActionError(`Could not save that research change: ${messageFor(error)}`)
+        return false
+      }
+    },
+    [resources, selectedNodeId, workspace, activeView, refreshActiveViewData],
+  )
+
+  const handleAdvanceWorkflow = useCallback(
+    async (step: WorkflowChainStep, title: string) => {
+      if (!workspace || !selectedNodeId) return
+      const { node, edge } = await api.advanceWorkflowChain(workspace.id, selectedNodeId, step, {
+        title,
+      })
+      setNodes((current) => [...current, node])
+      setEdges((current) => [...current, edge])
+      setSelectedNodeId(node.id)
+      refreshActiveViewData(workspace.id, activeView)
+    },
+    [workspace, selectedNodeId, activeView, refreshActiveViewData],
   )
 
   const handleArchiveSelected = useCallback(async () => {
@@ -390,80 +490,155 @@ function App() {
         </div>
       )}
 
-      <div className="workbench">
-        <CanvasRail
-          canvases={canvases}
-          activeCanvasId={activeCanvasId}
-          onSelectCanvas={setActiveCanvasId}
-          onCreateCanvas={handleCreateCanvas}
-        />
+      <NavTabs activeView={activeView} onSelectView={setActiveView} />
 
-        <div className="stage-frame">
-          <div className="stage-toolbar">
-            <span className="stage-pill">
-              {activeCanvas ? activeCanvas.name : '—'} · {visibleNodes.length} objects ·{' '}
-              {edges.length} relations
-            </span>
-            <PlaceExistingNodeControl unplacedNodes={unplacedNodes} onPlace={handlePlaceExisting} />
-          </div>
-
-          <GraphCanvas
-            canvas={activeCanvas}
-            nodes={visibleNodes}
-            edges={edges}
-            placements={placements}
-            nodeTypeById={nodeTypeById}
-            edgeTypeById={edgeTypeById}
-            statusById={statusById}
-            selectedNodeId={selectedNodeId}
-            focusSet={focusSet}
-            onSelectNode={setSelectedNodeId}
-            onMovePlacement={handleMovePlacement}
-            onRequestConnect={handleRequestConnect}
+      <div className={activeView === 'canvas' ? 'workbench' : 'workbench workbench-no-rail'}>
+        {activeView === 'canvas' && (
+          <CanvasRail
+            canvases={canvases}
+            activeCanvasId={activeCanvasId}
+            onSelectCanvas={setActiveCanvasId}
+            onCreateCanvas={handleCreateCanvas}
           />
+        )}
 
-          <div className="focus-control">
-            <span>Neighborhood focus</span>
-            <input
-              type="range"
-              aria-label="Neighborhood focus"
-              min={0}
-              max={MAX_FOCUS_DEPTH}
-              step={1}
-              value={focusDepth}
-              onChange={(event) => setFocusDepth(Number(event.target.value))}
-              disabled={!selectedNodeId}
+        {activeView === 'canvas' && (
+          <div className="stage-frame">
+            <div className="stage-toolbar">
+              <span className="stage-pill">
+                {activeCanvas ? activeCanvas.name : '—'} · {visibleNodes.length} objects ·{' '}
+                {edges.length} relations
+              </span>
+              <PlaceExistingNodeControl unplacedNodes={unplacedNodes} onPlace={handlePlaceExisting} />
+            </div>
+
+            <GraphCanvas
+              canvas={activeCanvas}
+              nodes={visibleNodes}
+              edges={edges}
+              placements={placements}
+              nodeTypeById={nodeTypeById}
+              edgeTypeById={edgeTypeById}
+              statusById={statusById}
+              selectedNodeId={selectedNodeId}
+              focusSet={focusSet}
+              onSelectNode={setSelectedNodeId}
+              onMovePlacement={handleMovePlacement}
+              onRequestConnect={handleRequestConnect}
             />
-            <span className="focus-value">
-              {focusDepth === 0 ? 'Off' : `${focusDepth} hop${focusDepth > 1 ? 's' : ''}`}
-            </span>
-          </div>
 
-          <div className="legend">
-            <div className="legend-row">
-              <span className="legend-swatch" style={{ background: 'var(--teal)' }} />
-              Task
+            <div className="focus-control">
+              <span>Neighborhood focus</span>
+              <input
+                type="range"
+                aria-label="Neighborhood focus"
+                min={0}
+                max={MAX_FOCUS_DEPTH}
+                step={1}
+                value={focusDepth}
+                onChange={(event) => setFocusDepth(Number(event.target.value))}
+                disabled={!selectedNodeId}
+              />
+              <span className="focus-value">
+                {focusDepth === 0 ? 'Off' : `${focusDepth} hop${focusDepth > 1 ? 's' : ''}`}
+              </span>
             </div>
-            <div className="legend-row">
-              <span className="legend-swatch" style={{ background: 'var(--brass)' }} />
-              Project
-            </div>
-            <div className="legend-row">
-              <span className="keyhint">drag</span>move · <span className="keyhint">connect</span>relate ·{' '}
-              <span className="keyhint">del</span>archive · <span className="keyhint">esc</span>deselect
+
+            <div className="legend">
+              <div className="legend-row">
+                <span className="legend-swatch" style={{ background: 'var(--teal)' }} />
+                Task
+              </div>
+              <div className="legend-row">
+                <span className="legend-swatch" style={{ background: 'var(--brass)' }} />
+                Project
+              </div>
+              <div className="legend-row">
+                <span className="keyhint">drag</span>move ·{' '}
+                <span className="keyhint">connect</span>relate ·{' '}
+                <span className="keyhint">del</span>archive · <span className="keyhint">esc</span>
+                deselect
+              </div>
             </div>
           </div>
+        )}
+
+        {activeView === 'table' && (
+          <div className="view-frame">
+            <TableView
+              rows={tableRows}
+              nodeTypeById={nodeTypeById}
+              statusById={statusById}
+              selectedNodeId={selectedNodeId}
+              onSelectNode={setSelectedNodeId}
+            />
+          </div>
+        )}
+
+        {activeView === 'kanban' && (
+          <div className="view-frame">
+            <KanbanView
+              columns={kanbanColumns}
+              nodeTypeById={nodeTypeById}
+              statusById={statusById}
+              selectedNodeId={selectedNodeId}
+              onSelectNode={setSelectedNodeId}
+            />
+          </div>
+        )}
+
+        {activeView === 'timeline' && (
+          <div className="view-frame">
+            <TimelineView
+              rows={timelineRows}
+              nodeTypeById={nodeTypeById}
+              statusById={statusById}
+              selectedNodeId={selectedNodeId}
+              onSelectNode={setSelectedNodeId}
+            />
+          </div>
+        )}
+
+        {activeView === 'search' && (
+          <div className="view-frame">
+            <SearchView
+              onSearch={(query) => (workspace ? api.search(workspace.id, query) : Promise.resolve([]))}
+              selectedNodeId={selectedNodeId}
+              onSelectNode={setSelectedNodeId}
+            />
+          </div>
+        )}
+
+        {activeView === 'research' && (
+          <div className="view-frame">
+            <ResearchView
+              dashboard={researchDashboard}
+              selectedNodeId={selectedNodeId}
+              onSelectNode={setSelectedNodeId}
+            />
+          </div>
+        )}
+
+        <div className="inspector-column">
+          <Inspector
+            node={selectedNode}
+            nodeType={selectedNodeType}
+            relations={relations}
+            referenceableNodes={referenceableNodes}
+            onChangeStatus={handleChangeStatus}
+            onChangeField={handleChangeField}
+            onArchive={handleArchiveSelected}
+          />
+          {selectedResource && (
+            <ResearchDetailPanel resource={selectedResource} onUpdate={handleUpdateResource} />
+          )}
+          {nextWorkflowStep && (
+            <WorkflowChainPanel
+              nodeSystemKey={selectedNodeType?.system_key}
+              onAdvance={(title) => handleAdvanceWorkflow(nextWorkflowStep.step, title)}
+            />
+          )}
         </div>
-
-        <Inspector
-          node={selectedNode}
-          nodeType={selectedNodeType}
-          relations={relations}
-          referenceableNodes={referenceableNodes}
-          onChangeStatus={handleChangeStatus}
-          onChangeField={handleChangeField}
-          onArchive={handleArchiveSelected}
-        />
       </div>
 
       {pendingConnection && (

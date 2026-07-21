@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import * as api from './api/client'
@@ -88,6 +88,7 @@ beforeEach(() => {
   mockedApi.getWorkspace.mockResolvedValue(workspace)
   mockedApi.listEdges.mockResolvedValue([])
   mockedApi.listCanvases.mockResolvedValue([canvasA, canvasB])
+  mockedApi.listResources.mockResolvedValue([])
 })
 
 afterEach(() => {
@@ -142,7 +143,9 @@ describe('non-destructive error handling', () => {
     fireEvent.click(screen.getByRole('button', { name: /new canvas/i }))
 
     await screen.findByText(/could not create canvas/i)
-    expect(screen.getAllByRole('button', { name: /main|research/i })).toHaveLength(2)
+    // Scoped to the canvas rail: "Research" is also this app's own nav tab label.
+    const canvasRail = screen.getByRole('navigation', { name: /canvases/i })
+    expect(within(canvasRail).getAllByRole('button', { name: /main|research/i })).toHaveLength(2)
   })
 
   it('never renders a prior canvas\'s node under the newly active canvas id after a failed switch', async () => {
@@ -157,7 +160,13 @@ describe('non-destructive error handling', () => {
     await screen.findByText('Personal Graph OS')
     await screen.findByText('Only on Main')
 
-    fireEvent.click(screen.getByRole('button', { name: /research/i }))
+    // Scoped to the canvas rail: the fixture's second canvas happens to be named "Research",
+    // which now also collides with the app's own "Research" nav tab button.
+    fireEvent.click(
+      within(screen.getByRole('navigation', { name: /canvases/i })).getByRole('button', {
+        name: /research/i,
+      }),
+    )
 
     await screen.findByText(/could not load this canvas's placements/i)
     // The node still exists in the workspace (and is offered by "Place existing" for this
@@ -182,7 +191,10 @@ describe('reusing an existing node across canvases', () => {
     render(<App />)
     await screen.findByText('Personal Graph OS')
 
-    fireEvent.click(screen.getByRole('button', { name: /research/i }))
+    // Scoped to the canvas rail: the fixture's second canvas happens to be named "Research",
+    // which now also collides with the app's own "Research" nav tab button.
+    const canvasRail = screen.getByRole('navigation', { name: /canvases/i })
+    fireEvent.click(within(canvasRail).getByRole('button', { name: /research/i }))
     await waitFor(() => expect(mockedApi.listPlacements).toHaveBeenCalledWith('canvas-b'))
 
     fireEvent.click(screen.getByRole('button', { name: /place here/i }))

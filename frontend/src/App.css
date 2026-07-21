@@ -858,3 +858,290 @@ select.status-select {
   text-align: center;
   padding: 2px 0 4px;
 }
+
+/* ---------- Nav tabs ---------- */
+
+.nav-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 2px 0 4px;
+}
+
+.nav-tab {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--slate);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.nav-tab:hover {
+  background: var(--line-soft);
+  color: var(--ink-soft);
+}
+
+.nav-tab[aria-current='true'] {
+  background: var(--amber-soft);
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+/* ---------- Table/Kanban/Timeline/Search/Research views ---------- */
+
+.workbench-no-rail {
+  grid-template-columns: minmax(0, 1fr) 268px;
+}
+
+.view-frame {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper-raised);
+  box-shadow: var(--shadow-1);
+  padding: 14px;
+  min-height: 400px;
+  overflow-y: auto;
+}
+
+.view-empty {
+  color: var(--slate-faint);
+  font-size: 12.5px;
+  padding: 10px 2px;
+}
+
+.list-view {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.node-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 13px;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.node-row:hover {
+  background: var(--line-soft);
+}
+
+.node-row[aria-current='true'] {
+  border-color: var(--brass);
+  background: var(--amber-soft);
+}
+
+.node-row-title {
+  font-weight: 600;
+}
+
+.node-row-meta {
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--slate);
+  white-space: nowrap;
+}
+
+.node-row-type,
+.node-row-lifecycle {
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.kanban-view {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+}
+
+.kanban-column {
+  flex: 0 0 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kanban-column-header {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--slate);
+}
+
+.kanban-column-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.timeline-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.timeline-date {
+  flex: 0 0 90px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--slate);
+}
+
+.timeline-row .node-row {
+  flex: 1;
+}
+
+.search-view-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.search-view-bar input {
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.search-view-bar button {
+  border: 0;
+  background: var(--brass);
+  color: #221604;
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.search-view-bar button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.search-result-row {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.search-snippet {
+  font-size: 11.5px;
+  color: var(--slate);
+}
+
+.search-snippet mark {
+  background: var(--amber-soft);
+  color: var(--ink);
+}
+
+.research-view {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.research-section-header {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+  margin-bottom: 6px;
+}
+
+.research-section-count {
+  color: var(--slate-faint);
+  font-weight: 400;
+}
+
+.research-detail {
+  border-top: 1px solid var(--line);
+  margin-top: 14px;
+  padding-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.string-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.string-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 12.5px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.string-list li button {
+  border: 0;
+  background: transparent;
+  color: var(--coral);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.workflow-chain-panel {
+  border-top: 1px solid var(--line);
+  margin-top: 14px;
+  padding-top: 14px;
+}
+
+.workflow-chain-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.workflow-chain-row input {
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12.5px;
+}
+
+.workflow-chain-row button {
+  border: 0;
+  background: var(--brass);
+  color: #221604;
+  font-weight: 600;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.workflow-chain-row button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.inspector-column {
+  display: flex;
+  flex-direction: column;
+}
