@@ -170,6 +170,11 @@ class EdgeType(BaseModel):
     name: str
     inverse_name: str | None = None
     color_hex: str = "#6b7280"
+    # Immutable semantic role (e.g. "resource_yields_takeaway") a default workflow edge type
+    # carries so it survives a user rename. `None` for every user-created edge type. Never
+    # exposed as a mutation parameter on `SchemaService.update_edge_type()`, so once set it
+    # can only be carried forward, never changed or cleared through the schema-edit API.
+    system_key: str | None = None
 
     @field_validator("name")
     @classmethod
@@ -193,6 +198,11 @@ class NodeType(BaseModel):
     color_hex: str = "#6b7280"
     field_definitions: tuple[FieldDefinition, ...] = ()
     status_definitions: tuple[StatusDefinition, ...] = ()
+    # Immutable semantic role (e.g. "resource", "takeaway") a default workflow node type
+    # carries so the Resource -> Takeaway -> Decision -> Task -> Implementation workflow can
+    # find it by role even after a user renames it. `None` for every user-created node type.
+    # Never exposed as a mutation parameter on `SchemaService.update_node_type()`.
+    system_key: str | None = None
 
     @field_validator("name")
     @classmethod
@@ -267,8 +277,40 @@ class Workspace(BaseModel):
             raise InvariantViolationError("Workspace edge_types must have unique names")
         return value
 
+    @field_validator("node_types")
+    @classmethod
+    def _validate_unique_node_type_system_keys(
+        cls, value: tuple[NodeType, ...]
+    ) -> tuple[NodeType, ...]:
+        keys = [nt.system_key for nt in value if nt.system_key is not None]
+        if len(keys) != len(set(keys)):
+            raise InvariantViolationError("Workspace node_types must have unique system_key values")
+        return value
+
+    @field_validator("edge_types")
+    @classmethod
+    def _validate_unique_edge_type_system_keys(
+        cls, value: tuple[EdgeType, ...]
+    ) -> tuple[EdgeType, ...]:
+        keys = [et.system_key for et in value if et.system_key is not None]
+        if len(keys) != len(set(keys)):
+            raise InvariantViolationError("Workspace edge_types must have unique system_key values")
+        return value
+
     def node_type_by_id(self, node_type_id: NodeTypeId) -> NodeType | None:
         return next((nt for nt in self.node_types if nt.id == node_type_id), None)
 
     def edge_type_by_id(self, edge_type_id: EdgeTypeId) -> EdgeType | None:
         return next((et for et in self.edge_types if et.id == edge_type_id), None)
+
+    def node_type_by_name(self, name: str) -> NodeType | None:
+        return next((nt for nt in self.node_types if nt.name == name), None)
+
+    def edge_type_by_name(self, name: str) -> EdgeType | None:
+        return next((et for et in self.edge_types if et.name == name), None)
+
+    def node_type_by_system_key(self, system_key: str) -> NodeType | None:
+        return next((nt for nt in self.node_types if nt.system_key == system_key), None)
+
+    def edge_type_by_system_key(self, system_key: str) -> EdgeType | None:
+        return next((et for et in self.edge_types if et.system_key == system_key), None)

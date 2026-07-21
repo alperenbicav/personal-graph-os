@@ -13,6 +13,17 @@ workflow described in WORK.md's primary workflows, without requiring setup first
 
 from __future__ import annotations
 
+from personal_graph_os.application.semantic_keys import (
+    DECISION_NODE_TYPE_KEY,
+    DECISION_PRODUCES_TASK_EDGE_KEY,
+    IMPLEMENTATION_NODE_TYPE_KEY,
+    RESOURCE_NODE_TYPE_KEY,
+    RESOURCE_YIELDS_TAKEAWAY_EDGE_KEY,
+    TAKEAWAY_INFORMS_DECISION_EDGE_KEY,
+    TAKEAWAY_NODE_TYPE_KEY,
+    TASK_IMPLEMENTED_BY_EDGE_KEY,
+    TASK_NODE_TYPE_KEY,
+)
 from personal_graph_os.domain.schema import (
     EdgeType,
     FieldDefinition,
@@ -41,6 +52,7 @@ def _task_node_type() -> NodeType:
             StatusDefinition(name="in_progress", color_hex="#f59e0b", sort_order=1),
             StatusDefinition(name="done", color_hex="#22c55e", is_terminal=True, sort_order=2),
         ),
+        system_key=TASK_NODE_TYPE_KEY,
     )
 
 
@@ -78,6 +90,39 @@ def _decision_node_type() -> NodeType:
             StatusDefinition(name="proposed", color_hex="#9ca3af", sort_order=0),
             StatusDefinition(name="decided", color_hex="#22c55e", is_terminal=True, sort_order=1),
         ),
+        system_key=DECISION_NODE_TYPE_KEY,
+    )
+
+
+def _takeaway_node_type() -> NodeType:
+    """The backing node type for a research takeaway in the guided workflow."""
+    return NodeType(
+        name="Takeaway",
+        icon="lightbulb",
+        color_hex="#eab308",
+        status_definitions=(
+            StatusDefinition(name="open", color_hex="#9ca3af", sort_order=0),
+            StatusDefinition(name="applied", color_hex="#22c55e", is_terminal=True, sort_order=1),
+        ),
+        system_key=TAKEAWAY_NODE_TYPE_KEY,
+    )
+
+
+def _implementation_node_type() -> NodeType:
+    """The backing node type for the implementation step of the guided workflow."""
+    return NodeType(
+        name="Implementation",
+        icon="wrench",
+        color_hex="#0f766e",
+        field_definitions=(
+            FieldDefinition(name="repository", field_type=FieldType.OBJECT_REFERENCE),
+        ),
+        status_definitions=(
+            StatusDefinition(name="planned", color_hex="#9ca3af", sort_order=0),
+            StatusDefinition(name="in_progress", color_hex="#f59e0b", sort_order=1),
+            StatusDefinition(name="done", color_hex="#22c55e", is_terminal=True, sort_order=2),
+        ),
+        system_key=IMPLEMENTATION_NODE_TYPE_KEY,
     )
 
 
@@ -100,6 +145,7 @@ def _resource_node_type() -> NodeType:
             StatusDefinition(name="applied", color_hex="#22c55e", is_terminal=True, sort_order=5),
             StatusDefinition(name="archived", color_hex="#6b7280", is_terminal=True, sort_order=6),
         ),
+        system_key=RESOURCE_NODE_TYPE_KEY,
     )
 
 
@@ -127,6 +173,36 @@ def _default_edge_types() -> tuple[EdgeType, ...]:
     )
 
 
+def _workflow_edge_types() -> tuple[EdgeType, ...]:
+    """The Resource -> Takeaway -> Decision -> Task -> Implementation chain's typed edges."""
+    return (
+        EdgeType(
+            name="yields_takeaway",
+            inverse_name="derived_from_resource",
+            color_hex="#eab308",
+            system_key=RESOURCE_YIELDS_TAKEAWAY_EDGE_KEY,
+        ),
+        EdgeType(
+            name="informs_decision",
+            inverse_name="is_informed_by_takeaway",
+            color_hex="#0ea5e9",
+            system_key=TAKEAWAY_INFORMS_DECISION_EDGE_KEY,
+        ),
+        EdgeType(
+            name="produces_task",
+            inverse_name="originates_from_decision",
+            color_hex="#2563eb",
+            system_key=DECISION_PRODUCES_TASK_EDGE_KEY,
+        ),
+        EdgeType(
+            name="implemented_by",
+            inverse_name="implements_task",
+            color_hex="#0f766e",
+            system_key=TASK_IMPLEMENTED_BY_EDGE_KEY,
+        ),
+    )
+
+
 def seed_default_schema(workspace: Workspace) -> Workspace:
     """Return a copy of `workspace` populated with the MVP's default schema.
 
@@ -145,7 +221,9 @@ def seed_default_schema(workspace: Workspace) -> Workspace:
                 _decision_node_type(),
                 _resource_node_type(),
                 _repository_node_type(),
+                _takeaway_node_type(),
+                _implementation_node_type(),
             ),
-            "edge_types": _default_edge_types(),
+            "edge_types": (*_default_edge_types(), *_workflow_edge_types()),
         }
     )

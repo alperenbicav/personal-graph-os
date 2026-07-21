@@ -6,6 +6,7 @@ import pytest
 
 from personal_graph_os.domain.errors import FieldValueTypeError, InvariantViolationError
 from personal_graph_os.domain.schema import (
+    EdgeType,
     FieldDefinition,
     FieldType,
     NodeType,
@@ -106,3 +107,48 @@ def test_workspace_node_type_lookup_round_trips() -> None:
     task_type = NodeType(name="Task")
     workspace = Workspace(name="Personal", node_types=(task_type,))
     assert workspace.node_type_by_id(task_type.id) is task_type
+
+
+def test_workspace_node_type_by_name_and_system_key_round_trip() -> None:
+    task_type = NodeType(name="Task", system_key="task")
+    workspace = Workspace(name="Personal", node_types=(task_type,))
+    assert workspace.node_type_by_name("Task") is task_type
+    assert workspace.node_type_by_system_key("task") is task_type
+    assert workspace.node_type_by_name("Missing") is None
+    assert workspace.node_type_by_system_key("missing") is None
+
+
+def test_workspace_edge_type_by_name_and_system_key_round_trip() -> None:
+    edge_type = EdgeType(name="derives", system_key="resource_yields_takeaway")
+    workspace = Workspace(name="Personal", edge_types=(edge_type,))
+    assert workspace.edge_type_by_name("derives") is edge_type
+    assert workspace.edge_type_by_system_key("resource_yields_takeaway") is edge_type
+
+
+def test_workspace_rejects_duplicate_node_type_system_keys() -> None:
+    with pytest.raises(InvariantViolationError):
+        Workspace(
+            name="Personal",
+            node_types=(
+                NodeType(name="Task", system_key="task"),
+                NodeType(name="Ticket", system_key="task"),
+            ),
+        )
+
+
+def test_workspace_allows_multiple_node_types_with_no_system_key() -> None:
+    workspace = Workspace(
+        name="Personal", node_types=(NodeType(name="Task"), NodeType(name="Note"))
+    )
+    assert len(workspace.node_types) == 2
+
+
+def test_workspace_rejects_duplicate_edge_type_system_keys() -> None:
+    with pytest.raises(InvariantViolationError):
+        Workspace(
+            name="Personal",
+            edge_types=(
+                EdgeType(name="a", system_key="resource_yields_takeaway"),
+                EdgeType(name="b", system_key="resource_yields_takeaway"),
+            ),
+        )

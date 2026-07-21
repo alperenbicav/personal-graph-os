@@ -13,6 +13,7 @@ def _resource(
     *,
     lifecycle_status: ResourceLifecycleStatus = ResourceLifecycleStatus.INBOX,
     next_action: str | None = None,
+    next_action_dismissed: bool = False,
     review_at: datetime | None = None,
     last_activity_at: datetime | None = None,
 ) -> Resource:
@@ -23,12 +24,13 @@ def _resource(
         canonical_identifier="arxiv:2401.00001",
         lifecycle_status=lifecycle_status,
         next_action=next_action,
+        next_action_dismissed=next_action_dismissed,
         review_at=review_at,
         last_activity_at=last_activity_at if last_activity_at is not None else datetime.now(UTC),
     )
 
 
-def test_paused_resource_requires_a_next_action() -> None:
+def test_paused_resource_requires_a_next_action_or_explicit_dismissal() -> None:
     with pytest.raises(InvariantViolationError):
         _resource(lifecycle_status=ResourceLifecycleStatus.PAUSED)
 
@@ -38,6 +40,14 @@ def test_paused_resource_with_next_action_is_valid() -> None:
         lifecycle_status=ResourceLifecycleStatus.PAUSED, next_action="re-read section 3"
     )
     assert resource.next_action == "re-read section 3"
+
+
+def test_paused_resource_with_explicit_dismissal_and_no_next_action_is_valid() -> None:
+    resource = _resource(
+        lifecycle_status=ResourceLifecycleStatus.PAUSED, next_action_dismissed=True
+    )
+    assert resource.next_action is None
+    assert resource.next_action_dismissed is True
 
 
 def test_applied_resource_never_resurfaces() -> None:

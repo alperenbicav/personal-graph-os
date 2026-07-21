@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import sqlite3
 
+from personal_graph_os.domain.activity import DiscoveredCandidate, DiscoveryRun
 from personal_graph_os.domain.canvas import Canvas, CanvasPlacement
 from personal_graph_os.domain.graph import Edge, Node
+from personal_graph_os.domain.identifiers import NodeId, ResourceId, WorkspaceId
+from personal_graph_os.domain.research_settings import WorkspaceResearchSettings
+from personal_graph_os.domain.resource import Resource, ResourceKind, ResourceLifecycleStatus
 from personal_graph_os.domain.schema import (
     EdgeType,
     FieldDefinition,
@@ -12,11 +16,16 @@ from personal_graph_os.domain.schema import (
     StatusDefinition,
     Workspace,
 )
+from personal_graph_os.domain.views import SavedView, ViewKind
 from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteCanvasPlacementRepository,
     SqliteCanvasRepository,
+    SqliteDiscoveryRunRepository,
     SqliteEdgeRepository,
     SqliteNodeRepository,
+    SqliteResearchSettingsRepository,
+    SqliteResourceRepository,
+    SqliteSavedViewRepository,
     SqliteWorkspaceRepository,
 )
 
@@ -233,3 +242,125 @@ def test_canvas_placement_round_trips(sqlite_connection: sqlite3.Connection) -> 
     assert reloaded.position_x == 10.0
     assert reloaded.position_y == 20.0
     assert [p.id for p in placement_repository.list_by_canvas(canvas.id)] == [placement.id]
+
+
+def _workspace_with_resource_node_type(
+    sqlite_connection: sqlite3.Connection,
+) -> tuple[Workspace, NodeType]:
+    resource_type = NodeType(name="Resource")
+    workspace = Workspace(name="Personal", node_types=(resource_type,))
+    SqliteWorkspaceRepository(sqlite_connection).save(workspace)
+    return workspace, resource_type
+
+
+def test_resource_round_trips_lifecycle_and_dismissal(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    workspace, resource_type = _workspace_with_resource_node_type(sqlite_connection)
+    node = Node(workspace_id=workspace.id, node_type_id=resource_type.id, title="A paper")
+    SqliteNodeRepository(sqlite_connection).save(node)
+    resource = Resource(
+        workspace_id=workspace.id,
+        node_id=node.id,
+        kind=ResourceKind.PAPER,
+        canonical_identifier="arxiv:2401.00001",
+        lifecycle_status=ResourceLifecycleStatus.PAUSED,
+        next_action_dismissed=True,
+        open_questions=("why?",),
+        takeaways=("interesting",),
+    )
+    repository = SqliteResourceRepository(sqlite_connection)
+
+    repository.save(resource)
+    reloaded = repository.get(resource.id)
+
+    assert reloaded is not None
+    assert reloaded.lifecycle_status is ResourceLifecycleStatus.PAUSED
+    assert reloaded.next_action_dismissed is True
+    assert reloaded.open_questions == ("why?",)
+    assert reloaded.takeaways == ("interesting",)
+    assert repository.get_by_node(node.id) is not None
+    assert repository.get_by_canonical_identifier(workspace.id, "arxiv:2401.00001") is not None
+    assert repository.list_by_workspace(workspace.id) == (reloaded,)
+
+
+def test_resource_repository_returns_none_for_unknown_lookups(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    repository = SqliteResourceRepository(sqlite_connection)
+    assert repository.get(ResourceId("missing")) is None
+    assert repository.get_by_node(NodeId("missing")) is None
+    assert (
+        repository.get_by_canonical_identifier(WorkspaceId("missing-workspace"), "missing-id")
+        is None
+    )
+
+
+def test_saved_view_round_trips_and_deletes(sqlite_connection: sqlite3.Connection) -> None:
+    workspace = Workspace(name="Personal")
+    SqliteWorkspaceRepository(sqlite_connection).save(workspace)
+    saved_view = SavedView(
+        workspace_id=workspace.id,
+        name="Research Inbox",
+        view_kind=ViewKind.TABLE,
+        filter_definition={"lifecycle_status": "inbox"},
+        sort_definition={"field": "last_activity_at", "direction": "desc"},
+    )
+    repository = SqliteSavedViewRepository(sqlite_connection)
+
+    repository.save(saved_view)
+    reloaded = repository.get(saved_view.id)
+    assert reloaded is not None
+    assert reloaded.filter_definition == {"lifecycle_status": "inbox"}
+    assert repository.list_by_workspace(workspace.id) == (reloaded,)
+
+    repository.delete(saved_view.id)
+    assert repository.get(saved_view.id) is None
+
+
+def test_discovery_run_round_trips_candidates(sqlite_connection: sqlite3.Connection) -> None:
+    workspace = Workspace(name="Personal")
+    SqliteWorkspaceRepository(sqlite_connection).save(workspace)
+    discovery_run = DiscoveryRun(
+        workspace_id=workspace.id,
+        agent_identity="claude",
+        instruction="find papers about graph databases",
+        sources_searched=("arxiv",),
+        filters_interpreted={"kind": "paper"},
+        candidates=(
+            DiscoveredCandidate(identifier="arxiv:1", title="A", was_imported=True),
+            DiscoveredCandidate(
+                identifier="arxiv:2", title="B", was_imported=False, skip_reason="duplicate"
+            ),
+        ),
+    )
+    repository = SqliteDiscoveryRunRepository(sqlite_connection)
+
+    repository.save(discovery_run)
+    reloaded = repository.get(discovery_run.id)
+
+    assert reloaded is not None
+    assert reloaded.imported_count == 1
+    assert reloaded.skipped_count == 1
+    assert reloaded.candidates[1].skip_reason == "duplicate"
+    assert repository.list_by_workspace(workspace.id) == (reloaded,)
+
+
+def test_research_settings_defaults_and_round_trips(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    workspace = Workspace(name="Personal")
+    SqliteWorkspaceRepository(sqlite_connection).save(workspace)
+    repository = SqliteResearchSettingsRepository(sqlite_connection)
+    assert repository.get(workspace.id) is None
+
+    repository.save(WorkspaceResearchSettings(workspace_id=workspace.id, stale_after_days=30))
+    reloaded = repository.get(workspace.id)
+
+    assert reloaded is not None
+    assert reloaded.stale_after_days == 30
+
+    repository.save(WorkspaceResearchSettings(workspace_id=workspace.id, stale_after_days=7))
+    final = repository.get(workspace.id)
+    assert final is not None
+    assert final.stale_after_days == 7
