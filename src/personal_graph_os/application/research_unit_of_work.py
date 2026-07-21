@@ -1,12 +1,15 @@
-"""Atomic multi-table boundary for the research aggregate (Node + Resource + DiscoveryRun).
+"""Atomic multi-table boundary for the research aggregate (Node + Resource + DiscoveryRun) and
+for a workflow-chain step (Node + Edge).
 
-`NodeRepository`, `ResourceRepository`, and `DiscoveryRunRepository` each commit their own
-single-table write. Creating a Resource always writes its backing Node in the same operation,
-and importing a batch of discovery candidates writes many Node/Resource pairs plus one
-DiscoveryRun record; either of those must not leave a partially written aggregate behind if a
-later step fails. A `ResearchUnitOfWork` is a narrow port for exactly that: entered once per
-top-level operation, with `savepoint()` nesting a partial-failure boundary inside it so one
-invalid candidate in a batch does not roll back the candidates already applied.
+`NodeRepository`, `ResourceRepository`, `EdgeRepository`, and `DiscoveryRunRepository` each
+commit their own single-table write. Creating a Resource always writes its backing Node in the
+same operation, importing a batch of discovery candidates writes many Node/Resource pairs plus
+one DiscoveryRun record, and advancing the guided workflow chain (ST-04.4) writes a new semantic
+Node together with the edge connecting it to the prior step — none of these may leave a partially
+written aggregate behind if a later step fails. A `ResearchUnitOfWork` is a narrow port for
+exactly that: entered once per top-level operation, with `savepoint()` nesting a partial-failure
+boundary inside it so one invalid candidate in a batch does not roll back the candidates already
+applied.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from typing import Protocol
 
 from personal_graph_os.application.repositories import (
     DiscoveryRunRepository,
+    EdgeRepository,
     NodeRepository,
     ResourceRepository,
 )
@@ -31,6 +35,9 @@ class ResearchUnitOfWork(Protocol):
 
     @property
     def resources(self) -> ResourceRepository: ...
+
+    @property
+    def edges(self) -> EdgeRepository: ...
 
     @property
     def discovery_runs(self) -> DiscoveryRunRepository: ...

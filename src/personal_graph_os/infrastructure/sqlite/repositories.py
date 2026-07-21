@@ -345,22 +345,31 @@ class SqliteEdgeRepository:
 
     def save(self, edge: Edge) -> None:
         with self._connection:
-            self._connection.execute(
-                "INSERT INTO edges "
-                "(id, workspace_id, edge_type_id, source_node_id, target_node_id, "
-                " field_values_json, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (id) DO UPDATE SET field_values_json = excluded.field_values_json",
-                (
-                    edge.id,
-                    edge.workspace_id,
-                    edge.edge_type_id,
-                    edge.source_node_id,
-                    edge.target_node_id,
-                    json.dumps(edge.field_values),
-                    edge.created_at.isoformat(),
-                ),
-            )
+            self.save_without_commit(edge)
+
+    def save_without_commit(self, edge: Edge) -> None:
+        """Write `edge`'s row without committing.
+
+        See `SqliteNodeRepository.save_without_commit` for why this exists — used by
+        `SqliteResearchUnitOfWork` so a workflow-chain step's new node and its connecting
+        edge commit or roll back together.
+        """
+        self._connection.execute(
+            "INSERT INTO edges "
+            "(id, workspace_id, edge_type_id, source_node_id, target_node_id, "
+            " field_values_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (id) DO UPDATE SET field_values_json = excluded.field_values_json",
+            (
+                edge.id,
+                edge.workspace_id,
+                edge.edge_type_id,
+                edge.source_node_id,
+                edge.target_node_id,
+                json.dumps(edge.field_values),
+                edge.created_at.isoformat(),
+            ),
+        )
 
     def delete(self, edge_id: EdgeId) -> None:
         with self._connection:

@@ -4,9 +4,10 @@ import sqlite3
 
 import pytest
 
-from personal_graph_os.domain.graph import Node
+from personal_graph_os.domain.graph import Edge, Node
+from personal_graph_os.domain.identifiers import NodeId, new_id
 from personal_graph_os.domain.resource import Resource, ResourceKind
-from personal_graph_os.domain.schema import NodeType, Workspace
+from personal_graph_os.domain.schema import EdgeType, NodeType, Workspace
 from personal_graph_os.infrastructure.sqlite.repositories import SqliteWorkspaceRepository
 from personal_graph_os.infrastructure.sqlite.research_unit_of_work import (
     SqliteResearchUnitOfWork,
@@ -121,3 +122,35 @@ def test_savepoint_isolates_one_candidate_failure_from_prior_successful_candidat
     }
     assert node_titles == {"Good"}
     assert resource_identifiers == {"good"}
+
+
+def test_unit_of_work_rolls_back_a_new_node_when_its_connecting_edge_write_fails(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    """The guided workflow chain (ST-04.4) writes a new node and the edge connecting it in
+    one unit of work; if the edge write fails, the node must not be left stranded either."""
+    workspace, resource_type = _seed_workspace(sqlite_connection)
+    edge_type = EdgeType(name="Yields")
+    SqliteWorkspaceRepository(sqlite_connection).save(
+        workspace.model_copy(update={"edge_types": (edge_type,)})
+    )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        with SqliteResearchUnitOfWork(sqlite_connection) as unit_of_work:
+            new_node = Node(workspace_id=workspace.id, node_type_id=resource_type.id, title="New")
+            unit_of_work.nodes.save_without_commit(new_node)
+            unit_of_work.edges.save_without_commit(
+                Edge(
+                    workspace_id=workspace.id,
+                    edge_type_id=edge_type.id,
+                    source_node_id=new_node.id,
+                    # A target node id that was never written anywhere violates the edges
+                    # table's foreign key, forcing this write to fail inside the transaction.
+                    target_node_id=NodeId(new_id()),
+                )
+            )
+
+    readonly_nodes = sqlite_connection.execute("SELECT id FROM nodes").fetchall()
+    assert readonly_nodes == []
+    readonly_edges = sqlite_connection.execute("SELECT id FROM edges").fetchall()
+    assert readonly_edges == []

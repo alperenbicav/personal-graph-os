@@ -19,15 +19,18 @@ from personal_graph_os.application.repositories import (
     SearchIndexRepository,
     WorkspaceRepository,
 )
+from personal_graph_os.application.research_dashboard import ResearchDashboardService
 from personal_graph_os.application.search_service import SearchService
 from personal_graph_os.application.services import (
     CanvasService,
     EdgeService,
     NodeService,
+    ResearchSettingsService,
     ResourceService,
     SavedViewService,
     SchemaService,
 )
+from personal_graph_os.application.workflow_chain import WorkflowChainService
 from personal_graph_os.domain.identifiers import CanvasId, WorkspaceId
 
 
@@ -93,6 +96,18 @@ def get_projection_service(request: Request) -> ProjectionService:
 
 def get_search_service(request: Request) -> SearchService:
     return request.app.state.search_service
+
+
+def get_research_dashboard_service(request: Request) -> ResearchDashboardService:
+    return request.app.state.research_dashboard_service
+
+
+def get_research_settings_service(request: Request) -> ResearchSettingsService:
+    return request.app.state.research_settings_service
+
+
+def get_workflow_chain_service(request: Request) -> WorkflowChainService:
+    return request.app.state.workflow_chain_service
 
 
 def get_default_workspace_id(request: Request) -> WorkspaceId:

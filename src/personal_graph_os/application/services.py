@@ -16,11 +16,13 @@ from personal_graph_os.application.repositories import (
     CanvasRepository,
     EdgeRepository,
     NodeRepository,
+    ResearchSettingsRepository,
     ResourceRepository,
     SavedViewRepository,
     SearchIndexRepository,
     WorkspaceRepository,
 )
+from personal_graph_os.application.research_dashboard import get_or_default_research_settings
 from personal_graph_os.application.research_unit_of_work import ResearchUnitOfWork
 from personal_graph_os.application.semantic_keys import RESOURCE_NODE_TYPE_KEY
 from personal_graph_os.domain.canvas import Canvas, CanvasPlacement
@@ -43,6 +45,7 @@ from personal_graph_os.domain.identifiers import (
     WorkspaceId,
     new_id,
 )
+from personal_graph_os.domain.research_settings import WorkspaceResearchSettings
 from personal_graph_os.domain.resource import Resource, ResourceKind, ResourceLifecycleStatus
 from personal_graph_os.domain.resource_identity import canonicalize_resource_identity
 from personal_graph_os.domain.schema import (
@@ -1015,3 +1018,33 @@ class SavedViewService:
     def delete(self, saved_view_id: SavedViewId) -> None:
         self._require_saved_view(saved_view_id)
         self._saved_views.delete(saved_view_id)
+
+
+class ResearchSettingsService:
+    """The only path through which per-workspace research resurfacing settings are read/set."""
+
+    def __init__(
+        self, workspaces: WorkspaceRepository, research_settings: ResearchSettingsRepository
+    ) -> None:
+        self._workspaces = workspaces
+        self._research_settings = research_settings
+
+    def _require_workspace(self, workspace_id: WorkspaceId) -> Workspace:
+        workspace = self._workspaces.get(workspace_id)
+        if workspace is None:
+            raise WorkspaceNotFoundError(f"workspace {workspace_id} does not exist")
+        return workspace
+
+    def get_or_default(self, workspace_id: WorkspaceId) -> WorkspaceResearchSettings:
+        self._require_workspace(workspace_id)
+        return get_or_default_research_settings(self._research_settings, workspace_id)
+
+    def update(
+        self, workspace_id: WorkspaceId, *, stale_after_days: int
+    ) -> WorkspaceResearchSettings:
+        self._require_workspace(workspace_id)
+        settings = WorkspaceResearchSettings(
+            workspace_id=workspace_id, stale_after_days=stale_after_days
+        )
+        self._research_settings.save(settings)
+        return settings

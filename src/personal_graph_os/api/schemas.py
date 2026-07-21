@@ -16,7 +16,8 @@ from datetime import datetime
 from pydantic import BaseModel
 
 from personal_graph_os.application.projections import ProjectionItem
-from personal_graph_os.domain.graph import Node
+from personal_graph_os.application.workflow_chain import WorkflowChainStep
+from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.resource import Resource, ResourceKind, ResourceLifecycleStatus
 from personal_graph_os.domain.schema import FieldType
 from personal_graph_os.domain.views import FilterField, ProjectionQuery, ViewKind
@@ -221,3 +222,29 @@ class ProjectionItemResponse(BaseModel):
     @classmethod
     def from_item(cls, item: ProjectionItem) -> ProjectionItemResponse:
         return cls(node=item.node, resource=item.resource)
+
+
+class UpdateResearchSettingsRequest(BaseModel):
+    stale_after_days: int
+
+
+class ResearchDashboardResponse(BaseModel):
+    inbox: list[ResourceResponse]
+    continue_reading: list[ResourceResponse]
+    stale: list[ResourceResponse]
+    needs_takeaway: list[ResourceResponse]
+    unlinked: list[ResourceResponse]
+    applied: list[ResourceResponse]
+
+
+class AdvanceWorkflowChainRequest(BaseModel):
+    workspace_id: str
+    source_node_id: str
+    step: WorkflowChainStep
+    title: str | None = None
+    existing_target_node_id: str | None = None
+
+
+class WorkflowChainStepResponse(BaseModel):
+    node: Node
+    edge: Edge

@@ -15,6 +15,7 @@ from types import TracebackType
 
 from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteDiscoveryRunRepository,
+    SqliteEdgeRepository,
     SqliteNodeRepository,
     SqliteResourceRepository,
 )
@@ -25,6 +26,7 @@ class SqliteResearchUnitOfWork:
         self._connection = connection
         self.nodes = SqliteNodeRepository(connection)
         self.resources = SqliteResourceRepository(connection)
+        self.edges = SqliteEdgeRepository(connection)
         self.discovery_runs = SqliteDiscoveryRunRepository(connection)
         self._savepoint_count = 0
 
