@@ -1,0 +1,79 @@
+/* Personal Graph OS — approved canvas design, committed to dark theme only. */
+
+:root {
+  --paper: #14171d;
+  --paper-raised: #1b1f27;
+  --ink: #ede8dc;
+  --ink-soft: #c3bfb3;
+  --slate: #8b93a0;
+  --slate-faint: #565e6b;
+  --line: #2c313c;
+  --line-soft: #23272f;
+  --brass: #dda552;
+  --brass-ink: #f3d8a6;
+  --teal: #59b3a9;
+  --teal-soft: #1c2f2c;
+  --coral: #e08272;
+  --coral-soft: #34211d;
+  --moss: #86b382;
+  --moss-soft: #202a1f;
+  --amber-soft: #2c2417;
+  --decision: #9a8bd6;
+
+  --font-display: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
+  --font-body: 'Avenir Next', 'Segoe UI', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 12px 32px rgba(0, 0, 0, 0.45);
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  overflow-x: hidden;
+}
+
+button,
+input,
+select {
+  font-family: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--brass);
+  outline-offset: 2px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

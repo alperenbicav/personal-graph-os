@@ -1,0 +1,102 @@
+"""Audit trail: `ActivityEvent` and `DiscoveryRun`.
+
+Every human or agent mutation is recorded with actor, source, and reason so it remains
+attributable, auditable, and reversible where the inverse is safe.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from enum import StrEnum
+
+from pydantic import BaseModel, Field, field_validator
+
+from personal_graph_os.domain.errors import InvariantViolationError
+from personal_graph_os.domain.identifiers import (
+    ActivityEventId,
+    DiscoveryRunId,
+    WorkspaceId,
+    new_id,
+)
+
+
+class ActorKind(StrEnum):
+    HUMAN = "human"
+    AGENT = "agent"
+
+
+class MutationAction(StrEnum):
+    CREATED = "created"
+    UPDATED = "updated"
+    ARCHIVED = "archived"
+    RESTORED = "restored"
+    DELETED = "deleted"
+
+
+class ActivityEvent(BaseModel):
+    """One recorded human/agent mutation, with enough state to support undo."""
+
+    id: ActivityEventId = Field(default_factory=lambda: ActivityEventId(new_id()))
+    workspace_id: WorkspaceId
+    actor_kind: ActorKind
+    actor_name: str
+    source: str
+    entity_type: str
+    entity_id: str
+    action: MutationAction
+    session_id: str | None = None
+    reason: str | None = None
+    before_state: dict[str, object] | None = None
+    after_state: dict[str, object] | None = None
+    is_undoable: bool = False
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @field_validator("actor_name", "source", "entity_type", "entity_id")
+    @classmethod
+    def _validate_non_empty(cls, value: str, info: object) -> str:
+        field_name = getattr(info, "field_name", "ActivityEvent field")
+        stripped = value.strip()
+        if not stripped:
+            raise InvariantViolationError(f"ActivityEvent.{field_name} must not be empty")
+        return stripped
+
+
+class DiscoveredCandidate(BaseModel):
+    """One candidate a `DiscoveryRun` considered, whether imported or skipped."""
+
+    identifier: str
+    title: str
+    was_imported: bool
+    skip_reason: str | None = None
+    imported_node_id: str | None = None
+
+
+class DiscoveryRun(BaseModel):
+    """A record of one agent-driven natural-language resource discovery/import batch."""
+
+    id: DiscoveryRunId = Field(default_factory=lambda: DiscoveryRunId(new_id()))
+    workspace_id: WorkspaceId
+    agent_identity: str
+    instruction: str
+    sources_searched: tuple[str, ...] = ()
+    filters_interpreted: dict[str, object] = Field(default_factory=dict)
+    candidates: tuple[DiscoveredCandidate, ...] = ()
+    started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    completed_at: datetime | None = None
+
+    @field_validator("agent_identity", "instruction")
+    @classmethod
+    def _validate_non_empty(cls, value: str, info: object) -> str:
+        field_name = getattr(info, "field_name", "DiscoveryRun field")
+        stripped = value.strip()
+        if not stripped:
+            raise InvariantViolationError(f"DiscoveryRun.{field_name} must not be empty")
+        return stripped
+
+    @property
+    def imported_count(self) -> int:
+        return sum(1 for candidate in self.candidates if candidate.was_imported)
+
+    @property
+    def skipped_count(self) -> int:
+        return sum(1 for candidate in self.candidates if not candidate.was_imported)

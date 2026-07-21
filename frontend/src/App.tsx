@@ -1,0 +1,481 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import './App.css'
+import * as api from './api/client'
+import { CanvasRail } from './components/CanvasRail'
+import { ConnectEdgeModal, type PendingConnection } from './components/ConnectEdgeModal'
+import { GraphCanvas } from './components/GraphCanvas'
+import { Inspector, type RelationRow } from './components/Inspector'
+import { PlaceExistingNodeControl } from './components/PlaceExistingNodeControl'
+import { TopBar } from './components/TopBar'
+import { messageFor } from './lib/errors'
+import { neighborhoodWithinDepth } from './lib/neighborhood'
+import { SchemaEditor } from './components/SchemaEditor'
+import type { Canvas, CanvasPlacement, GraphEdge, GraphNode, StatusDefinition, Workspace } from './types'
+
+const CAPTURE_TYPE_ORDER = ['Note', 'Task', 'Project', 'Resource']
+const MAX_FOCUS_DEPTH = 3
+
+function randomSpawnPosition() {
+  return { x: 220 + Math.random() * 120, y: 200 + Math.random() * 120 }
+}
+
+function App() {
+  const [workspace, setWorkspace] = useState<Workspace | null>(null)
+  const [nodes, setNodes] = useState<GraphNode[]>([])
+  const [edges, setEdges] = useState<GraphEdge[]>([])
+  const [canvases, setCanvases] = useState<Canvas[]>([])
+  const [activeCanvasId, setActiveCanvasId] = useState<string | null>(null)
+  const [placements, setPlacements] = useState<CanvasPlacement[]>([])
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const [focusDepth, setFocusDepth] = useState(0)
+  const [isCapturing, setIsCapturing] = useState(false)
+  const [pendingConnection, setPendingConnection] = useState<PendingConnection | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [isSchemaEditorOpen, setIsSchemaEditorOpen] = useState(false)
+
+  // Per-placement move sequence: guards against an older, now-superseded save request
+  // rolling back a position that a newer move already replaced (or is still in flight).
+  const placementMoveSeqRef = useRef(new Map<string, number>())
+  // The last position each placement is known to have actually persisted (from a fresh
+  // load, a successful create, or a successful move) — independent of any in-flight
+  // optimistic position. A failed move reverts here, never to a merely-prior optimistic
+  // value that itself was never confirmed to have persisted.
+  const lastPersistedPositionRef = useRef(new Map<string, { x: number; y: number }>())
+
+  const recordPersisted = useCallback((placement: CanvasPlacement) => {
+    lastPersistedPositionRef.current.set(placement.id, {
+      x: placement.position_x,
+      y: placement.position_y,
+    })
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    async function bootstrap() {
+      try {
+        const workspaceResponse = await api.getWorkspace()
+        if (cancelled) return
+        setWorkspace(workspaceResponse)
+
+        const [nodesResponse, edgesResponse, canvasesResponse] = await Promise.all([
+          api.listNodes(workspaceResponse.id),
+          api.listEdges(workspaceResponse.id),
+          api.listCanvases(workspaceResponse.id),
+        ])
+        if (cancelled) return
+        setNodes(nodesResponse)
+        setEdges(edgesResponse)
+        setCanvases(canvasesResponse)
+        setActiveCanvasId(canvasesResponse[0]?.id ?? null)
+      } catch (error) {
+        if (!cancelled) setLoadError(messageFor(error))
+      }
+    }
+    bootstrap()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!activeCanvasId) return
+    let cancelled = false
+    // Clear immediately so a slow or failed request for the newly active canvas can never
+    // leave the previous canvas's placements rendered (and writable via drag) under this id.
+    setPlacements([])
+    api
+      .listPlacements(activeCanvasId)
+      .then((response) => {
+        if (cancelled) return
+        response.forEach(recordPersisted)
+        setPlacements(response)
+      })
+      .catch((error) => {
+        if (!cancelled) setActionError(`Could not load this canvas's placements: ${messageFor(error)}`)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [activeCanvasId, recordPersisted])
+
+  const nodeTypeById = useMemo(
+    () => new Map(workspace?.node_types.map((nodeType) => [nodeType.id, nodeType]) ?? []),
+    [workspace],
+  )
+
+  const edgeTypeById = useMemo(
+    () => new Map(workspace?.edge_types.map((edgeType) => [edgeType.id, edgeType]) ?? []),
+    [workspace],
+  )
+
+  const statusById = useMemo(() => {
+    const map = new Map<string, StatusDefinition>()
+    workspace?.node_types.forEach((nodeType) =>
+      nodeType.status_definitions.forEach((status) => map.set(status.id, status)),
+    )
+    return map
+  }, [workspace])
+
+  const nodesById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes])
+
+  // Every node type is capturable — a schema-editor-created (or any non-default) type must
+  // never be uninstantiable — with the familiar defaults surfaced first for muscle memory.
+  const captureNodeTypes = useMemo(() => {
+    if (!workspace) return []
+    const preferred = CAPTURE_TYPE_ORDER.map((name) =>
+      workspace.node_types.find((nt) => nt.name === name),
+    ).filter((nodeType): nodeType is NonNullable<typeof nodeType> => Boolean(nodeType))
+    const preferredIds = new Set(preferred.map((nodeType) => nodeType.id))
+    const rest = workspace.node_types.filter((nodeType) => !preferredIds.has(nodeType.id))
+    return [...preferred, ...rest]
+  }, [workspace])
+
+  const activeCanvas = useMemo(
+    () => canvases.find((canvas) => canvas.id === activeCanvasId) ?? null,
+    [canvases, activeCanvasId],
+  )
+
+  const visibleNodes = useMemo(() => nodes.filter((node) => !node.is_archived), [nodes])
+
+  const placedNodeIds = useMemo(() => new Set(placements.map((p) => p.node_id)), [placements])
+  const unplacedNodes = useMemo(
+    () => visibleNodes.filter((node) => !placedNodeIds.has(node.id)),
+    [visibleNodes, placedNodeIds],
+  )
+
+  const focusSet = useMemo(() => {
+    if (!selectedNodeId || focusDepth <= 0) return null
+    return neighborhoodWithinDepth(edges, selectedNodeId, focusDepth)
+  }, [edges, selectedNodeId, focusDepth])
+
+  const selectedNode = selectedNodeId ? (nodesById.get(selectedNodeId) ?? null) : null
+  const selectedNodeType = selectedNode ? nodeTypeById.get(selectedNode.node_type_id) : undefined
+
+  const relations = useMemo<RelationRow[]>(() => {
+    if (!selectedNodeId) return []
+    return edges
+      .filter((edge) => edge.source_node_id === selectedNodeId || edge.target_node_id === selectedNodeId)
+      .map((edge) => {
+        const edgeType = edgeTypeById.get(edge.edge_type_id)
+        const otherId = edge.source_node_id === selectedNodeId ? edge.target_node_id : edge.source_node_id
+        const otherTitle = nodesById.get(otherId)?.title ?? 'Unknown'
+        const isOutgoing = edge.source_node_id === selectedNodeId
+        const label = isOutgoing
+          ? (edgeType?.name ?? 'relates to')
+          : (edgeType?.inverse_name ?? edgeType?.name ?? 'relates to')
+        return { edgeTypeName: label, otherNodeTitle: otherTitle }
+      })
+  }, [edges, selectedNodeId, edgeTypeById, nodesById])
+
+  const handleCapture = useCallback(
+    async (nodeTypeId: string, title: string) => {
+      if (!workspace || !activeCanvasId) return
+      setIsCapturing(true)
+      try {
+        const node = await api.captureNode(workspace.id, nodeTypeId, title)
+        const { x, y } = randomSpawnPosition()
+        const placement = await api.placeNode(activeCanvasId, node.id, x, y)
+        recordPersisted(placement)
+        setNodes((current) => [...current, node])
+        setPlacements((current) => [...current, placement])
+        setSelectedNodeId(node.id)
+      } catch (error) {
+        setActionError(`Could not capture "${title}": ${messageFor(error)}`)
+      } finally {
+        setIsCapturing(false)
+      }
+    },
+    [workspace, activeCanvasId, recordPersisted],
+  )
+
+  const handlePlaceExisting = useCallback(
+    async (nodeId: string) => {
+      if (!activeCanvasId) return
+      try {
+        const { x, y } = randomSpawnPosition()
+        const placement = await api.placeNode(activeCanvasId, nodeId, x, y)
+        recordPersisted(placement)
+        setPlacements((current) => [...current, placement])
+        setSelectedNodeId(nodeId)
+      } catch (error) {
+        setActionError(`Could not place that object on this canvas: ${messageFor(error)}`)
+      }
+    },
+    [activeCanvasId, recordPersisted],
+  )
+
+  const handleMovePlacement = useCallback(
+    (placementId: string, positionX: number, positionY: number) => {
+      const seqByPlacement = placementMoveSeqRef.current
+      const sequence = (seqByPlacement.get(placementId) ?? 0) + 1
+      seqByPlacement.set(placementId, sequence)
+
+      setPlacements((current) =>
+        current.map((placement) =>
+          placement.id === placementId
+            ? { ...placement, position_x: positionX, position_y: positionY }
+            : placement,
+        ),
+      )
+      api
+        .updatePlacement(placementId, { position_x: positionX, position_y: positionY })
+        .then((updated) => {
+          // A later move may already have superseded this one; only the still-latest
+          // request's success should be recorded as the confirmed-persisted position.
+          if (seqByPlacement.get(placementId) === sequence) recordPersisted(updated)
+        })
+        .catch((error) => {
+          // A newer move for this placement has already been issued (or has already
+          // succeeded); its own outcome owns the current position, so this older,
+          // now-superseded failure must not touch anything.
+          if (seqByPlacement.get(placementId) !== sequence) return
+          setActionError(`Could not save the new position: ${messageFor(error)}`)
+          // Revert to the last position actually known to have persisted — never to a
+          // merely-prior optimistic value, which may itself never have been saved (e.g.
+          // two overlapping moves that both fail).
+          const revertTo = lastPersistedPositionRef.current.get(placementId)
+          if (!revertTo) return
+          setPlacements((current) =>
+            current.map((placement) =>
+              placement.id === placementId
+                ? { ...placement, position_x: revertTo.x, position_y: revertTo.y }
+                : placement,
+            ),
+          )
+        })
+    },
+    [recordPersisted],
+  )
+
+  const handleChangeStatus = useCallback(
+    async (statusId: string) => {
+      if (!selectedNodeId) return
+      try {
+        const updated = await api.updateNode(selectedNodeId, { status_id: statusId })
+        setNodes((current) => current.map((node) => (node.id === updated.id ? updated : node)))
+      } catch (error) {
+        setActionError(`Could not update status: ${messageFor(error)}`)
+      }
+    },
+    [selectedNodeId],
+  )
+
+  const handleChangeField = useCallback(
+    async (fieldDefinitionId: string, value: unknown): Promise<boolean> => {
+      if (!selectedNodeId) return false
+      try {
+        const updated = await api.updateNode(selectedNodeId, {
+          field_values: { [fieldDefinitionId]: value },
+        })
+        setNodes((current) => current.map((node) => (node.id === updated.id ? updated : node)))
+        return true
+      } catch (error) {
+        setActionError(`Could not save that field: ${messageFor(error)}`)
+        return false
+      }
+    },
+    [selectedNodeId],
+  )
+
+  const handleArchiveSelected = useCallback(async () => {
+    if (!selectedNodeId) return
+    try {
+      await api.archiveNode(selectedNodeId)
+      setNodes((current) => current.filter((node) => node.id !== selectedNodeId))
+      setSelectedNodeId(null)
+    } catch (error) {
+      setActionError(`Could not archive that object: ${messageFor(error)}`)
+    }
+  }, [selectedNodeId])
+
+  const handleCreateCanvas = useCallback(async () => {
+    if (!workspace) return
+    const name = window.prompt('Name the new canvas')?.trim()
+    if (!name) return
+    try {
+      const canvas = await api.createCanvas(workspace.id, name)
+      setCanvases((current) => [...current, canvas])
+      setActiveCanvasId(canvas.id)
+    } catch (error) {
+      setActionError(`Could not create canvas "${name}": ${messageFor(error)}`)
+    }
+  }, [workspace])
+
+  const handleRequestConnect = useCallback(
+    (sourceNodeId: string, targetNodeId: string) => {
+      const sourceTitle = nodesById.get(sourceNodeId)?.title ?? 'Unknown'
+      const targetTitle = nodesById.get(targetNodeId)?.title ?? 'Unknown'
+      setPendingConnection({ sourceNodeId, sourceTitle, targetNodeId, targetTitle })
+    },
+    [nodesById],
+  )
+
+  const handleConfirmConnect = useCallback(
+    async (edgeTypeId: string) => {
+      if (!workspace || !pendingConnection) return
+      try {
+        const edge = await api.connectEdge(
+          workspace.id,
+          edgeTypeId,
+          pendingConnection.sourceNodeId,
+          pendingConnection.targetNodeId,
+        )
+        setEdges((current) => [...current, edge])
+        setPendingConnection(null)
+      } catch (error) {
+        // Keep the pending connection open on failure: the user can retry without
+        // rediscovering and redragging the two (still hard-to-hit) connection handles.
+        setActionError(`Could not create that relationship: ${messageFor(error)}. You can try again.`)
+      }
+    },
+    [workspace, pendingConnection],
+  )
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null
+      const isEditingText = Boolean(target && ['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName))
+      if (isEditingText) return
+
+      if (event.key === 'Escape') {
+        setSelectedNodeId(null)
+        return
+      }
+      if ((event.key === 'Delete' || event.key === 'Backspace') && selectedNodeId) {
+        event.preventDefault()
+        handleArchiveSelected()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [selectedNodeId, handleArchiveSelected])
+
+  if (loadError) {
+    return (
+      <div className="app">
+        <p className="inspector-empty">
+          Could not reach the Personal Graph OS API: {loadError}. Is the backend running on{' '}
+          <code>localhost:8000</code>?
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="app">
+      <TopBar
+        captureNodeTypes={captureNodeTypes}
+        onCapture={handleCapture}
+        isCapturing={isCapturing}
+        onOpenSchemaEditor={() => setIsSchemaEditorOpen(true)}
+      />
+
+      {actionError && (
+        <div className="action-error" role="alert">
+          <span>{actionError}</span>
+          <button type="button" onClick={() => setActionError(null)} aria-label="Dismiss">
+            ×
+          </button>
+        </div>
+      )}
+
+      <div className="workbench">
+        <CanvasRail
+          canvases={canvases}
+          activeCanvasId={activeCanvasId}
+          onSelectCanvas={setActiveCanvasId}
+          onCreateCanvas={handleCreateCanvas}
+        />
+
+        <div className="stage-frame">
+          <div className="stage-toolbar">
+            <span className="stage-pill">
+              {activeCanvas ? activeCanvas.name : '—'} · {visibleNodes.length} objects ·{' '}
+              {edges.length} relations
+            </span>
+            <PlaceExistingNodeControl unplacedNodes={unplacedNodes} onPlace={handlePlaceExisting} />
+          </div>
+
+          <GraphCanvas
+            canvas={activeCanvas}
+            nodes={visibleNodes}
+            edges={edges}
+            placements={placements}
+            nodeTypeById={nodeTypeById}
+            edgeTypeById={edgeTypeById}
+            statusById={statusById}
+            selectedNodeId={selectedNodeId}
+            focusSet={focusSet}
+            onSelectNode={setSelectedNodeId}
+            onMovePlacement={handleMovePlacement}
+            onRequestConnect={handleRequestConnect}
+          />
+
+          <div className="focus-control">
+            <span>Neighborhood focus</span>
+            <input
+              type="range"
+              aria-label="Neighborhood focus"
+              min={0}
+              max={MAX_FOCUS_DEPTH}
+              step={1}
+              value={focusDepth}
+              onChange={(event) => setFocusDepth(Number(event.target.value))}
+              disabled={!selectedNodeId}
+            />
+            <span className="focus-value">
+              {focusDepth === 0 ? 'Off' : `${focusDepth} hop${focusDepth > 1 ? 's' : ''}`}
+            </span>
+          </div>
+
+          <div className="legend">
+            <div className="legend-row">
+              <span className="legend-swatch" style={{ background: 'var(--teal)' }} />
+              Task
+            </div>
+            <div className="legend-row">
+              <span className="legend-swatch" style={{ background: 'var(--brass)' }} />
+              Project
+            </div>
+            <div className="legend-row">
+              <span className="keyhint">drag</span>move · <span className="keyhint">connect</span>relate ·{' '}
+              <span className="keyhint">del</span>archive · <span className="keyhint">esc</span>deselect
+            </div>
+          </div>
+        </div>
+
+        <Inspector
+          node={selectedNode}
+          nodeType={selectedNodeType}
+          relations={relations}
+          onChangeStatus={handleChangeStatus}
+          onChangeField={handleChangeField}
+          onArchive={handleArchiveSelected}
+        />
+      </div>
+
+      {pendingConnection && (
+        <ConnectEdgeModal
+          pending={pendingConnection}
+          edgeTypes={workspace?.edge_types ?? []}
+          onConfirm={handleConfirmConnect}
+          onCancel={() => setPendingConnection(null)}
+        />
+      )}
+
+      {isSchemaEditorOpen && workspace && (
+        <SchemaEditor
+          workspace={workspace}
+          onWorkspaceChange={setWorkspace}
+          onError={setActionError}
+          onClose={() => setIsSchemaEditorOpen(false)}
+        />
+      )}
+
+      <p className="footer-note">Personal Graph OS — local-first, graph-first workspace.</p>
+    </div>
+  )
+}
+
+export default App
