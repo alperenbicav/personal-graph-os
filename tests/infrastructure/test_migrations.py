@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from importlib import resources
 
 import pytest
 
@@ -27,6 +28,8 @@ _EXPECTED_TABLES = {
     "activity_events",
     "discovery_runs",
     "resources",
+    "workspace_research_settings",
+    "search_documents",
 }
 
 
@@ -38,13 +41,57 @@ def test_run_migrations_creates_every_domain_table() -> None:
     assert _EXPECTED_TABLES.issubset(table_names)
 
 
+_ALL_MIGRATION_NAMES = ("0001_initial_schema.sql", "0002_research_library.sql")
+
+
 def test_run_migrations_is_idempotent() -> None:
     connection = sqlite3.connect(":memory:")
     first_pass = run_migrations(connection)
     second_pass = run_migrations(connection)
-    assert first_pass == ("0001_initial_schema.sql",)
+    assert first_pass == _ALL_MIGRATION_NAMES
     assert second_pass == ()
-    assert applied_migration_names(connection) == {"0001_initial_schema.sql"}
+    assert applied_migration_names(connection) == set(_ALL_MIGRATION_NAMES)
+
+
+def test_upgrading_an_existing_0001_database_preserves_ids_and_data() -> None:
+    """0001 -> 0002 must not lose or re-key any pre-existing row, including in `resources`,
+    which 0002 recreates to relax its uniqueness constraint."""
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    applied_migration_names(connection)
+    zero_one_sql = (
+        resources.files("personal_graph_os.infrastructure.sqlite.migrations.versions")
+        / "0001_initial_schema.sql"
+    ).read_text(encoding="utf-8")
+    apply_migration_script(connection, "0001_initial_schema.sql", zero_one_sql)
+
+    connection.execute(
+        "INSERT INTO workspaces (id, name, created_at) VALUES ('ws-1', 'Personal', 't0')"
+    )
+    connection.execute(
+        "INSERT INTO node_types (id, workspace_id, name) VALUES ('nt-1', 'ws-1', 'Resource')"
+    )
+    connection.execute(
+        "INSERT INTO nodes "
+        "(id, workspace_id, node_type_id, title, created_at, updated_at) "
+        "VALUES ('node-1', 'ws-1', 'nt-1', 'A paper', 't0', 't0')"
+    )
+    connection.execute(
+        "INSERT INTO resources "
+        "(id, workspace_id, node_id, kind, canonical_identifier, last_activity_at) "
+        "VALUES ('res-1', 'ws-1', 'node-1', 'paper', 'arxiv:1', 't0')"
+    )
+    connection.commit()
+
+    newly_applied = run_migrations(connection)
+    assert newly_applied == ("0002_research_library.sql",)
+
+    resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()
+    assert resource_row["node_id"] == "node-1"
+    assert resource_row["canonical_identifier"] == "arxiv:1"
+    assert resource_row["next_action_dismissed"] == 0
+    node_type_row = connection.execute("SELECT * FROM node_types WHERE id = 'nt-1'").fetchone()
+    assert node_type_row["system_key"] is None
 
 
 def test_apply_migration_script_is_atomic_and_a_corrected_retry_succeeds() -> None:
@@ -146,3 +193,32 @@ def test_apply_migration_script_handles_trigger_body_with_semicolons() -> None:
     mirrored = connection.execute("SELECT id, value FROM mirrored_rows").fetchall()
     assert mirrored == [("1", "hello")]
     assert applied_migration_names(connection) == {"999_trigger.sql"}
+
+
+def test_resources_uniqueness_is_workspace_and_identifier_independent_of_kind() -> None:
+    """Decision #5: canonical identity is unique per workspace regardless of `kind`."""
+    connection = sqlite3.connect(":memory:")
+    run_migrations(connection)
+    connection.execute(
+        "INSERT INTO workspaces (id, name, created_at) VALUES ('ws-1', 'Personal', 't0')"
+    )
+    connection.execute(
+        "INSERT INTO node_types (id, workspace_id, name) VALUES ('nt-1', 'ws-1', 'Resource')"
+    )
+    for node_id in ("node-1", "node-2"):
+        connection.execute(
+            "INSERT INTO nodes "
+            "(id, workspace_id, node_type_id, title, created_at, updated_at) "
+            f"VALUES ('{node_id}', 'ws-1', 'nt-1', 'x', 't0', 't0')"
+        )
+    connection.execute(
+        "INSERT INTO resources "
+        "(id, workspace_id, node_id, kind, canonical_identifier, last_activity_at) "
+        "VALUES ('res-1', 'ws-1', 'node-1', 'paper', 'shared-id', 't0')"
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            "INSERT INTO resources "
+            "(id, workspace_id, node_id, kind, canonical_identifier, last_activity_at) "
+            "VALUES ('res-2', 'ws-1', 'node-2', 'github_repository', 'shared-id', 't0')"
+        )

@@ -8,6 +8,7 @@ caller (product principle: agent-native with accountability).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from personal_graph_os.application.repositories import (
@@ -15,8 +16,13 @@ from personal_graph_os.application.repositories import (
     CanvasRepository,
     EdgeRepository,
     NodeRepository,
+    ResourceRepository,
+    SavedViewRepository,
+    SearchIndexRepository,
     WorkspaceRepository,
 )
+from personal_graph_os.application.research_unit_of_work import ResearchUnitOfWork
+from personal_graph_os.application.semantic_keys import RESOURCE_NODE_TYPE_KEY
 from personal_graph_os.domain.canvas import Canvas, CanvasPlacement
 from personal_graph_os.domain.errors import (
     DomainError,
@@ -31,10 +37,14 @@ from personal_graph_os.domain.identifiers import (
     FieldDefinitionId,
     NodeId,
     NodeTypeId,
+    ResourceId,
+    SavedViewId,
     StatusDefinitionId,
     WorkspaceId,
     new_id,
 )
+from personal_graph_os.domain.resource import Resource, ResourceKind, ResourceLifecycleStatus
+from personal_graph_os.domain.resource_identity import canonicalize_resource_identity
 from personal_graph_os.domain.schema import (
     EdgeType,
     FieldDefinition,
@@ -43,6 +53,12 @@ from personal_graph_os.domain.schema import (
     StatusDefinition,
     Workspace,
 )
+from personal_graph_os.domain.search import (
+    SearchEntityType,
+    build_node_search_text,
+    build_resource_search_text,
+)
+from personal_graph_os.domain.views import ProjectionQuery, SavedView, ViewKind
 
 
 class WorkspaceNotFoundError(UnknownSchemaReferenceError):
@@ -77,6 +93,22 @@ class EdgeTypeNotFoundError(UnknownSchemaReferenceError):
     """Raised when an operation references an edge type that does not exist."""
 
 
+class ResourceNotFoundError(UnknownSchemaReferenceError):
+    """Raised when an operation references a resource that does not exist."""
+
+
+class ResourceNodeTypeMissingError(UnknownSchemaReferenceError):
+    """Raised when a workspace has no node type carrying the 'resource' semantic role yet.
+
+    `ensure_semantic_schema()` (04.1) guarantees this on every bootstrap, so this only fires
+    if a caller constructs a `ResourceService` against a workspace that skipped that step.
+    """
+
+
+class SavedViewNotFoundError(UnknownSchemaReferenceError):
+    """Raised when an operation references a saved view that does not exist."""
+
+
 def _validate_object_references(nodes: NodeRepository, node: Node, node_type: NodeType) -> None:
     """Reject a dangling `object_reference` field value.
 
@@ -101,12 +133,36 @@ def _validate_object_references(nodes: NodeRepository, node: Node, node_type: No
             )
 
 
+def _index_node_text(search_index: SearchIndexRepository | None, node: Node) -> None:
+    """Keep `search_documents` current with a node's own title/body.
+
+    A resource's identity/kind/takeaways/questions are indexed separately by `ResourceService`
+    under the same `entity_id` (see `SqliteSearchIndexRepository`), so this never touches that
+    text and a plain node write can never clobber it.
+    """
+    if search_index is None:
+        return
+    search_index.index_document(
+        workspace_id=node.workspace_id,
+        entity_type=SearchEntityType.NODE,
+        entity_id=node.id,
+        text=build_node_search_text(node),
+    )
+
+
 class NodeService:
     """The only path through which nodes are created and mutated."""
 
-    def __init__(self, workspaces: WorkspaceRepository, nodes: NodeRepository) -> None:
+    def __init__(
+        self,
+        workspaces: WorkspaceRepository,
+        nodes: NodeRepository,
+        *,
+        search_index: SearchIndexRepository | None = None,
+    ) -> None:
         self._workspaces = workspaces
         self._nodes = nodes
+        self._search_index = search_index
 
     def _require_workspace(self, workspace_id: WorkspaceId) -> Workspace:
         workspace = self._workspaces.get(workspace_id)
@@ -126,6 +182,7 @@ class NodeService:
         node.validate_against(node_type)
         _validate_object_references(self._nodes, node, node_type)
         self._nodes.save(node)
+        _index_node_text(self._search_index, node)
         return node
 
     def update(
@@ -167,6 +224,7 @@ class NodeService:
         updated.validate_against(node_type)
         _validate_object_references(self._nodes, updated, node_type)
         self._nodes.save(updated)
+        _index_node_text(self._search_index, updated)
         return updated
 
     def archive(self, node_id: NodeId) -> Node:
@@ -431,6 +489,10 @@ class SchemaService:
             color_hex=color_hex if color_hex is not None else node_type.color_hex,
             field_definitions=node_type.field_definitions,
             status_definitions=node_type.status_definitions,
+            # `system_key` is not a mutation parameter: preserving it here (rather than
+            # dropping to the constructor default of `None`) is what makes it immutable
+            # through this API while every other schema-edit field stays editable.
+            system_key=node_type.system_key,
         )
         return self._replace_node_type(workspace, updated)
 
@@ -463,6 +525,7 @@ class SchemaService:
             color_hex=node_type.color_hex,
             field_definitions=(*node_type.field_definitions, field_definition),
             status_definitions=node_type.status_definitions,
+            system_key=node_type.system_key,
         )
         self._replace_node_type(workspace, updated_node_type)
         return field_definition
@@ -509,6 +572,7 @@ class SchemaService:
             color_hex=node_type.color_hex,
             field_definitions=(*remaining, updated_field),
             status_definitions=node_type.status_definitions,
+            system_key=node_type.system_key,
         )
         self._replace_node_type(workspace, updated_node_type)
         return updated_field
@@ -534,6 +598,7 @@ class SchemaService:
                 f for f in node_type.field_definitions if f.id != field_definition_id
             ),
             status_definitions=node_type.status_definitions,
+            system_key=node_type.system_key,
         )
         self._replace_node_type(workspace, updated_node_type)
 
@@ -561,6 +626,7 @@ class SchemaService:
             color_hex=node_type.color_hex,
             field_definitions=node_type.field_definitions,
             status_definitions=(*node_type.status_definitions, status_definition),
+            system_key=node_type.system_key,
         )
         self._replace_node_type(workspace, updated_node_type)
         return status_definition
@@ -598,6 +664,7 @@ class SchemaService:
             color_hex=node_type.color_hex,
             field_definitions=node_type.field_definitions,
             status_definitions=(*remaining, updated_status),
+            system_key=node_type.system_key,
         )
         self._replace_node_type(workspace, updated_node_type)
         return updated_status
@@ -623,6 +690,7 @@ class SchemaService:
             status_definitions=tuple(
                 s for s in node_type.status_definitions if s.id != status_definition_id
             ),
+            system_key=node_type.system_key,
         )
         self._replace_node_type(workspace, updated_node_type)
 
@@ -669,6 +737,7 @@ class SchemaService:
                 else (inverse_name if inverse_name is not None else edge_type.inverse_name)
             ),
             color_hex=color_hex if color_hex is not None else edge_type.color_hex,
+            system_key=edge_type.system_key,
         )
         return self._replace_edge_type(workspace, updated)
 
@@ -694,3 +763,255 @@ class SchemaService:
 def new_workspace(name: str) -> Workspace:
     """Construct a new, schema-empty workspace. Seeding default schema is a separate step."""
     return Workspace(id=WorkspaceId(new_id()), name=name)
+
+
+class ResourceService:
+    """The only path through which research resources (papers, repos, docs, ...) are
+    created, deduplicated, and mutated.
+
+    A `Resource` always backs one `Node` of the workspace's `system_key="resource"` node
+    type; the two are created together, atomically, through `unit_of_work_factory` (04.1's
+    `ResearchUnitOfWork`) so a failure never leaves an orphaned `Node` with no `Resource`.
+    """
+
+    def __init__(
+        self,
+        workspaces: WorkspaceRepository,
+        resources: ResourceRepository,
+        unit_of_work_factory: Callable[[], ResearchUnitOfWork],
+        *,
+        search_index: SearchIndexRepository | None = None,
+    ) -> None:
+        self._workspaces = workspaces
+        self._resources = resources
+        self._unit_of_work_factory = unit_of_work_factory
+        self._search_index = search_index
+
+    def _index_resource_text(self, resource: Resource) -> None:
+        if self._search_index is None:
+            return
+        self._search_index.index_document(
+            workspace_id=resource.workspace_id,
+            entity_type=SearchEntityType.RESOURCE,
+            entity_id=resource.node_id,
+            text=build_resource_search_text(resource),
+        )
+
+    def _require_workspace(self, workspace_id: WorkspaceId) -> Workspace:
+        workspace = self._workspaces.get(workspace_id)
+        if workspace is None:
+            raise WorkspaceNotFoundError(f"workspace {workspace_id} does not exist")
+        return workspace
+
+    def _require_resource_node_type(self, workspace: Workspace) -> NodeType:
+        node_type = workspace.node_type_by_system_key(RESOURCE_NODE_TYPE_KEY)
+        if node_type is None:
+            raise ResourceNodeTypeMissingError(
+                f"workspace {workspace.id} has no node type carrying the 'resource' role"
+            )
+        return node_type
+
+    def _require_resource(self, resource_id: ResourceId) -> Resource:
+        resource = self._resources.get(resource_id)
+        if resource is None:
+            raise ResourceNotFoundError(f"resource {resource_id} does not exist")
+        return resource
+
+    def create_or_reuse(
+        self,
+        workspace_id: WorkspaceId,
+        title: str,
+        raw_source: str,
+        *,
+        kind: ResourceKind | None = None,
+        body: str = "",
+    ) -> tuple[Resource, bool]:
+        """Canonicalize `raw_source` and either reuse the matching resource or create one.
+
+        Returns `(resource, was_created)`. A duplicate import never creates a second `Node`;
+        it may enrich the existing resource's `source_url` if that was previously unset.
+        """
+        workspace = self._require_workspace(workspace_id)
+        node_type = self._require_resource_node_type(workspace)
+        identity = canonicalize_resource_identity(raw_source)
+
+        existing = self._resources.get_by_canonical_identifier(
+            workspace_id, identity.canonical_identifier
+        )
+        if existing is not None:
+            return self._maybe_enrich_source_url(existing, identity.normalized_source_url), False
+
+        resolved_kind = identity.detected_kind or kind or ResourceKind.OTHER
+        node = Node(workspace_id=workspace_id, node_type_id=node_type.id, title=title, body=body)
+        node.validate_against(node_type)
+        resource = Resource(
+            workspace_id=workspace_id,
+            node_id=node.id,
+            kind=resolved_kind,
+            canonical_identifier=identity.canonical_identifier,
+            source_url=identity.normalized_source_url,
+        )
+        with self._unit_of_work_factory() as unit_of_work:
+            unit_of_work.nodes.save_without_commit(node)
+            unit_of_work.resources.save_without_commit(resource)
+        _index_node_text(self._search_index, node)
+        self._index_resource_text(resource)
+        return resource, True
+
+    def _maybe_enrich_source_url(
+        self, existing: Resource, normalized_source_url: str | None
+    ) -> Resource:
+        if existing.source_url is not None or normalized_source_url is None:
+            return existing
+        enriched = existing.model_copy(update={"source_url": normalized_source_url})
+        self._resources.save(enriched)
+        self._index_resource_text(enriched)
+        return enriched
+
+    def get(self, resource_id: ResourceId) -> Resource:
+        return self._require_resource(resource_id)
+
+    def list_by_workspace(self, workspace_id: WorkspaceId) -> tuple[Resource, ...]:
+        return self._resources.list_by_workspace(workspace_id)
+
+    def update(
+        self,
+        resource_id: ResourceId,
+        *,
+        lifecycle_status: ResourceLifecycleStatus | None = None,
+        next_action: str | None = None,
+        clear_next_action: bool = False,
+        next_action_dismissed: bool | None = None,
+        open_questions: tuple[str, ...] | None = None,
+        takeaways: tuple[str, ...] | None = None,
+        review_at: datetime | None = None,
+        clear_review_at: bool = False,
+    ) -> Resource:
+        """Update lifecycle/progress fields. `last_activity_at` advances only when the
+        resulting state actually differs from the current one — a no-op call is not a
+        "meaningful update" and leaves the resource, including its timestamp, untouched."""
+        existing = self._require_resource(resource_id)
+        candidate = Resource(
+            id=existing.id,
+            workspace_id=existing.workspace_id,
+            node_id=existing.node_id,
+            kind=existing.kind,
+            canonical_identifier=existing.canonical_identifier,
+            source_url=existing.source_url,
+            lifecycle_status=(
+                lifecycle_status if lifecycle_status is not None else existing.lifecycle_status
+            ),
+            next_action=(
+                None
+                if clear_next_action
+                else (next_action if next_action is not None else existing.next_action)
+            ),
+            next_action_dismissed=(
+                next_action_dismissed
+                if next_action_dismissed is not None
+                else existing.next_action_dismissed
+            ),
+            open_questions=(
+                open_questions if open_questions is not None else existing.open_questions
+            ),
+            takeaways=takeaways if takeaways is not None else existing.takeaways,
+            review_at=(
+                None
+                if clear_review_at
+                else (review_at if review_at is not None else existing.review_at)
+            ),
+            last_activity_at=existing.last_activity_at,
+        )
+        if candidate == existing:
+            return existing
+
+        updated = candidate.model_copy(update={"last_activity_at": datetime.now(UTC)})
+        self._resources.save(updated)
+        self._index_resource_text(updated)
+        return updated
+
+    def archive(self, resource_id: ResourceId) -> Resource:
+        return self.update(resource_id, lifecycle_status=ResourceLifecycleStatus.ARCHIVED)
+
+
+class SavedViewService:
+    """The only path through which named, reusable table/Kanban/timeline projections are
+    created and mutated.
+
+    A `SavedView` never stores a raw filter/sort expression: `filters`/`sort` are typed
+    `FilterClause`/`SortClause` values naming an allowlisted `FilterField`, and
+    `SavedView.definitions_from_query()`/`to_projection_query()` are the only conversion
+    between that typed shape and the persisted JSON columns (see `domain/views.py`).
+    """
+
+    def __init__(self, workspaces: WorkspaceRepository, saved_views: SavedViewRepository) -> None:
+        self._workspaces = workspaces
+        self._saved_views = saved_views
+
+    def _require_workspace(self, workspace_id: WorkspaceId) -> Workspace:
+        workspace = self._workspaces.get(workspace_id)
+        if workspace is None:
+            raise WorkspaceNotFoundError(f"workspace {workspace_id} does not exist")
+        return workspace
+
+    def _require_saved_view(self, saved_view_id: SavedViewId) -> SavedView:
+        saved_view = self._saved_views.get(saved_view_id)
+        if saved_view is None:
+            raise SavedViewNotFoundError(f"saved view {saved_view_id} does not exist")
+        return saved_view
+
+    def create(
+        self,
+        workspace_id: WorkspaceId,
+        name: str,
+        view_kind: ViewKind,
+        query: ProjectionQuery,
+    ) -> SavedView:
+        self._require_workspace(workspace_id)
+        filter_definition, sort_definition = SavedView.definitions_from_query(query)
+        saved_view = SavedView(
+            workspace_id=workspace_id,
+            name=name,
+            view_kind=view_kind,
+            filter_definition=filter_definition,
+            sort_definition=sort_definition,
+        )
+        self._saved_views.save(saved_view)
+        return saved_view
+
+    def update(
+        self,
+        saved_view_id: SavedViewId,
+        *,
+        name: str | None = None,
+        query: ProjectionQuery | None = None,
+    ) -> SavedView:
+        existing = self._require_saved_view(saved_view_id)
+        if query is not None:
+            filter_definition, sort_definition = SavedView.definitions_from_query(query)
+        else:
+            filter_definition, sort_definition = (
+                existing.filter_definition,
+                existing.sort_definition,
+            )
+        updated = SavedView(
+            id=existing.id,
+            workspace_id=existing.workspace_id,
+            name=name if name is not None else existing.name,
+            view_kind=existing.view_kind,
+            filter_definition=filter_definition,
+            sort_definition=sort_definition,
+            created_at=existing.created_at,
+        )
+        self._saved_views.save(updated)
+        return updated
+
+    def get(self, saved_view_id: SavedViewId) -> SavedView:
+        return self._require_saved_view(saved_view_id)
+
+    def list_by_workspace(self, workspace_id: WorkspaceId) -> tuple[SavedView, ...]:
+        return self._saved_views.list_by_workspace(workspace_id)
+
+    def delete(self, saved_view_id: SavedViewId) -> None:
+        self._require_saved_view(saved_view_id)
+        self._saved_views.delete(saved_view_id)

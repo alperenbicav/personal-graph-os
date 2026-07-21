@@ -456,3 +456,70 @@ def test_remove_edge_type_rejects_when_an_edge_still_uses_it(
 
     with pytest.raises(SchemaEditConflictError):
         schema_service.remove_edge_type(workspace_id, edge_type.id)
+
+
+def test_node_type_system_key_survives_every_schema_edit_operation(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    """`system_key` is never a mutation parameter, so it must survive name/icon/color edits
+    and every field/status add/update/remove — the exact set of `NodeType` reconstructions
+    `_replace_node_type()`-based methods perform."""
+    schema_service, _n, _e, workspace_repository, _task_type, _edge_type, workspace_id = _services(
+        sqlite_connection
+    )
+    semantic_type = schema_service.create_node_type(workspace_id, "Resource")
+    workspace = workspace_repository.get(workspace_id)
+    assert workspace is not None
+    stamped = NodeType(
+        id=semantic_type.id,
+        name=semantic_type.name,
+        icon=semantic_type.icon,
+        color_hex=semantic_type.color_hex,
+        system_key="resource",
+    )
+    remaining = tuple(nt for nt in workspace.node_types if nt.id != semantic_type.id)
+    workspace_repository.save(workspace.model_copy(update={"node_types": (*remaining, stamped)}))
+
+    schema_service.update_node_type(workspace_id, semantic_type.id, name="Renamed Resource")
+    field = schema_service.add_field_definition(
+        workspace_id, semantic_type.id, "notes", FieldType.TEXT
+    )
+    schema_service.update_field_definition(workspace_id, semantic_type.id, field.id, name="notes2")
+    status = schema_service.add_status_definition(workspace_id, semantic_type.id, "todo")
+    schema_service.update_status_definition(workspace_id, semantic_type.id, status.id, name="todo2")
+    schema_service.remove_status_definition(workspace_id, semantic_type.id, status.id)
+    schema_service.remove_field_definition(workspace_id, semantic_type.id, field.id)
+
+    reloaded = workspace_repository.get(workspace_id)
+    assert reloaded is not None
+    reloaded_type = reloaded.node_type_by_id(semantic_type.id)
+    assert reloaded_type is not None
+    assert reloaded_type.system_key == "resource"
+    assert reloaded_type.name == "Renamed Resource"
+
+
+def test_edge_type_system_key_survives_update(sqlite_connection: sqlite3.Connection) -> None:
+    schema_service, _n, _e, workspace_repository, _task_type, _edge_type, workspace_id = _services(
+        sqlite_connection
+    )
+    created = schema_service.create_edge_type(workspace_id, "derives")
+    workspace = workspace_repository.get(workspace_id)
+    assert workspace is not None
+    stamped = EdgeType(
+        id=created.id,
+        name=created.name,
+        inverse_name=created.inverse_name,
+        color_hex=created.color_hex,
+        system_key="resource_yields_takeaway",
+    )
+    remaining = tuple(et for et in workspace.edge_types if et.id != created.id)
+    workspace_repository.save(workspace.model_copy(update={"edge_types": (*remaining, stamped)}))
+
+    schema_service.update_edge_type(workspace_id, created.id, name="derives_from")
+
+    reloaded = workspace_repository.get(workspace_id)
+    assert reloaded is not None
+    reloaded_edge_type = reloaded.edge_type_by_id(created.id)
+    assert reloaded_edge_type is not None
+    assert reloaded_edge_type.system_key == "resource_yields_takeaway"
+    assert reloaded_edge_type.name == "derives_from"

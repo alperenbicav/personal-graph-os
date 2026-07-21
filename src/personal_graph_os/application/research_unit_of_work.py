@@ -1,0 +1,51 @@
+"""Atomic multi-table boundary for the research aggregate (Node + Resource + DiscoveryRun).
+
+`NodeRepository`, `ResourceRepository`, and `DiscoveryRunRepository` each commit their own
+single-table write. Creating a Resource always writes its backing Node in the same operation,
+and importing a batch of discovery candidates writes many Node/Resource pairs plus one
+DiscoveryRun record; either of those must not leave a partially written aggregate behind if a
+later step fails. A `ResearchUnitOfWork` is a narrow port for exactly that: entered once per
+top-level operation, with `savepoint()` nesting a partial-failure boundary inside it so one
+invalid candidate in a batch does not roll back the candidates already applied.
+"""
+
+from __future__ import annotations
+
+from contextlib import AbstractContextManager
+from types import TracebackType
+from typing import Protocol
+
+from personal_graph_os.application.repositories import (
+    DiscoveryRunRepository,
+    NodeRepository,
+    ResourceRepository,
+)
+
+
+class ResearchUnitOfWork(Protocol):
+    # Read-only properties (not plain attributes): a Protocol attribute is invariant, which
+    # would reject any concrete repository implementation that is merely structurally
+    # compatible rather than the exact same class; a property is covariant instead.
+    @property
+    def nodes(self) -> NodeRepository: ...
+
+    @property
+    def resources(self) -> ResourceRepository: ...
+
+    @property
+    def discovery_runs(self) -> DiscoveryRunRepository: ...
+
+    def __enter__(self) -> ResearchUnitOfWork: ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Commit on a clean exit; roll back the entire unit of work on any exception."""
+
+    def savepoint(self) -> AbstractContextManager[None]:
+        """A nested boundary: release on success, roll back to it (not the whole unit) on
+        failure, so one candidate's failure inside a batch never undoes prior candidates."""
+        ...

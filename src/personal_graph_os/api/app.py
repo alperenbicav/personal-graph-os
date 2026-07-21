@@ -12,11 +12,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from personal_graph_os.api.auth import TOKEN_FILE_NAME, get_or_create_api_token, require_api_token
-from personal_graph_os.api.routers import canvases, edges, nodes, placements, schema, workspace
+from personal_graph_os.api.routers import (
+    canvases,
+    edges,
+    nodes,
+    placements,
+    resources,
+    saved_views,
+    schema,
+    search,
+    views,
+    workspace,
+)
 from personal_graph_os.application.bootstrap import (
+    backfill_search_index,
     get_or_create_default_canvas,
     get_or_create_default_workspace,
 )
+from personal_graph_os.application.projections import ProjectionService
+from personal_graph_os.application.search_service import SearchService
 from personal_graph_os.application.services import (
     CanvasNotFoundError,
     CanvasService,
@@ -27,6 +41,10 @@ from personal_graph_os.application.services import (
     NodeService,
     NodeTypeNotFoundError,
     PlacementNotFoundError,
+    ResourceNotFoundError,
+    ResourceService,
+    SavedViewNotFoundError,
+    SavedViewService,
     SchemaService,
     StatusDefinitionNotFoundError,
     WorkspaceNotFoundError,
@@ -39,7 +57,13 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteCanvasRepository,
     SqliteEdgeRepository,
     SqliteNodeRepository,
+    SqliteResourceRepository,
+    SqliteSavedViewRepository,
+    SqliteSearchIndexRepository,
     SqliteWorkspaceRepository,
+)
+from personal_graph_os.infrastructure.sqlite.research_unit_of_work import (
+    SqliteResearchUnitOfWork,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -81,9 +105,15 @@ def create_app(
     edge_repository = SqliteEdgeRepository(connection)
     canvas_repository = SqliteCanvasRepository(connection)
     placement_repository = SqliteCanvasPlacementRepository(connection)
+    resource_repository = SqliteResourceRepository(connection)
+    saved_view_repository = SqliteSavedViewRepository(connection)
+    search_index_repository = SqliteSearchIndexRepository(connection)
 
     default_workspace = get_or_create_default_workspace(workspace_repository)
     default_canvas = get_or_create_default_canvas(canvas_repository, default_workspace)
+    backfill_search_index(
+        node_repository, resource_repository, search_index_repository, default_workspace.id
+    )
 
     app.state.connection = connection
     app.state.workspace_repository = workspace_repository
@@ -91,12 +121,28 @@ def create_app(
     app.state.edge_repository = edge_repository
     app.state.canvas_repository = canvas_repository
     app.state.placement_repository = placement_repository
-    app.state.node_service = NodeService(workspace_repository, node_repository)
+    app.state.resource_repository = resource_repository
+    app.state.saved_view_repository = saved_view_repository
+    app.state.search_index_repository = search_index_repository
+    app.state.node_service = NodeService(
+        workspace_repository, node_repository, search_index=search_index_repository
+    )
     app.state.edge_service = EdgeService(workspace_repository, node_repository, edge_repository)
     app.state.canvas_service = CanvasService(
         workspace_repository, node_repository, canvas_repository, placement_repository
     )
     app.state.schema_service = SchemaService(workspace_repository, node_repository, edge_repository)
+    app.state.resource_service = ResourceService(
+        workspace_repository,
+        resource_repository,
+        lambda: SqliteResearchUnitOfWork(connection),
+        search_index=search_index_repository,
+    )
+    app.state.saved_view_service = SavedViewService(workspace_repository, saved_view_repository)
+    app.state.projection_service = ProjectionService(node_repository, resource_repository)
+    app.state.search_service = SearchService(
+        node_repository, resource_repository, search_index_repository
+    )
     app.state.default_workspace_id = default_workspace.id
     app.state.default_canvas_id = default_canvas.id
     app.state.db_lock = anyio.Lock()
@@ -113,6 +159,10 @@ def create_app(
     app.include_router(canvases.router, dependencies=auth_dependency)
     app.include_router(placements.router, dependencies=auth_dependency)
     app.include_router(schema.router, dependencies=auth_dependency)
+    app.include_router(resources.router, dependencies=auth_dependency)
+    app.include_router(search.router, dependencies=auth_dependency)
+    app.include_router(saved_views.router, dependencies=auth_dependency)
+    app.include_router(views.router, dependencies=auth_dependency)
 
     def _not_found(_request: Request, exc: Exception) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
@@ -129,6 +179,8 @@ def create_app(
         FieldDefinitionNotFoundError,
         StatusDefinitionNotFoundError,
         EdgeTypeNotFoundError,
+        ResourceNotFoundError,
+        SavedViewNotFoundError,
     ):
         app.add_exception_handler(not_found_error_type, _not_found)
     app.add_exception_handler(DomainError, _unprocessable)
