@@ -180,6 +180,32 @@ def test_update_rejects_a_dangling_object_reference_field_value(client: TestClie
     assert accepted.status_code == 200
 
 
+def test_converting_a_field_to_object_reference_rejects_a_dangling_existing_value_via_api(
+    client: TestClient,
+) -> None:
+    """Reproduces the reviewer's final probe: setting a text value then converting that
+    field's type to `object_reference` must not silently persist a dangling reference."""
+    workspace_id, task_type_id = _default_workspace_and_task_type(client)
+    field = client.post(
+        f"/node-types/{task_type_id}/fields",
+        json={"workspace_id": workspace_id, "name": "repository", "field_type": "text"},
+    ).json()
+    node = client.post(
+        "/nodes",
+        json={"workspace_id": workspace_id, "node_type_id": task_type_id, "title": "Task 1"},
+    ).json()
+    set_text_value = client.patch(
+        f"/nodes/{node['id']}", json={"field_values": {field["id"]: "not-a-node-id"}}
+    )
+    assert set_text_value.status_code == 200
+
+    conversion = client.patch(
+        f"/node-types/{task_type_id}/fields/{field['id']}",
+        json={"workspace_id": workspace_id, "field_type": "object_reference"},
+    )
+    assert conversion.status_code == 422
+
+
 def test_update_unknown_node_returns_404(client: TestClient) -> None:
     response = client.patch("/nodes/00000000-0000-0000-0000-000000000000", json={"title": "x"})
     assert response.status_code == 404

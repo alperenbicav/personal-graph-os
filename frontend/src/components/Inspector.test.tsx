@@ -49,6 +49,14 @@ const nodeType: NodeType = {
       select_options: [],
       description: null,
     },
+    {
+      id: 'field-repository',
+      name: 'repository',
+      field_type: 'object_reference',
+      is_required: false,
+      select_options: [],
+      description: null,
+    },
   ],
   status_definitions: [
     { id: 'status-todo', name: 'Todo', color_hex: '#999', is_terminal: false, sort_order: 0 },
@@ -69,12 +77,18 @@ const node: GraphNode = {
   updated_at: '2026-01-01T00:00:00Z',
 }
 
+const referenceableNodes = [
+  { id: 'node-2', title: 'Target A' },
+  { id: 'node-3', title: 'Target B' },
+]
+
 function renderInspector(overrides: Partial<Parameters<typeof Inspector>[0]> = {}) {
   return render(
     <Inspector
       node={node}
       nodeType={nodeType}
       relations={[]}
+      referenceableNodes={referenceableNodes}
       onChangeStatus={vi.fn()}
       onChangeField={vi.fn().mockResolvedValue(true)}
       onArchive={vi.fn()}
@@ -90,6 +104,7 @@ describe('Inspector', () => {
         node={null}
         nodeType={undefined}
         relations={[]}
+        referenceableNodes={[]}
         onChangeStatus={vi.fn()}
         onChangeField={vi.fn()}
         onArchive={vi.fn()}
@@ -211,5 +226,30 @@ describe('Inspector', () => {
     expect(onChangeField).toHaveBeenCalledWith('field-priority', 'low')
     await screen.findByDisplayValue('high')
     expect(screen.queryByDisplayValue('low')).not.toBeInTheDocument()
+  })
+
+  it('renders an object_reference field as a node selector, not a raw id input', () => {
+    renderInspector()
+    const select = screen.getByLabelText('repository')
+    expect(select.tagName).toBe('SELECT')
+    expect(screen.getByRole('option', { name: 'Target A' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Target B' })).toBeInTheDocument()
+  })
+
+  it('commits the selected node id for an object_reference field', () => {
+    const onChangeField = vi.fn()
+    renderInspector({ onChangeField })
+    fireEvent.change(screen.getByLabelText('repository'), { target: { value: 'node-3' } })
+    expect(onChangeField).toHaveBeenCalledWith('field-repository', 'node-3')
+  })
+
+  it('flags a stale object_reference value that no longer matches a real node', () => {
+    const staleNode: GraphNode = {
+      ...node,
+      field_values: { ...node.field_values, 'field-repository': 'node-deleted' },
+    }
+    renderInspector({ node: staleNode })
+    expect(screen.getByLabelText('repository')).toHaveValue('node-deleted')
+    expect(screen.getByText(/no longer exists/i)).toBeInTheDocument()
   })
 })

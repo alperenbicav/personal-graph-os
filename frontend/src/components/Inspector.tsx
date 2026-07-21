@@ -6,10 +6,16 @@ export interface RelationRow {
   otherNodeTitle: string
 }
 
+export interface ReferenceableNode {
+  id: string
+  title: string
+}
+
 interface InspectorProps {
   node: GraphNode | null
   nodeType: NodeType | undefined
   relations: RelationRow[]
+  referenceableNodes: ReferenceableNode[]
   onChangeStatus: (statusId: string) => void
   onChangeField: (fieldDefinitionId: string, value: unknown) => Promise<boolean>
   onArchive: () => void
@@ -31,6 +37,7 @@ function isAbsoluteHttpUrl(value: string): boolean {
 interface FieldControlProps {
   field: FieldDefinition
   value: unknown
+  referenceableNodes: ReferenceableNode[]
   onCommit: (value: unknown) => Promise<boolean>
 }
 
@@ -44,7 +51,7 @@ function fieldControlId(fieldDefinitionId: string): string {
  * `onCommit` resolves to whether the save actually succeeded — a draft-backed control
  * (text/number/date/url) reverts to the last canonical `value` on a rejected save, so it
  * never keeps displaying a value that was never actually persisted. */
-function FieldControl({ field, value, onCommit }: FieldControlProps) {
+function FieldControl({ field, value, referenceableNodes, onCommit }: FieldControlProps) {
   const canonicalText = () => (isEmpty(value) ? '' : String(value))
   const [draft, setDraft] = useState(canonicalText)
   const [error, setError] = useState<string | null>(null)
@@ -95,6 +102,36 @@ function FieldControl({ field, value, onCommit }: FieldControlProps) {
     )
   }
 
+  if (field.field_type === 'object_reference') {
+    const currentValue = isEmpty(value) ? '' : String(value)
+    const isStale = currentValue !== '' && !referenceableNodes.some((n) => n.id === currentValue)
+    return (
+      <>
+        <select
+          id={fieldControlId(field.id)}
+          className="field-control-select"
+          value={currentValue}
+          onChange={(event) => commitOrFlagEmpty(event.target.value, event.target.value === '')}
+        >
+          {!field.is_required && <option value="">—</option>}
+          {isStale && (
+            <option value={currentValue} disabled>
+              (no longer available)
+            </option>
+          )}
+          {referenceableNodes.map((referenceable) => (
+            <option key={referenceable.id} value={referenceable.id}>
+              {referenceable.title}
+            </option>
+          ))}
+        </select>
+        {isStale && (
+          <span className="field-error">This reference no longer exists — choose another</span>
+        )}
+      </>
+    )
+  }
+
   // `type="text"` even for a numeric field: a native `type="number"` input silently
   // replaces invalid keystrokes with an empty value instead of letting this component
   // show its own "must be a number" message, so validation stays in our own control.
@@ -134,7 +171,6 @@ function FieldControl({ field, value, onCommit }: FieldControlProps) {
         inputMode={inputMode}
         className="field-control-input"
         value={draft}
-        placeholder={field.field_type === 'object_reference' ? 'node id' : undefined}
         onChange={(event) => setDraft(event.target.value)}
         onBlur={handleBlur}
       />
@@ -147,6 +183,7 @@ export function Inspector({
   node,
   nodeType,
   relations,
+  referenceableNodes,
   onChangeStatus,
   onChangeField,
   onArchive,
@@ -211,6 +248,7 @@ export function Inspector({
           <FieldControl
             field={field}
             value={node.field_values[field.id]}
+            referenceableNodes={referenceableNodes}
             onCommit={(value) => onChangeField(field.id, value)}
           />
         </div>

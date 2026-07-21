@@ -144,6 +144,16 @@ function App() {
     [visibleNodes, placedNodeIds],
   )
 
+  // Candidates for an `object_reference` field's node-selector control: every other visible
+  // node in the workspace (a node can't reference itself).
+  const referenceableNodes = useMemo(
+    () =>
+      visibleNodes
+        .filter((node) => node.id !== selectedNodeId)
+        .map((node) => ({ id: node.id, title: node.title })),
+    [visibleNodes, selectedNodeId],
+  )
+
   const focusSet = useMemo(() => {
     if (!selectedNodeId || focusDepth <= 0) return null
     return neighborhoodWithinDepth(edges, selectedNodeId, focusDepth)
@@ -449,6 +459,7 @@ function App() {
           node={selectedNode}
           nodeType={selectedNodeType}
           relations={relations}
+          referenceableNodes={referenceableNodes}
           onChangeStatus={handleChangeStatus}
           onChangeField={handleChangeField}
           onArchive={handleArchiveSelected}

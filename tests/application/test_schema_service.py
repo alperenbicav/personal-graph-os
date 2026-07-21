@@ -223,6 +223,48 @@ def test_update_field_definition_narrowing_type_rejected_if_existing_value_is_in
         )
 
 
+def test_converting_a_field_to_object_reference_rejects_a_dangling_existing_value(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    """Regression for the reviewer's final probe: `SchemaService` must run the same
+    repository-backed object-reference check `NodeService` runs on direct writes, or
+    converting an existing text field to `object_reference` silently persists a value that
+    was never a real node id."""
+    schema_service, node_service, _e, _repo, task_type, _edge_type, workspace_id = _services(
+        sqlite_connection
+    )
+    field = schema_service.add_field_definition(
+        workspace_id, task_type.id, "repository", FieldType.TEXT
+    )
+    node = node_service.capture(workspace_id, task_type.id, "Task 1")
+    node_service.update(node.id, field_values={field.id: "not-a-node-id"})
+
+    with pytest.raises(SchemaEditConflictError):
+        schema_service.update_field_definition(
+            workspace_id, task_type.id, field.id, field_type=FieldType.OBJECT_REFERENCE
+        )
+
+
+def test_converting_a_field_to_object_reference_succeeds_when_the_existing_value_is_a_real_node(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    schema_service, node_service, _e, _repo, task_type, _edge_type, workspace_id = _services(
+        sqlite_connection
+    )
+    field = schema_service.add_field_definition(
+        workspace_id, task_type.id, "repository", FieldType.TEXT
+    )
+    target = node_service.capture(workspace_id, task_type.id, "Target")
+    node = node_service.capture(workspace_id, task_type.id, "Task 1")
+    node_service.update(node.id, field_values={field.id: target.id})
+
+    updated_field = schema_service.update_field_definition(
+        workspace_id, task_type.id, field.id, field_type=FieldType.OBJECT_REFERENCE
+    )
+
+    assert updated_field.field_type == FieldType.OBJECT_REFERENCE
+
+
 def test_update_field_definition_rejects_unknown_field(
     sqlite_connection: sqlite3.Connection,
 ) -> None:

@@ -77,6 +77,30 @@ class EdgeTypeNotFoundError(UnknownSchemaReferenceError):
     """Raised when an operation references an edge type that does not exist."""
 
 
+def _validate_object_references(nodes: NodeRepository, node: Node, node_type: NodeType) -> None:
+    """Reject a dangling `object_reference` field value.
+
+    `FieldDefinition.validate_value()` is domain-only and has no repository access, so it can
+    only check that the value is a non-empty string. Confirming the referenced node actually
+    exists — and belongs to the same workspace — requires `NodeRepository`. A module-level
+    function (not a method) so both `NodeService` (direct node writes) and `SchemaService`
+    (which revalidates every existing node when a field is edited into `object_reference`) can
+    reuse the identical check rather than one of them silently missing it.
+    """
+    for field_definition in node_type.field_definitions:
+        if field_definition.field_type is not FieldType.OBJECT_REFERENCE:
+            continue
+        value = node.field_values.get(field_definition.id)
+        if value is None:
+            continue
+        target = nodes.get(NodeId(str(value)))
+        if target is None or target.workspace_id != node.workspace_id:
+            raise UnknownSchemaReferenceError(
+                f"field '{field_definition.name}' references node {value!r}, "
+                f"which does not exist in workspace {node.workspace_id}"
+            )
+
+
 class NodeService:
     """The only path through which nodes are created and mutated."""
 
@@ -90,27 +114,6 @@ class NodeService:
             raise WorkspaceNotFoundError(f"workspace {workspace_id} does not exist")
         return workspace
 
-    def _validate_object_references(self, node: Node, node_type: NodeType) -> None:
-        """Reject a dangling `object_reference` field value.
-
-        `FieldDefinition.validate_value()` is domain-only and has no repository access, so it
-        can only check that the value is a non-empty string. Confirming the referenced node
-        actually exists — and belongs to the same workspace — requires `NodeRepository`, which
-        only this application-layer service has.
-        """
-        for field_definition in node_type.field_definitions:
-            if field_definition.field_type is not FieldType.OBJECT_REFERENCE:
-                continue
-            value = node.field_values.get(field_definition.id)
-            if value is None:
-                continue
-            target = self._nodes.get(NodeId(str(value)))
-            if target is None or target.workspace_id != node.workspace_id:
-                raise UnknownSchemaReferenceError(
-                    f"field '{field_definition.name}' references node {value!r}, "
-                    f"which does not exist in workspace {node.workspace_id}"
-                )
-
     def capture(self, workspace_id: WorkspaceId, node_type_id: NodeTypeId, title: str) -> Node:
         """Global quick capture: a title is the only required input."""
         workspace = self._require_workspace(workspace_id)
@@ -121,7 +124,7 @@ class NodeService:
             )
         node = Node(workspace_id=workspace_id, node_type_id=node_type_id, title=title)
         node.validate_against(node_type)
-        self._validate_object_references(node, node_type)
+        _validate_object_references(self._nodes, node, node_type)
         self._nodes.save(node)
         return node
 
@@ -162,7 +165,7 @@ class NodeService:
             updated_at=datetime.now(UTC),
         )
         updated.validate_against(node_type)
-        self._validate_object_references(updated, node_type)
+        _validate_object_references(self._nodes, updated, node_type)
         self._nodes.save(updated)
         return updated
 
@@ -350,6 +353,11 @@ class SchemaService:
                 continue
             try:
                 node.validate_against(updated_node_type)
+                # Reuses the same repository-backed check `NodeService` runs on every direct
+                # write, so converting a field to `object_reference` (or narrowing one that
+                # already is) can't silently persist a value that no longer names a real,
+                # same-workspace node — the schema-edit path was the one place this was missing.
+                _validate_object_references(self._nodes, node, updated_node_type)
             except DomainError as error:
                 raise SchemaEditConflictError(
                     f"cannot apply schema change: node '{node.title}' ({node.id}) "
