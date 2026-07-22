@@ -85,6 +85,25 @@ function App() {
     })
   }, [])
 
+  // Undo (ST-07.3) can change any entity type unpredictably, so rather than guessing which
+  // slice of state to patch, this re-fetches the same node/edge/resource/placement data the
+  // initial bootstrap loads, keeping every view consistent with canonical state afterward.
+  const reloadGraphData = useCallback(async (workspaceId: string, canvasId: string | null) => {
+    const [nodesResponse, edgesResponse, resourcesResponse] = await Promise.all([
+      api.listNodes(workspaceId),
+      api.listEdges(workspaceId),
+      api.listResources(workspaceId),
+    ])
+    setNodes(nodesResponse)
+    setEdges(edgesResponse)
+    setResources(resourcesResponse)
+    if (canvasId) {
+      const placementsResponse = await api.listPlacements(canvasId)
+      placementsResponse.forEach(recordPersisted)
+      setPlacements(placementsResponse)
+    }
+  }, [recordPersisted])
+
   useEffect(() => {
     let cancelled = false
     async function bootstrap() {
@@ -694,6 +713,11 @@ function App() {
                   ? api.listActivityEvents(workspace.id, 50, cursor)
                   : Promise.resolve({ events: [], next_cursor: null })
               }
+              onUndo={async (eventId, reason) => {
+                if (!workspace) return
+                await api.undoActivityEvent(workspace.id, eventId, reason)
+                await reloadGraphData(workspace.id, activeCanvasId)
+              }}
             />
           </div>
         )}

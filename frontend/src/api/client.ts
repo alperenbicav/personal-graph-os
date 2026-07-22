@@ -407,6 +407,18 @@ export function getActivityEvent(workspaceId: string, eventId: string): Promise<
   return request(`/activity-events/${encodeURIComponent(eventId)}?${params.toString()}`)
 }
 
+export function undoActivityEvent(
+  workspaceId: string,
+  eventId: string,
+  reason: string,
+): Promise<ActivityEvent> {
+  const params = new URLSearchParams({ workspace_id: workspaceId })
+  return request(`/activity-events/${encodeURIComponent(eventId)}/undo?${params.toString()}`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  })
+}
+
 export function listSavedViews(workspaceId: string): Promise<SavedView[]> {
   return request(`/saved-views?workspace_id=${encodeURIComponent(workspaceId)}`)
 }

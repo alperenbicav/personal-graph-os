@@ -290,6 +290,10 @@ class DiscoveryApplyRequest(DiscoveryPreviewRequest):
     agent_identity: str = Field(min_length=1, max_length=_MAX_DISCOVERY_TITLE_LENGTH)
 
 
+class UndoActivityEventRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
+
+
 class ActivityEventPageResponse(BaseModel):
     events: list[ActivityEvent]
     next_cursor: str | None

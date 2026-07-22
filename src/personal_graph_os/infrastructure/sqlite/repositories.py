@@ -391,7 +391,10 @@ class SqliteEdgeRepository:
 
     def delete(self, edge_id: EdgeId) -> None:
         with self._connection:
-            self._connection.execute("DELETE FROM edges WHERE id = ?", (edge_id,))
+            self.delete_without_commit(edge_id)
+
+    def delete_without_commit(self, edge_id: EdgeId) -> None:
+        self._connection.execute("DELETE FROM edges WHERE id = ?", (edge_id,))
 
     def _hydrate(self, row: sqlite3.Row) -> Edge:
         return Edge(

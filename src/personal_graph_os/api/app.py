@@ -73,6 +73,7 @@ from personal_graph_os.application.services import (
     StatusDefinitionNotFoundError,
     WorkspaceNotFoundError,
 )
+from personal_graph_os.application.undo_service import UndoConflictError, UndoService
 from personal_graph_os.application.workflow_chain import (
     WorkflowChainService,
     WorkflowStepNodeTypeMissingError,
@@ -243,6 +244,16 @@ def create_app(
         lambda: SqliteResearchUnitOfWork(connection),
     )
     app.state.activity_service = ActivityService(activity_event_repository)
+    app.state.undo_service = UndoService(
+        activity_event_repository,
+        node_repository,
+        resource_repository,
+        edge_repository,
+        placement_repository,
+        saved_view_repository,
+        research_settings_repository,
+        lambda: SqliteResearchUnitOfWork(connection),
+    )
     app.state.context_pack_service = ContextPackService(
         workspace_repository,
         node_repository,
@@ -341,6 +352,7 @@ def create_app(
 
     app.add_exception_handler(UploadTooLargeError, _too_large)
     app.add_exception_handler(AttachmentContentCorruptedError, _conflict)
+    app.add_exception_handler(UndoConflictError, _conflict)
 
     for not_found_error_type in (
         WorkspaceNotFoundError,

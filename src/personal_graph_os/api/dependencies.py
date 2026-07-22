@@ -33,6 +33,7 @@ from personal_graph_os.application.services import (
     SavedViewService,
     SchemaService,
 )
+from personal_graph_os.application.undo_service import UndoService
 from personal_graph_os.application.workflow_chain import WorkflowChainService
 from personal_graph_os.domain.identifiers import CanvasId, WorkspaceId
 
@@ -123,6 +124,10 @@ def get_file_service(request: Request) -> FileService:
 
 def get_activity_service(request: Request) -> ActivityService:
     return request.app.state.activity_service
+
+
+def get_undo_service(request: Request) -> UndoService:
+    return request.app.state.undo_service
 
 
 def get_default_workspace_id(request: Request) -> WorkspaceId:
