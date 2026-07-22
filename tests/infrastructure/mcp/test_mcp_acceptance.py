@@ -31,6 +31,8 @@ class _RunningServer:
         self.url = f"http://127.0.0.1:{port}/mcp"
         self.token: str = app.state.api_token
         self.workspace_id: str = app.state.default_workspace_id
+        workspace = app.state.workspace_repository.get(self.workspace_id)
+        self.node_type_id: str = workspace.node_types[0].id
         config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
         self._server = uvicorn.Server(config)
         self._thread = threading.Thread(target=lambda: asyncio.run(self._server.serve()))
@@ -77,7 +79,7 @@ async def _list_tool_names(server: _RunningServer) -> list[str]:
         return [tool.name for tool in result.tools]
 
 
-def test_real_client_lists_all_read_tools(running_server: _RunningServer) -> None:
+def test_real_client_lists_all_tools(running_server: _RunningServer) -> None:
     names = asyncio.run(_list_tool_names(running_server))
 
     assert set(names) == {
@@ -89,6 +91,14 @@ def test_real_client_lists_all_read_tools(running_server: _RunningServer) -> Non
         "pgos_list_resources",
         "pgos_get_resource",
         "pgos_list_node_evidence",
+        "pgos_create_node",
+        "pgos_update_node",
+        "pgos_archive_node",
+        "pgos_connect_nodes",
+        "pgos_create_or_reuse_resource",
+        "pgos_update_resource",
+        "pgos_archive_resource",
+        "pgos_advance_workflow",
     }
 
 
@@ -132,6 +142,39 @@ def test_real_client_rejects_limit_above_input_schema_maximum(
     result = asyncio.run(_call_over_limit(running_server))
 
     assert result.isError is True
+
+
+async def _call_create_node_twice(
+    server: _RunningServer,
+) -> tuple[types.CallToolResult, types.CallToolResult]:
+    async with _session(server.url, server.token) as session:
+        arguments = {
+            "workspace_id": server.workspace_id,
+            "node_type_id": server.node_type_id,
+            "title": "Created via real MCP client",
+            "actor_name": "acceptance-test-agent",
+            "reason": "protocol acceptance",
+            "request_id": "acceptance-req-1",
+        }
+        first = await session.call_tool("pgos_create_node", arguments)
+        replay = await session.call_tool("pgos_create_node", arguments)
+        return first, replay
+
+
+def test_real_client_create_node_is_attributed_and_replay_safe(
+    running_server: _RunningServer,
+) -> None:
+    first, replay = asyncio.run(_call_create_node_twice(running_server))
+
+    assert first.isError is False
+    assert first.structuredContent is not None
+    assert first.structuredContent["replayed"] is False
+    created_node_id = first.structuredContent["node"]["id"]
+
+    assert replay.isError is False
+    assert replay.structuredContent is not None
+    assert replay.structuredContent["replayed"] is True
+    assert replay.structuredContent["node_id"] == created_node_id
 
 
 async def _initialize_with_wrong_token(server: _RunningServer) -> None:

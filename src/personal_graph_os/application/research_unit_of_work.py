@@ -10,6 +10,10 @@ written aggregate behind if a later step fails. A `ResearchUnitOfWork` is a narr
 exactly that: entered once per top-level operation, with `savepoint()` nesting a partial-failure
 boundary inside it so one invalid candidate in a batch does not roll back the candidates already
 applied.
+
+ST-06 reuses this same port for MCP mutations: an agent's write and its attributed
+`ActivityEvent` (`activity_events`) must commit or roll back together, so `AgentGatewayService`
+opens the identical unit of work rather than a second, parallel one.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from types import TracebackType
 from typing import Protocol
 
 from personal_graph_os.application.repositories import (
+    ActivityEventRepository,
     DiscoveryRunRepository,
     EdgeRepository,
     NodeRepository,
@@ -41,6 +46,9 @@ class ResearchUnitOfWork(Protocol):
 
     @property
     def discovery_runs(self) -> DiscoveryRunRepository: ...
+
+    @property
+    def activity_events(self) -> ActivityEventRepository: ...
 
     def __enter__(self) -> ResearchUnitOfWork: ...
 

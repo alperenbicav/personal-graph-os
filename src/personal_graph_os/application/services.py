@@ -178,6 +178,15 @@ class NodeService:
 
     def capture(self, workspace_id: WorkspaceId, node_type_id: NodeTypeId, title: str) -> Node:
         """Global quick capture: a title is the only required input."""
+        node, node_type = self._build_captured_node(workspace_id, node_type_id, title)
+        _validate_object_references(self._nodes, node, node_type)
+        self._nodes.save(node)
+        _index_node_text(self._search_index, node, node_type)
+        return node
+
+    def _build_captured_node(
+        self, workspace_id: WorkspaceId, node_type_id: NodeTypeId, title: str
+    ) -> tuple[Node, NodeType]:
         workspace = self._require_workspace(workspace_id)
         node_type = workspace.node_type_by_id(node_type_id)
         if node_type is None:
@@ -186,10 +195,30 @@ class NodeService:
             )
         node = Node(workspace_id=workspace_id, node_type_id=node_type_id, title=title)
         node.validate_against(node_type)
-        _validate_object_references(self._nodes, node, node_type)
-        self._nodes.save(node)
-        _index_node_text(self._search_index, node, node_type)
+        return node, node_type
+
+    def capture_within(
+        self,
+        unit_of_work: ResearchUnitOfWork,
+        workspace_id: WorkspaceId,
+        node_type_id: NodeTypeId,
+        title: str,
+    ) -> Node:
+        """Same validation/write as `capture`, into a caller-managed, already-open
+        `unit_of_work` instead of committing on its own. The caller must index the result
+        itself (`index_captured_node`) only after its own transaction has committed — see
+        `ResourceService.create_or_reuse_within` for why indexing here would be premature."""
+        node, node_type = self._build_captured_node(workspace_id, node_type_id, title)
+        _validate_object_references(unit_of_work.nodes, node, node_type)
+        unit_of_work.nodes.save_without_commit(node)
         return node
+
+    def index_captured_node(self, node: Node) -> None:
+        """Index `node` after a `*_within` write's transaction has committed."""
+        workspace = self._require_workspace(node.workspace_id)
+        node_type = workspace.node_type_by_id(node.node_type_id)
+        if node_type is not None:
+            _index_node_text(self._search_index, node, node_type)
 
     def update(
         self,
@@ -200,7 +229,54 @@ class NodeService:
         status_id: StatusDefinitionId | None = None,
         field_values: dict[str, object] | None = None,
     ) -> Node:
-        node = self._nodes.get(node_id)
+        updated, node_type = self._build_updated_node(
+            self._nodes,
+            node_id,
+            title=title,
+            body=body,
+            status_id=status_id,
+            field_values=field_values,
+        )
+        _validate_object_references(self._nodes, updated, node_type)
+        self._nodes.save(updated)
+        _index_node_text(self._search_index, updated, node_type)
+        return updated
+
+    def update_within(
+        self,
+        unit_of_work: ResearchUnitOfWork,
+        node_id: NodeId,
+        *,
+        title: str | None = None,
+        body: str | None = None,
+        status_id: StatusDefinitionId | None = None,
+        field_values: dict[str, object] | None = None,
+    ) -> Node:
+        """Same validation/write as `update`, into a caller-managed, already-open
+        `unit_of_work`. Index the result with `index_captured_node` after commit."""
+        updated, node_type = self._build_updated_node(
+            unit_of_work.nodes,
+            node_id,
+            title=title,
+            body=body,
+            status_id=status_id,
+            field_values=field_values,
+        )
+        _validate_object_references(unit_of_work.nodes, updated, node_type)
+        unit_of_work.nodes.save_without_commit(updated)
+        return updated
+
+    def _build_updated_node(
+        self,
+        nodes: NodeRepository,
+        node_id: NodeId,
+        *,
+        title: str | None,
+        body: str | None,
+        status_id: StatusDefinitionId | None,
+        field_values: dict[str, object] | None,
+    ) -> tuple[Node, NodeType]:
+        node = nodes.get(node_id)
         if node is None:
             raise NodeNotFoundError(f"node {node_id} does not exist")
         workspace = self._require_workspace(node.workspace_id)
@@ -228,16 +304,24 @@ class NodeService:
             updated_at=datetime.now(UTC),
         )
         updated.validate_against(node_type)
-        _validate_object_references(self._nodes, updated, node_type)
-        self._nodes.save(updated)
-        _index_node_text(self._search_index, updated, node_type)
-        return updated
+        return updated, node_type
 
     def archive(self, node_id: NodeId) -> Node:
-        node = self._nodes.get(node_id)
+        archived = self._build_archived_node(self._nodes, node_id)
+        self._nodes.save(archived)
+        return archived
+
+    def archive_within(self, unit_of_work: ResearchUnitOfWork, node_id: NodeId) -> Node:
+        """Same write as `archive`, into a caller-managed, already-open `unit_of_work`."""
+        archived = self._build_archived_node(unit_of_work.nodes, node_id)
+        unit_of_work.nodes.save_without_commit(archived)
+        return archived
+
+    def _build_archived_node(self, nodes: NodeRepository, node_id: NodeId) -> Node:
+        node = nodes.get(node_id)
         if node is None:
             raise NodeNotFoundError(f"node {node_id} does not exist")
-        archived = Node(
+        return Node(
             id=node.id,
             workspace_id=node.workspace_id,
             node_type_id=node.node_type_id,
@@ -249,8 +333,6 @@ class NodeService:
             created_at=node.created_at,
             updated_at=datetime.now(UTC),
         )
-        self._nodes.save(archived)
-        return archived
 
 
 class EdgeService:
@@ -270,6 +352,36 @@ class EdgeService:
         source_node_id: NodeId,
         target_node_id: NodeId,
     ) -> Edge:
+        edge = self._build_edge(
+            self._nodes, workspace_id, edge_type_id, source_node_id, target_node_id
+        )
+        self._edges.save(edge)
+        return edge
+
+    def connect_within(
+        self,
+        unit_of_work: ResearchUnitOfWork,
+        workspace_id: WorkspaceId,
+        edge_type_id: EdgeTypeId,
+        source_node_id: NodeId,
+        target_node_id: NodeId,
+    ) -> Edge:
+        """Same validation/write as `connect`, into a caller-managed, already-open
+        `unit_of_work` instead of committing on its own."""
+        edge = self._build_edge(
+            unit_of_work.nodes, workspace_id, edge_type_id, source_node_id, target_node_id
+        )
+        unit_of_work.edges.save_without_commit(edge)
+        return edge
+
+    def _build_edge(
+        self,
+        nodes: NodeRepository,
+        workspace_id: WorkspaceId,
+        edge_type_id: EdgeTypeId,
+        source_node_id: NodeId,
+        target_node_id: NodeId,
+    ) -> Edge:
         workspace = self._workspaces.get(workspace_id)
         if workspace is None:
             raise WorkspaceNotFoundError(f"workspace {workspace_id} does not exist")
@@ -278,20 +390,18 @@ class EdgeService:
                 f"workspace {workspace_id} has no edge type {edge_type_id}"
             )
         for node_id in (source_node_id, target_node_id):
-            node = self._nodes.get(node_id)
+            node = nodes.get(node_id)
             if node is None or node.workspace_id != workspace_id:
                 raise NodeNotFoundError(
                     f"node {node_id} does not exist in workspace {workspace_id}"
                 )
 
-        edge = Edge(
+        return Edge(
             workspace_id=workspace_id,
             edge_type_id=edge_type_id,
             source_node_id=source_node_id,
             target_node_id=target_node_id,
         )
-        self._edges.save(edge)
-        return edge
 
 
 class CanvasService:
@@ -977,7 +1087,90 @@ class ResourceService:
         """Update lifecycle/progress fields. `last_activity_at` advances only when the
         resulting state actually differs from the current one — a no-op call is not a
         "meaningful update" and leaves the resource, including its timestamp, untouched."""
-        existing = self._require_resource(resource_id)
+        updated = self._build_updated_resource(
+            self._resources,
+            resource_id,
+            lifecycle_status=lifecycle_status,
+            next_action=next_action,
+            clear_next_action=clear_next_action,
+            next_action_dismissed=next_action_dismissed,
+            open_questions=open_questions,
+            takeaways=takeaways,
+            progress_percent=progress_percent,
+            clear_progress_percent=clear_progress_percent,
+            review_at=review_at,
+            clear_review_at=clear_review_at,
+        )
+        self._resources.save(updated)
+        self._index_resource_text(updated)
+        return updated
+
+    def update_within(
+        self,
+        unit_of_work: ResearchUnitOfWork,
+        resource_id: ResourceId,
+        *,
+        lifecycle_status: ResourceLifecycleStatus | None = None,
+        next_action: str | None = None,
+        clear_next_action: bool = False,
+        next_action_dismissed: bool | None = None,
+        open_questions: tuple[str, ...] | None = None,
+        takeaways: tuple[str, ...] | None = None,
+        progress_percent: int | None = None,
+        clear_progress_percent: bool = False,
+        review_at: datetime | None = None,
+        clear_review_at: bool = False,
+    ) -> tuple[Resource, bool]:
+        """Same validation/write as `update`, into a caller-managed, already-open
+        `unit_of_work`. Returns `(resource, was_modified)`: a no-op call skips the write
+        entirely, so a caller recording an `ActivityEvent` for this mutation can skip that too
+        rather than inventing one for a call that changed nothing. Index the result with
+        `index_updated_resource` after commit, only when `was_modified` is true."""
+        existing = unit_of_work.resources.get(resource_id)
+        if existing is None:
+            raise ResourceNotFoundError(f"resource {resource_id} does not exist")
+        updated = self._build_updated_resource(
+            unit_of_work.resources,
+            resource_id,
+            lifecycle_status=lifecycle_status,
+            next_action=next_action,
+            clear_next_action=clear_next_action,
+            next_action_dismissed=next_action_dismissed,
+            open_questions=open_questions,
+            takeaways=takeaways,
+            progress_percent=progress_percent,
+            clear_progress_percent=clear_progress_percent,
+            review_at=review_at,
+            clear_review_at=clear_review_at,
+        )
+        was_modified = updated != existing
+        if was_modified:
+            unit_of_work.resources.save_without_commit(updated)
+        return updated, was_modified
+
+    def index_updated_resource(self, resource: Resource) -> None:
+        """Index `resource` after a `*_within` write's transaction has committed."""
+        self._index_resource_text(resource)
+
+    def _build_updated_resource(
+        self,
+        resources: ResourceRepository,
+        resource_id: ResourceId,
+        *,
+        lifecycle_status: ResourceLifecycleStatus | None,
+        next_action: str | None,
+        clear_next_action: bool,
+        next_action_dismissed: bool | None,
+        open_questions: tuple[str, ...] | None,
+        takeaways: tuple[str, ...] | None,
+        progress_percent: int | None,
+        clear_progress_percent: bool,
+        review_at: datetime | None,
+        clear_review_at: bool,
+    ) -> Resource:
+        existing = resources.get(resource_id)
+        if existing is None:
+            raise ResourceNotFoundError(f"resource {resource_id} does not exist")
         candidate = Resource(
             id=existing.id,
             workspace_id=existing.workspace_id,
@@ -1018,14 +1211,18 @@ class ResourceService:
         )
         if candidate == existing:
             return existing
-
-        updated = candidate.model_copy(update={"last_activity_at": datetime.now(UTC)})
-        self._resources.save(updated)
-        self._index_resource_text(updated)
-        return updated
+        return candidate.model_copy(update={"last_activity_at": datetime.now(UTC)})
 
     def archive(self, resource_id: ResourceId) -> Resource:
         return self.update(resource_id, lifecycle_status=ResourceLifecycleStatus.ARCHIVED)
+
+    def archive_within(
+        self, unit_of_work: ResearchUnitOfWork, resource_id: ResourceId
+    ) -> tuple[Resource, bool]:
+        """Same write as `archive`, into a caller-managed, already-open `unit_of_work`."""
+        return self.update_within(
+            unit_of_work, resource_id, lifecycle_status=ResourceLifecycleStatus.ARCHIVED
+        )
 
 
 class SavedViewService:

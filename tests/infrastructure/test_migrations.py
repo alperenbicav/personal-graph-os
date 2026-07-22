@@ -47,6 +47,7 @@ _ALL_MIGRATION_NAMES = (
     "0002_research_library.sql",
     "0003_resource_progress.sql",
     "0004_pending_file_operations.sql",
+    "0005_activity_event_request_id.sql",
 )
 
 
@@ -94,6 +95,7 @@ def test_upgrading_an_existing_0001_database_preserves_ids_and_data() -> None:
         "0002_research_library.sql",
         "0003_resource_progress.sql",
         "0004_pending_file_operations.sql",
+        "0005_activity_event_request_id.sql",
     )
 
     resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()

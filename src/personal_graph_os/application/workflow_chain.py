@@ -119,6 +119,28 @@ class WorkflowChainService:
 
         Exactly one of `title` (create) or `existing_target_node_id` (select) must be given.
         """
+        with self._unit_of_work_factory() as unit_of_work:
+            return self.advance_within(
+                unit_of_work,
+                workspace_id,
+                source_node_id,
+                step,
+                title=title,
+                existing_target_node_id=existing_target_node_id,
+            )
+
+    def advance_within(
+        self,
+        unit_of_work: ResearchUnitOfWork,
+        workspace_id: WorkspaceId,
+        source_node_id: NodeId,
+        step: WorkflowChainStep,
+        *,
+        title: str | None = None,
+        existing_target_node_id: NodeId | None = None,
+    ) -> tuple[Node, Edge]:
+        """Same validation/write as `advance`, into a caller-managed, already-open
+        `unit_of_work` instead of committing on its own."""
         definition = WORKFLOW_CHAIN_STEP_DEFINITIONS[step]
         workspace = self._require_workspace(workspace_id)
         source_node = self._require_node(source_node_id, workspace_id)
@@ -160,8 +182,7 @@ class WorkflowChainService:
             source_node_id=source_node.id,
             target_node_id=target_node.id,
         )
-        with self._unit_of_work_factory() as unit_of_work:
-            if is_new_target:
-                unit_of_work.nodes.save_without_commit(target_node)
-            unit_of_work.edges.save_without_commit(edge)
+        if is_new_target:
+            unit_of_work.nodes.save_without_commit(target_node)
+        unit_of_work.edges.save_without_commit(edge)
         return target_node, edge

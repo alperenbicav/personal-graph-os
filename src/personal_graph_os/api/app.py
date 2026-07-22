@@ -229,6 +229,11 @@ def create_app(
         resource_repository,
         app.state.search_service,
         app.state.file_service,
+        node_service=app.state.node_service,
+        edge_service=app.state.edge_service,
+        resource_service=app.state.resource_service,
+        workflow_chain_service=app.state.workflow_chain_service,
+        unit_of_work_factory=lambda: SqliteResearchUnitOfWork(connection),
     )
     mcp_asgi_app, mcp_session_manager = create_mcp_asgi_app(agent_gateway)
 

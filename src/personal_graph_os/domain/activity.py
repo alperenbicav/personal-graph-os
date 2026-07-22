@@ -51,6 +51,11 @@ class ActivityEvent(BaseModel):
     after_state: dict[str, object] | None = None
     is_undoable: bool = False
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # An MCP agent's per-call idempotency key (decision #14, `WORK.md`): `None` for a
+    # human/REST-originated event. When set, `(workspace_id, source, actor_name, request_id)`
+    # is unique, so an exact replay is detected before any mutation runs rather than creating a
+    # second event or entity.
+    request_id: str | None = None
 
     @field_validator("actor_name", "source", "entity_type", "entity_id")
     @classmethod
@@ -59,6 +64,16 @@ class ActivityEvent(BaseModel):
         stripped = value.strip()
         if not stripped:
             raise InvariantViolationError(f"ActivityEvent.{field_name} must not be empty")
+        return stripped
+
+    @field_validator("request_id")
+    @classmethod
+    def _validate_request_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        stripped = value.strip()
+        if not stripped:
+            raise InvariantViolationError("ActivityEvent.request_id must not be empty when set")
         return stripped
 
 

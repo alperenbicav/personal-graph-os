@@ -7,12 +7,14 @@ import pytest
 
 from personal_graph_os.application.file_service import FileService
 from personal_graph_os.application.search_service import SearchService
+from personal_graph_os.application.semantic_schema import ensure_semantic_schema
 from personal_graph_os.application.services import (
     EdgeService,
     NodeService,
     ResourceService,
     new_workspace,
 )
+from personal_graph_os.application.workflow_chain import WorkflowChainService
 from personal_graph_os.domain.identifiers import NodeId, ResourceId, WorkspaceId
 from personal_graph_os.domain.resource import ResourceKind
 from personal_graph_os.domain.schema import EdgeType, NodeType
@@ -39,8 +41,10 @@ def _fixture(sqlite_connection: sqlite3.Connection, tmp_path: Path):
     task_type = NodeType(name="Task")
     resource_type = NodeType(name="Resource", system_key="resource")
     edge_type = EdgeType(name="relates_to")
-    workspace = new_workspace("Personal").model_copy(
-        update={"node_types": (task_type, resource_type), "edge_types": (edge_type,)}
+    workspace = ensure_semantic_schema(
+        new_workspace("Personal").model_copy(
+            update={"node_types": (task_type, resource_type), "edge_types": (edge_type,)}
+        )
     )
     workspace_repository = SqliteWorkspaceRepository(sqlite_connection)
     workspace_repository.save(workspace)
@@ -73,6 +77,10 @@ def _fixture(sqlite_connection: sqlite3.Connection, tmp_path: Path):
         current_machine_name=lambda: "laptop",
     )
 
+    workflow_chain_service = WorkflowChainService(
+        workspace_repository, node_repository, lambda: SqliteResearchUnitOfWork(sqlite_connection)
+    )
+
     gateway = AgentGatewayService(
         workspace_repository,
         node_repository,
@@ -80,6 +88,11 @@ def _fixture(sqlite_connection: sqlite3.Connection, tmp_path: Path):
         resource_repository,
         search_service,
         file_service,
+        node_service=node_service,
+        edge_service=edge_service,
+        resource_service=resource_service,
+        workflow_chain_service=workflow_chain_service,
+        unit_of_work_factory=lambda: SqliteResearchUnitOfWork(sqlite_connection),
     )
     return {
         "gateway": gateway,
@@ -102,8 +115,8 @@ def test_get_workspace_returns_summary(
     workspace = ctx["gateway"].get_workspace(ctx["workspace_id"])
 
     assert workspace.name == "Personal"
-    assert workspace.node_type_count == 2
-    assert workspace.edge_type_count == 1
+    assert workspace.node_type_count >= 2
+    assert workspace.edge_type_count >= 1
 
 
 def test_get_workspace_raises_not_found_for_unknown_workspace(

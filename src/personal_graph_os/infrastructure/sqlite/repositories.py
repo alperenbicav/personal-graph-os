@@ -12,11 +12,18 @@ import sqlite3
 from datetime import UTC, datetime
 
 from personal_graph_os.application.file_storage import PendingFileOperation
-from personal_graph_os.domain.activity import DiscoveredCandidate, DiscoveryRun
+from personal_graph_os.domain.activity import (
+    ActivityEvent,
+    ActorKind,
+    DiscoveredCandidate,
+    DiscoveryRun,
+    MutationAction,
+)
 from personal_graph_os.domain.canvas import Canvas, CanvasPlacement
 from personal_graph_os.domain.files import Attachment, FileReference
 from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.identifiers import (
+    ActivityEventId,
     AttachmentId,
     CanvasId,
     CanvasPlacementId,
@@ -798,6 +805,78 @@ class SqlitePendingFileOperationRepository:
                 created_at=datetime.fromisoformat(row["created_at"]),
             )
             for row in rows
+        )
+
+
+class SqliteActivityEventRepository:
+    """Audit trail writes plus MCP replay lookup (decision #14, `WORK.md`)."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get_by_request(
+        self, workspace_id: WorkspaceId, source: str, actor_name: str, request_id: str
+    ) -> ActivityEvent | None:
+        row = self._connection.execute(
+            "SELECT * FROM activity_events "
+            "WHERE workspace_id = ? AND source = ? AND actor_name = ? AND request_id = ?",
+            (workspace_id, source, actor_name, request_id),
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def save(self, event: ActivityEvent) -> None:
+        with self._connection:
+            self.save_without_commit(event)
+
+    def save_without_commit(self, event: ActivityEvent) -> None:
+        self._connection.execute(
+            "INSERT INTO activity_events "
+            "(id, workspace_id, actor_kind, actor_name, source, entity_type, entity_id, action, "
+            " session_id, reason, before_state_json, after_state_json, is_undoable, occurred_at, "
+            " request_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                event.id,
+                event.workspace_id,
+                event.actor_kind.value,
+                event.actor_name,
+                event.source,
+                event.entity_type,
+                event.entity_id,
+                event.action.value,
+                event.session_id,
+                event.reason,
+                json.dumps(event.before_state) if event.before_state is not None else None,
+                json.dumps(event.after_state) if event.after_state is not None else None,
+                int(event.is_undoable),
+                event.occurred_at.isoformat(),
+                event.request_id,
+            ),
+        )
+
+    def _hydrate(self, row: sqlite3.Row) -> ActivityEvent:
+        return ActivityEvent(
+            id=ActivityEventId(row["id"]),
+            workspace_id=row["workspace_id"],
+            actor_kind=ActorKind(row["actor_kind"]),
+            actor_name=row["actor_name"],
+            source=row["source"],
+            entity_type=row["entity_type"],
+            entity_id=row["entity_id"],
+            action=MutationAction(row["action"]),
+            session_id=row["session_id"],
+            reason=row["reason"],
+            before_state=(
+                json.loads(row["before_state_json"])
+                if row["before_state_json"] is not None
+                else None
+            ),
+            after_state=(
+                json.loads(row["after_state_json"]) if row["after_state_json"] is not None else None
+            ),
+            is_undoable=bool(row["is_undoable"]),
+            occurred_at=datetime.fromisoformat(row["occurred_at"]),
+            request_id=row["request_id"],
         )
 
 

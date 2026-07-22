@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from personal_graph_os.domain.activity import DiscoveryRun
+from personal_graph_os.domain.activity import ActivityEvent, DiscoveryRun
 from personal_graph_os.domain.canvas import Canvas, CanvasPlacement
 from personal_graph_os.domain.files import Attachment, FileReference
 from personal_graph_os.domain.graph import Edge, Node
@@ -111,6 +111,14 @@ class FileReferenceRepository(Protocol):
 class ResearchSettingsRepository(Protocol):
     def get(self, workspace_id: WorkspaceId) -> WorkspaceResearchSettings | None: ...
     def save(self, settings: WorkspaceResearchSettings) -> None: ...
+
+
+class ActivityEventRepository(Protocol):
+    def get_by_request(
+        self, workspace_id: WorkspaceId, source: str, actor_name: str, request_id: str
+    ) -> ActivityEvent | None: ...
+    def save(self, event: ActivityEvent) -> None: ...
+    def save_without_commit(self, event: ActivityEvent) -> None: ...
 
 
 class SearchIndexRepository(Protocol):
