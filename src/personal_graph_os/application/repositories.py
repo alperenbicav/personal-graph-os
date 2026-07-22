@@ -10,12 +10,15 @@ from typing import Protocol
 
 from personal_graph_os.domain.activity import DiscoveryRun
 from personal_graph_os.domain.canvas import Canvas, CanvasPlacement
+from personal_graph_os.domain.files import Attachment, FileReference
 from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.identifiers import (
+    AttachmentId,
     CanvasId,
     CanvasPlacementId,
     DiscoveryRunId,
     EdgeId,
+    FileReferenceId,
     NodeId,
     ResourceId,
     SavedViewId,
@@ -89,6 +92,20 @@ class DiscoveryRunRepository(Protocol):
     def save(self, discovery_run: DiscoveryRun) -> None: ...
     def save_without_commit(self, discovery_run: DiscoveryRun) -> None: ...
     def list_by_workspace(self, workspace_id: WorkspaceId) -> tuple[DiscoveryRun, ...]: ...
+
+
+class AttachmentRepository(Protocol):
+    def get(self, attachment_id: AttachmentId) -> Attachment | None: ...
+    def list_by_node(self, node_id: NodeId) -> tuple[Attachment, ...]: ...
+    def save(self, attachment: Attachment) -> None: ...
+    def delete(self, attachment_id: AttachmentId) -> None: ...
+
+
+class FileReferenceRepository(Protocol):
+    def get(self, file_reference_id: FileReferenceId) -> FileReference | None: ...
+    def list_by_node(self, node_id: NodeId) -> tuple[FileReference, ...]: ...
+    def save(self, file_reference: FileReference) -> None: ...
+    def delete(self, file_reference_id: FileReferenceId) -> None: ...
 
 
 class ResearchSettingsRepository(Protocol):

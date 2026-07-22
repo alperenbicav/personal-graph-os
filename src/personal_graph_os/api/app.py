@@ -16,6 +16,7 @@ from personal_graph_os.api.routers import (
     canvases,
     discovery,
     edges,
+    files,
     nodes,
     placements,
     research,
@@ -33,6 +34,14 @@ from personal_graph_os.application.bootstrap import (
     get_or_create_default_workspace,
 )
 from personal_graph_os.application.discovery import DiscoveryService
+from personal_graph_os.application.file_service import (
+    AttachmentNotFoundError,
+    FileReferenceNotFoundError,
+    FileService,
+)
+from personal_graph_os.application.file_service import (
+    NodeNotFoundError as FileServiceNodeNotFoundError,
+)
 from personal_graph_os.application.projections import ProjectionService
 from personal_graph_os.application.research_dashboard import ResearchDashboardService
 from personal_graph_os.application.search_service import SearchService
@@ -59,14 +68,23 @@ from personal_graph_os.application.workflow_chain import (
     WorkflowChainService,
     WorkflowStepNodeTypeMissingError,
 )
-from personal_graph_os.domain.errors import DomainError
+from personal_graph_os.domain.errors import (
+    AttachmentContentCorruptedError,
+    AttachmentContentMissingError,
+    DomainError,
+    UploadTooLargeError,
+)
+from personal_graph_os.infrastructure.local_file_store import LocalManagedFileStore
 from personal_graph_os.infrastructure.sqlite.connection import open_connection
 from personal_graph_os.infrastructure.sqlite.migrations.runner import run_migrations
 from personal_graph_os.infrastructure.sqlite.repositories import (
+    SqliteAttachmentRepository,
     SqliteCanvasPlacementRepository,
     SqliteCanvasRepository,
     SqliteEdgeRepository,
+    SqliteFileReferenceRepository,
     SqliteNodeRepository,
+    SqlitePendingFileOperationRepository,
     SqliteResearchSettingsRepository,
     SqliteResourceRepository,
     SqliteSavedViewRepository,
@@ -79,6 +97,7 @@ from personal_graph_os.infrastructure.sqlite.research_unit_of_work import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DATABASE_PATH = _REPO_ROOT / "workspace" / "graph.db"
+MANAGED_FILES_DIR_NAME = "managed-files"
 
 _DEV_FRONTEND_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
@@ -99,9 +118,10 @@ def create_app(
 
     if database_path != ":memory:":
         Path(database_path).parent.mkdir(parents=True, exist_ok=True)
-        token_path = Path(database_path).parent / TOKEN_FILE_NAME
+        workspace_dir = Path(database_path).parent
     else:
-        token_path = DEFAULT_DATABASE_PATH.parent / TOKEN_FILE_NAME
+        workspace_dir = DEFAULT_DATABASE_PATH.parent
+    token_path = workspace_dir / TOKEN_FILE_NAME
     app.state.api_token = api_token or get_or_create_api_token(token_path)
 
     # A single connection is reused for the app's lifetime; endpoint functions run in a
@@ -120,6 +140,10 @@ def create_app(
     saved_view_repository = SqliteSavedViewRepository(connection)
     search_index_repository = SqliteSearchIndexRepository(connection)
     research_settings_repository = SqliteResearchSettingsRepository(connection)
+    attachment_repository = SqliteAttachmentRepository(connection)
+    file_reference_repository = SqliteFileReferenceRepository(connection)
+    pending_file_operation_repository = SqlitePendingFileOperationRepository(connection)
+    managed_file_store = LocalManagedFileStore(workspace_dir / MANAGED_FILES_DIR_NAME)
 
     default_workspace = get_or_create_default_workspace(workspace_repository)
     default_canvas = get_or_create_default_canvas(canvas_repository, default_workspace)
@@ -136,6 +160,14 @@ def create_app(
     app.state.resource_repository = resource_repository
     app.state.saved_view_repository = saved_view_repository
     app.state.search_index_repository = search_index_repository
+    app.state.file_service = FileService(
+        node_repository,
+        attachment_repository,
+        file_reference_repository,
+        managed_file_store,
+        pending_file_operation_repository,
+    )
+    app.state.file_service.reconcile_pending_operations()
     app.state.node_service = NodeService(
         workspace_repository, node_repository, search_index=search_index_repository
     )
@@ -198,12 +230,22 @@ def create_app(
     app.include_router(research.router, dependencies=auth_dependency)
     app.include_router(workflow_chain.router, dependencies=auth_dependency)
     app.include_router(discovery.router, dependencies=auth_dependency)
+    app.include_router(files.router, dependencies=auth_dependency)
 
     def _not_found(_request: Request, exc: Exception) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
     def _unprocessable(_request: Request, exc: Exception) -> JSONResponse:
         return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+    def _too_large(_request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=413, content={"detail": str(exc)})
+
+    def _conflict(_request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    app.add_exception_handler(UploadTooLargeError, _too_large)
+    app.add_exception_handler(AttachmentContentCorruptedError, _conflict)
 
     for not_found_error_type in (
         WorkspaceNotFoundError,
@@ -217,6 +259,10 @@ def create_app(
         ResourceNotFoundError,
         SavedViewNotFoundError,
         WorkflowStepNodeTypeMissingError,
+        FileServiceNodeNotFoundError,
+        AttachmentNotFoundError,
+        FileReferenceNotFoundError,
+        AttachmentContentMissingError,
     ):
         app.add_exception_handler(not_found_error_type, _not_found)
     app.add_exception_handler(DomainError, _unprocessable)

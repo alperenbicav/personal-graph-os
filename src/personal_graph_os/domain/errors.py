@@ -22,3 +22,16 @@ class FieldValueTypeError(DomainError):
 
 class SchemaEditConflictError(DomainError):
     """Raised when a schema edit or removal would invalidate existing node/edge data."""
+
+
+class UploadTooLargeError(DomainError):
+    """Raised when a streamed upload exceeds the managed store's configured size limit."""
+
+
+class AttachmentContentMissingError(DomainError):
+    """Raised when an `Attachment` row exists but its managed bytes are absent on disk."""
+
+
+class AttachmentContentCorruptedError(DomainError):
+    """Raised when an `Attachment`'s stored bytes no longer match its recorded size or
+    SHA-256 checksum: the file was replaced or damaged after it was finalized."""

@@ -9,20 +9,25 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime
 
+from personal_graph_os.application.file_storage import PendingFileOperation
 from personal_graph_os.domain.activity import DiscoveredCandidate, DiscoveryRun
 from personal_graph_os.domain.canvas import Canvas, CanvasPlacement
+from personal_graph_os.domain.files import Attachment, FileReference
 from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.identifiers import (
+    AttachmentId,
     CanvasId,
     CanvasPlacementId,
     DiscoveryRunId,
     EdgeId,
+    FileReferenceId,
     NodeId,
     ResourceId,
     SavedViewId,
     WorkspaceId,
+    new_id,
 )
 from personal_graph_os.domain.research_settings import WorkspaceResearchSettings
 from personal_graph_os.domain.resource import Resource, ResourceKind, ResourceLifecycleStatus
@@ -619,6 +624,180 @@ class SqliteSavedViewRepository:
             filter_definition=json.loads(row["filter_definition_json"]),
             sort_definition=json.loads(row["sort_definition_json"]),
             created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+
+class SqliteAttachmentRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(self, attachment_id: AttachmentId) -> Attachment | None:
+        row = self._connection.execute(
+            "SELECT * FROM attachments WHERE id = ?", (attachment_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def list_by_node(self, node_id: NodeId) -> tuple[Attachment, ...]:
+        rows = self._connection.execute(
+            "SELECT * FROM attachments WHERE node_id = ? ORDER BY created_at", (node_id,)
+        ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
+    def save(self, attachment: Attachment) -> None:
+        with self._connection:
+            self._connection.execute(
+                "INSERT INTO attachments "
+                "(id, node_id, file_name, mime_type, size_bytes, checksum_sha256, "
+                " storage_relative_path, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    attachment.id,
+                    attachment.node_id,
+                    attachment.file_name,
+                    attachment.mime_type,
+                    attachment.size_bytes,
+                    attachment.checksum_sha256,
+                    attachment.storage_relative_path,
+                    attachment.created_at.isoformat(),
+                ),
+            )
+
+    def delete(self, attachment_id: AttachmentId) -> None:
+        with self._connection:
+            self._connection.execute("DELETE FROM attachments WHERE id = ?", (attachment_id,))
+
+    @staticmethod
+    def _hydrate(row: sqlite3.Row) -> Attachment:
+        return Attachment(
+            id=AttachmentId(row["id"]),
+            node_id=NodeId(row["node_id"]),
+            file_name=row["file_name"],
+            mime_type=row["mime_type"],
+            size_bytes=row["size_bytes"],
+            checksum_sha256=row["checksum_sha256"],
+            storage_relative_path=row["storage_relative_path"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+
+class SqliteFileReferenceRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(self, file_reference_id: FileReferenceId) -> FileReference | None:
+        row = self._connection.execute(
+            "SELECT * FROM file_references WHERE id = ?", (file_reference_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def list_by_node(self, node_id: NodeId) -> tuple[FileReference, ...]:
+        rows = self._connection.execute(
+            "SELECT * FROM file_references WHERE node_id = ? ORDER BY rowid", (node_id,)
+        ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
+    def save(self, file_reference: FileReference) -> None:
+        with self._connection:
+            self._connection.execute(
+                "INSERT INTO file_references "
+                "(id, node_id, machine_name, relative_path, repository_name, absolute_path, "
+                " git_ref, last_verified_at, is_missing) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (id) DO UPDATE SET last_verified_at = excluded.last_verified_at, "
+                "is_missing = excluded.is_missing",
+                (
+                    file_reference.id,
+                    file_reference.node_id,
+                    file_reference.machine_name,
+                    file_reference.relative_path,
+                    file_reference.repository_name,
+                    file_reference.absolute_path,
+                    file_reference.git_ref,
+                    file_reference.last_verified_at.isoformat()
+                    if file_reference.last_verified_at
+                    else None,
+                    int(file_reference.is_missing),
+                ),
+            )
+
+    def delete(self, file_reference_id: FileReferenceId) -> None:
+        with self._connection:
+            self._connection.execute(
+                "DELETE FROM file_references WHERE id = ?", (file_reference_id,)
+            )
+
+    @staticmethod
+    def _hydrate(row: sqlite3.Row) -> FileReference:
+        last_verified_at = row["last_verified_at"]
+        return FileReference(
+            id=FileReferenceId(row["id"]),
+            node_id=NodeId(row["node_id"]),
+            machine_name=row["machine_name"],
+            relative_path=row["relative_path"],
+            repository_name=row["repository_name"],
+            absolute_path=row["absolute_path"],
+            git_ref=row["git_ref"],
+            last_verified_at=datetime.fromisoformat(last_verified_at) if last_verified_at else None,
+            is_missing=bool(row["is_missing"]),
+        )
+
+
+class SqlitePendingFileOperationRepository:
+    """Durable journal (ST05-F01) for a managed-file operation whose completion is not yet
+    certain: an upload's finalized file awaiting its row commit, or a delete's quarantined
+    file awaiting either restore (row delete failed) or purge (row delete succeeded)."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def record(
+        self,
+        *,
+        attachment_id: AttachmentId,
+        storage_relative_path: str,
+        quarantine_token: str | None,
+    ) -> PendingFileOperation:
+        entry = PendingFileOperation(
+            id=new_id(),
+            attachment_id=attachment_id,
+            storage_relative_path=storage_relative_path,
+            quarantine_token=quarantine_token,
+            created_at=datetime.now(UTC),
+        )
+        with self._connection:
+            self._connection.execute(
+                "INSERT INTO pending_file_operations "
+                "(id, attachment_id, storage_relative_path, quarantine_token, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    entry.id,
+                    entry.attachment_id,
+                    entry.storage_relative_path,
+                    entry.quarantine_token,
+                    entry.created_at.isoformat(),
+                ),
+            )
+        return entry
+
+    def remove(self, entry_id: str) -> None:
+        with self._connection:
+            self._connection.execute(
+                "DELETE FROM pending_file_operations WHERE id = ?", (entry_id,)
+            )
+
+    def list_all(self) -> tuple[PendingFileOperation, ...]:
+        rows = self._connection.execute(
+            "SELECT * FROM pending_file_operations ORDER BY created_at"
+        ).fetchall()
+        return tuple(
+            PendingFileOperation(
+                id=row["id"],
+                attachment_id=AttachmentId(row["attachment_id"]),
+                storage_relative_path=row["storage_relative_path"],
+                quarantine_token=row["quarantine_token"],
+                created_at=datetime.fromisoformat(row["created_at"]),
+            )
+            for row in rows
         )
 
 

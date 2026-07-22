@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import UTC, datetime
+
+import pytest
 
 from personal_graph_os.domain.activity import DiscoveredCandidate, DiscoveryOutcome, DiscoveryRun
 from personal_graph_os.domain.canvas import Canvas, CanvasPlacement
+from personal_graph_os.domain.files import Attachment, FileReference
 from personal_graph_os.domain.graph import Edge, Node
-from personal_graph_os.domain.identifiers import NodeId, ResourceId, WorkspaceId
+from personal_graph_os.domain.identifiers import (
+    AttachmentId,
+    NodeId,
+    ResourceId,
+    WorkspaceId,
+    new_id,
+)
 from personal_graph_os.domain.research_settings import WorkspaceResearchSettings
 from personal_graph_os.domain.resource import Resource, ResourceKind, ResourceLifecycleStatus
 from personal_graph_os.domain.schema import (
@@ -18,11 +28,14 @@ from personal_graph_os.domain.schema import (
 )
 from personal_graph_os.domain.views import SavedView, ViewKind
 from personal_graph_os.infrastructure.sqlite.repositories import (
+    SqliteAttachmentRepository,
     SqliteCanvasPlacementRepository,
     SqliteCanvasRepository,
     SqliteDiscoveryRunRepository,
     SqliteEdgeRepository,
+    SqliteFileReferenceRepository,
     SqliteNodeRepository,
+    SqlitePendingFileOperationRepository,
     SqliteResearchSettingsRepository,
     SqliteResourceRepository,
     SqliteSavedViewRepository,
@@ -375,3 +388,124 @@ def test_research_settings_defaults_and_round_trips(
     final = repository.get(workspace.id)
     assert final is not None
     assert final.stale_after_days == 7
+
+
+def _node_in_a_fresh_workspace(sqlite_connection: sqlite3.Connection) -> Node:
+    node_type = NodeType(name="Task")
+    workspace = Workspace(name="Personal", node_types=(node_type,))
+    SqliteWorkspaceRepository(sqlite_connection).save(workspace)
+    node = Node(workspace_id=workspace.id, node_type_id=node_type.id, title="Task 1")
+    SqliteNodeRepository(sqlite_connection).save(node)
+    return node
+
+
+def test_attachment_round_trips_and_deletes(sqlite_connection: sqlite3.Connection) -> None:
+    node = _node_in_a_fresh_workspace(sqlite_connection)
+    attachment = Attachment(
+        node_id=node.id,
+        file_name="notes.pdf",
+        mime_type="application/pdf",
+        size_bytes=1024,
+        checksum_sha256="a" * 64,
+        storage_relative_path="attachment-1",
+    )
+    repository = SqliteAttachmentRepository(sqlite_connection)
+
+    repository.save(attachment)
+    reloaded = repository.get(attachment.id)
+
+    assert reloaded == attachment
+    assert repository.list_by_node(node.id) == (attachment,)
+
+    repository.delete(attachment.id)
+    assert repository.get(attachment.id) is None
+    assert repository.list_by_node(node.id) == ()
+
+
+def test_attachment_save_rejects_an_unknown_node(sqlite_connection: sqlite3.Connection) -> None:
+    attachment = Attachment(
+        node_id=NodeId(new_id()),
+        file_name="notes.pdf",
+        mime_type="application/pdf",
+        size_bytes=1024,
+        checksum_sha256="a" * 64,
+        storage_relative_path="attachment-1",
+    )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        SqliteAttachmentRepository(sqlite_connection).save(attachment)
+
+
+def test_file_reference_round_trips_and_updates_verification_state(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    node = _node_in_a_fresh_workspace(sqlite_connection)
+    reference = FileReference(
+        node_id=node.id,
+        machine_name="laptop",
+        relative_path="repo/README.md",
+        repository_name="apilex-agent",
+        absolute_path="/Users/alice/repo/README.md",
+    )
+    repository = SqliteFileReferenceRepository(sqlite_connection)
+
+    repository.save(reference)
+    reloaded = repository.get(reference.id)
+
+    assert reloaded is not None
+    assert reloaded.is_missing is False
+    assert reloaded.last_verified_at is None
+    assert repository.list_by_node(node.id) == (reloaded,)
+
+    verified = reference.model_copy(
+        update={"is_missing": True, "last_verified_at": datetime.now(UTC)}
+    )
+    repository.save(verified)
+    reverified = repository.get(reference.id)
+
+    assert reverified is not None
+    assert reverified.is_missing is True
+    assert reverified.last_verified_at is not None
+
+    repository.delete(reference.id)
+    assert repository.get(reference.id) is None
+
+
+def test_file_reference_save_rejects_an_unknown_node(sqlite_connection: sqlite3.Connection) -> None:
+    reference = FileReference(
+        node_id=NodeId(new_id()), machine_name="laptop", relative_path="repo/README.md"
+    )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        SqliteFileReferenceRepository(sqlite_connection).save(reference)
+
+
+def test_pending_file_operation_records_and_removes(sqlite_connection: sqlite3.Connection) -> None:
+    repository = SqlitePendingFileOperationRepository(sqlite_connection)
+
+    entry = repository.record(
+        attachment_id=AttachmentId(new_id()),
+        storage_relative_path="attachment-1",
+        quarantine_token=None,
+    )
+
+    assert repository.list_all() == (entry,)
+
+    repository.remove(entry.id)
+    assert repository.list_all() == ()
+
+
+def test_pending_file_operation_records_a_quarantine_token(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    repository = SqlitePendingFileOperationRepository(sqlite_connection)
+
+    entry = repository.record(
+        attachment_id=AttachmentId(new_id()),
+        storage_relative_path="attachment-1",
+        quarantine_token="trash-token-1",
+    )
+
+    (reloaded,) = repository.list_all()
+    assert reloaded.quarantine_token == "trash-token-1"
+    assert reloaded.id == entry.id

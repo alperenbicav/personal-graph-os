@@ -66,6 +66,14 @@ class UpdatePlacementRequest(BaseModel):
     is_collapsed: bool | None = None
 
 
+class CreateFileReferenceRequest(BaseModel):
+    machine_name: str
+    relative_path: str
+    repository_name: str | None = None
+    absolute_path: str | None = None
+    git_ref: str | None = None
+
+
 class CreateNodeTypeRequest(BaseModel):
     workspace_id: str
     name: str

@@ -1,4 +1,5 @@
 import type {
+  Attachment,
   Canvas,
   CanvasPlacement,
   DiscoveryCandidateInput,
@@ -7,6 +8,7 @@ import type {
   EdgeType,
   FieldDefinition,
   FieldType,
+  FileReference,
   GraphEdge,
   GraphNode,
   NodeType,
@@ -495,5 +497,89 @@ export function applyDiscovery(
       instruction,
       candidates,
     }),
+  })
+}
+
+function authHeaders(): HeadersInit {
+  return API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}
+}
+
+async function throwIfNotOk(response: Response): Promise<void> {
+  if (response.ok) return
+  const body = await response.json().catch(() => ({ detail: response.statusText }))
+  throw new ApiError(response.status, body.detail ?? response.statusText)
+}
+
+export function listAttachments(nodeId: string): Promise<Attachment[]> {
+  return request(`/nodes/${encodeURIComponent(nodeId)}/attachments`)
+}
+
+// Bypasses `request()`: a multipart body must let the browser set its own
+// `Content-Type` boundary, which `request()`'s fixed JSON header would override.
+export async function uploadAttachment(nodeId: string, file: File): Promise<Attachment> {
+  const formData = new FormData()
+  formData.append('file', file)
+  const response = await fetch(`${BASE_URL}/nodes/${encodeURIComponent(nodeId)}/attachments`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: formData,
+  })
+  await throwIfNotOk(response)
+  return (await response.json()) as Attachment
+}
+
+// Bypasses `request()`: the response body is binary, not JSON, and a browser download
+// needs the bearer token attached via `fetch` since a plain `<a href>` cannot set headers.
+export async function downloadAttachment(attachmentId: string, fileName: string): Promise<void> {
+  const response = await fetch(
+    `${BASE_URL}/attachments/${encodeURIComponent(attachmentId)}/download`,
+    { headers: authHeaders() },
+  )
+  await throwIfNotOk(response)
+  const blob = await response.blob()
+  const objectUrl = URL.createObjectURL(blob)
+  try {
+    const anchor = document.createElement('a')
+    anchor.href = objectUrl
+    anchor.download = fileName
+    anchor.click()
+  } finally {
+    URL.revokeObjectURL(objectUrl)
+  }
+}
+
+export function deleteAttachment(attachmentId: string): Promise<void> {
+  return request(`/attachments/${encodeURIComponent(attachmentId)}`, { method: 'DELETE' })
+}
+
+export function listFileReferences(nodeId: string): Promise<FileReference[]> {
+  return request(`/nodes/${encodeURIComponent(nodeId)}/file-references`)
+}
+
+export interface CreateFileReferenceInput {
+  machine_name: string
+  relative_path: string
+  repository_name?: string | null
+  absolute_path?: string | null
+  git_ref?: string | null
+}
+
+export function createFileReference(
+  nodeId: string,
+  input: CreateFileReferenceInput,
+): Promise<FileReference> {
+  return request(`/nodes/${encodeURIComponent(nodeId)}/file-references`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function deleteFileReference(fileReferenceId: string): Promise<void> {
+  return request(`/file-references/${encodeURIComponent(fileReferenceId)}`, { method: 'DELETE' })
+}
+
+export function verifyFileReference(fileReferenceId: string): Promise<FileReference> {
+  return request(`/file-references/${encodeURIComponent(fileReferenceId)}/verify`, {
+    method: 'POST',
   })
 }

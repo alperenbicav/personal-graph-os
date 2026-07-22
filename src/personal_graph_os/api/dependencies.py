@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import Request
 
 from personal_graph_os.application.discovery import DiscoveryService
+from personal_graph_os.application.file_service import FileService
 from personal_graph_os.application.projections import ProjectionService
 from personal_graph_os.application.repositories import (
     CanvasPlacementRepository,
@@ -113,6 +114,10 @@ def get_workflow_chain_service(request: Request) -> WorkflowChainService:
 
 def get_discovery_service(request: Request) -> DiscoveryService:
     return request.app.state.discovery_service
+
+
+def get_file_service(request: Request) -> FileService:
+    return request.app.state.file_service
 
 
 def get_default_workspace_id(request: Request) -> WorkspaceId:

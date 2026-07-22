@@ -89,6 +89,8 @@ beforeEach(() => {
   mockedApi.listEdges.mockResolvedValue([])
   mockedApi.listCanvases.mockResolvedValue([canvasA, canvasB])
   mockedApi.listResources.mockResolvedValue([])
+  mockedApi.listAttachments.mockResolvedValue([])
+  mockedApi.listFileReferences.mockResolvedValue([])
 })
 
 afterEach(() => {

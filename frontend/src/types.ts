@@ -261,3 +261,26 @@ export interface DiscoveryRun {
   started_at: string
   completed_at: string | null
 }
+
+export interface Attachment {
+  id: string
+  node_id: string
+  file_name: string
+  mime_type: string
+  size_bytes: number
+  checksum_sha256: string
+  storage_relative_path: string
+  created_at: string
+}
+
+export interface FileReference {
+  id: string
+  node_id: string
+  machine_name: string
+  relative_path: string
+  repository_name: string | null
+  absolute_path: string | null
+  git_ref: string | null
+  last_verified_at: string | null
+  is_missing: boolean
+}

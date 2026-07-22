@@ -106,6 +106,8 @@ beforeEach(() => {
   mockedApi.listNodes.mockResolvedValue([])
   mockedApi.listPlacements.mockResolvedValue([])
   mockedApi.listResources.mockResolvedValue([])
+  mockedApi.listAttachments.mockResolvedValue([])
+  mockedApi.listFileReferences.mockResolvedValue([])
 })
 
 afterEach(() => {

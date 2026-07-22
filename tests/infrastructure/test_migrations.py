@@ -30,6 +30,7 @@ _EXPECTED_TABLES = {
     "resources",
     "workspace_research_settings",
     "search_documents",
+    "pending_file_operations",
 }
 
 
@@ -45,6 +46,7 @@ _ALL_MIGRATION_NAMES = (
     "0001_initial_schema.sql",
     "0002_research_library.sql",
     "0003_resource_progress.sql",
+    "0004_pending_file_operations.sql",
 )
 
 
@@ -88,7 +90,11 @@ def test_upgrading_an_existing_0001_database_preserves_ids_and_data() -> None:
     connection.commit()
 
     newly_applied = run_migrations(connection)
-    assert newly_applied == ("0002_research_library.sql", "0003_resource_progress.sql")
+    assert newly_applied == (
+        "0002_research_library.sql",
+        "0003_resource_progress.sql",
+        "0004_pending_file_operations.sql",
+    )
 
     resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()
     assert resource_row["node_id"] == "node-1"

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { FieldDefinition, GraphNode, NodeType, StatusDefinition } from '../types'
+import { FilesPanel } from './FilesPanel'
 
 export interface RelationRow {
   edgeTypeName: string
@@ -253,6 +254,10 @@ export function Inspector({
           />
         </div>
       ))}
+
+      <div className="divider" />
+
+      <FilesPanel nodeId={node.id} />
 
       <div className="divider" />
 
