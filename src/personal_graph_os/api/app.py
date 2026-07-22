@@ -248,7 +248,7 @@ def create_app(
         context_pack_service=app.state.context_pack_service,
         unit_of_work_factory=lambda: SqliteResearchUnitOfWork(connection),
     )
-    mcp_asgi_app, mcp_session_manager = create_mcp_asgi_app(agent_gateway)
+    mcp_asgi_app, mcp_session_manager, app.state.mcp_telemetry = create_mcp_asgi_app(agent_gateway)
 
     @asynccontextmanager
     async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:

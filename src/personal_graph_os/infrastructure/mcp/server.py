@@ -45,6 +45,7 @@ from personal_graph_os.infrastructure.mcp.gateway import (
     GatewayNotFoundError,
     GatewayValidationError,
 )
+from personal_graph_os.infrastructure.mcp.telemetry import OperationCounters, record_operation
 
 _CONTEXT_PACK_URI_PREFIX = "pgos://context-packs/"
 
@@ -825,9 +826,12 @@ _HANDLERS: dict[str, _ToolHandler] = {
 }
 
 
-def build_mcp_server(gateway: AgentGatewayService) -> Server:
+def build_mcp_server(
+    gateway: AgentGatewayService, telemetry: OperationCounters | None = None
+) -> Server:
     """Build the low-level MCP `Server`, wired to `gateway` and nothing else."""
     server: Server = Server(SERVER_NAME)
+    counters = telemetry if telemetry is not None else OperationCounters()
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
@@ -835,13 +839,16 @@ def build_mcp_server(gateway: AgentGatewayService) -> Server:
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict[str, object]) -> dict[str, object]:
-        handler = _HANDLERS.get(name)
-        if handler is None:
-            raise ValueError(f"Unknown tool: {name}")
-        try:
-            return handler(gateway, arguments)
-        except (GatewayNotFoundError, GatewayValidationError, GatewayConflictError) as error:
-            raise ValueError(str(error)) from error
+        async def run() -> dict[str, object]:
+            handler = _HANDLERS.get(name)
+            if handler is None:
+                raise ValueError(f"Unknown tool: {name}")
+            try:
+                return handler(gateway, arguments)
+            except (GatewayNotFoundError, GatewayValidationError, GatewayConflictError) as error:
+                raise ValueError(str(error)) from error
+
+        return await record_operation(counters, "tool", name, run)
 
     @server.list_resource_templates()
     async def list_resource_templates() -> list[ResourceTemplate]:
@@ -859,20 +866,23 @@ def build_mcp_server(gateway: AgentGatewayService) -> Server:
 
     @server.read_resource()
     async def read_resource(uri: AnyUrl) -> list[ReadResourceContents]:
-        uri_text = str(uri)
-        if not uri_text.startswith(_CONTEXT_PACK_URI_PREFIX):
-            raise ValueError(f"Unknown resource: {uri_text}")
-        context_pack_id = ContextPackId(uri_text[len(_CONTEXT_PACK_URI_PREFIX) :])
-        try:
-            materialization = gateway.materialize_context_pack(context_pack_id)
-        except GatewayNotFoundError as error:
-            raise ValueError(str(error)) from error
-        return [
-            ReadResourceContents(
-                content=json.dumps(materialization.model_dump(mode="json")),
-                mime_type="application/json",
-            )
-        ]
+        async def run() -> list[ReadResourceContents]:
+            uri_text = str(uri)
+            if not uri_text.startswith(_CONTEXT_PACK_URI_PREFIX):
+                raise ValueError(f"Unknown resource: {uri_text}")
+            context_pack_id = ContextPackId(uri_text[len(_CONTEXT_PACK_URI_PREFIX) :])
+            try:
+                materialization = gateway.materialize_context_pack(context_pack_id)
+            except GatewayNotFoundError as error:
+                raise ValueError(str(error)) from error
+            return [
+                ReadResourceContents(
+                    content=json.dumps(materialization.model_dump(mode="json")),
+                    mime_type="application/json",
+                )
+            ]
+
+        return await record_operation(counters, "resource", "context-pack", run)
 
     return server
 
@@ -889,16 +899,23 @@ class _StreamableHTTPASGIApp:
 
 def create_mcp_asgi_app(
     gateway: AgentGatewayService,
-) -> tuple[Callable[[Scope, Receive, Send], Awaitable[None]], StreamableHTTPSessionManager]:
-    """Return the raw (unauthenticated) MCP ASGI app plus its session manager.
+) -> tuple[
+    Callable[[Scope, Receive, Send], Awaitable[None]],
+    StreamableHTTPSessionManager,
+    OperationCounters,
+]:
+    """Return the raw (unauthenticated) MCP ASGI app, its session manager, and its telemetry
+    counters (06.5, `WORK.md`) — operation/tool/result/duration/count only, never arguments,
+    content, actor, paths, or raw exceptions.
 
     The caller (`api/app.py`) is responsible for wrapping the returned app with the bearer
     auth middleware and running the session manager's lifespan for the process lifetime;
     this module has no FastAPI/auth knowledge.
     """
-    server = build_mcp_server(gateway)
+    telemetry = OperationCounters()
+    server = build_mcp_server(gateway, telemetry)
     session_manager = StreamableHTTPSessionManager(app=server, stateless=True)
-    return _StreamableHTTPASGIApp(session_manager), session_manager
+    return _StreamableHTTPASGIApp(session_manager), session_manager, telemetry
 
 
 __all__ = ["build_mcp_server", "create_mcp_asgi_app", "TextContent", "json"]
