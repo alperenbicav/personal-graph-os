@@ -46,7 +46,12 @@ def _fixture(sqlite_connection: sqlite3.Connection):
     resource_repository = SqliteResourceRepository(sqlite_connection)
     search_index = SqliteSearchIndexRepository(sqlite_connection)
 
-    node_service = NodeService(workspace_repository, node_repository, search_index=search_index)
+    node_service = NodeService(
+        workspace_repository,
+        node_repository,
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
+        search_index=search_index,
+    )
     resource_service = ResourceService(
         workspace_repository,
         resource_repository,
@@ -213,6 +218,7 @@ def _schema_service(sqlite_connection: sqlite3.Connection) -> SchemaService:
         SqliteWorkspaceRepository(sqlite_connection),
         SqliteNodeRepository(sqlite_connection),
         SqliteEdgeRepository(sqlite_connection),
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
         search_index=SqliteSearchIndexRepository(sqlite_connection),
     )
 

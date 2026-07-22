@@ -183,19 +183,33 @@ def create_app(
         file_reference_repository,
         managed_file_store,
         pending_file_operation_repository,
+        lambda: SqliteResearchUnitOfWork(connection),
     )
     app.state.file_service.reconcile_pending_operations()
     app.state.node_service = NodeService(
-        workspace_repository, node_repository, search_index=search_index_repository
+        workspace_repository,
+        node_repository,
+        lambda: SqliteResearchUnitOfWork(connection),
+        search_index=search_index_repository,
     )
-    app.state.edge_service = EdgeService(workspace_repository, node_repository, edge_repository)
+    app.state.edge_service = EdgeService(
+        workspace_repository,
+        node_repository,
+        edge_repository,
+        lambda: SqliteResearchUnitOfWork(connection),
+    )
     app.state.canvas_service = CanvasService(
-        workspace_repository, node_repository, canvas_repository, placement_repository
+        workspace_repository,
+        node_repository,
+        canvas_repository,
+        placement_repository,
+        lambda: SqliteResearchUnitOfWork(connection),
     )
     app.state.schema_service = SchemaService(
         workspace_repository,
         node_repository,
         edge_repository,
+        lambda: SqliteResearchUnitOfWork(connection),
         search_index=search_index_repository,
     )
     app.state.resource_service = ResourceService(
@@ -204,7 +218,9 @@ def create_app(
         lambda: SqliteResearchUnitOfWork(connection),
         search_index=search_index_repository,
     )
-    app.state.saved_view_service = SavedViewService(workspace_repository, saved_view_repository)
+    app.state.saved_view_service = SavedViewService(
+        workspace_repository, saved_view_repository, lambda: SqliteResearchUnitOfWork(connection)
+    )
     app.state.projection_service = ProjectionService(node_repository, resource_repository)
     app.state.search_service = SearchService(
         node_repository, resource_repository, search_index_repository
@@ -213,7 +229,9 @@ def create_app(
         workspace_repository, resource_repository, edge_repository, research_settings_repository
     )
     app.state.research_settings_service = ResearchSettingsService(
-        workspace_repository, research_settings_repository
+        workspace_repository,
+        research_settings_repository,
+        lambda: SqliteResearchUnitOfWork(connection),
     )
     app.state.workflow_chain_service = WorkflowChainService(
         workspace_repository, node_repository, lambda: SqliteResearchUnitOfWork(connection)

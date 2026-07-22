@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO
 
+from personal_graph_os.application.activity_recording import MutationContext, record_activity_event
 from personal_graph_os.application.file_storage import (
     ManagedFileStore,
     PendingFileOperationRepository,
@@ -24,6 +25,8 @@ from personal_graph_os.application.repositories import (
     FileReferenceRepository,
     NodeRepository,
 )
+from personal_graph_os.application.research_unit_of_work import ResearchUnitOfWork
+from personal_graph_os.domain.activity import MutationAction
 from personal_graph_os.domain.errors import DomainError, UnknownSchemaReferenceError
 from personal_graph_os.domain.files import Attachment, FileReference
 from personal_graph_os.domain.graph import Node
@@ -66,6 +69,37 @@ class FileReferenceNotFoundError(UnknownSchemaReferenceError):
     """Raised when an operation references a file reference that does not exist."""
 
 
+def _attachment_snapshot(attachment: Attachment) -> dict[str, object]:
+    """A redacted `ActivityEvent` snapshot: never the managed `storage_relative_path`
+    (ST-07.2 plan slice 2 -- files exclude bytes/tokens/managed or absolute paths)."""
+    return {
+        "id": attachment.id,
+        "node_id": attachment.node_id,
+        "file_name": attachment.file_name,
+        "mime_type": attachment.mime_type,
+        "size_bytes": attachment.size_bytes,
+        "checksum_sha256": attachment.checksum_sha256,
+    }
+
+
+def _file_reference_snapshot(file_reference: FileReference) -> dict[str, object]:
+    """A redacted `ActivityEvent` snapshot: never `absolute_path` (ST-07.2 plan slice 2)."""
+    return {
+        "id": file_reference.id,
+        "node_id": file_reference.node_id,
+        "machine_name": file_reference.machine_name,
+        "relative_path": file_reference.relative_path,
+        "repository_name": file_reference.repository_name,
+        "git_ref": file_reference.git_ref,
+        "is_missing": file_reference.is_missing,
+        "last_verified_at": (
+            file_reference.last_verified_at.isoformat()
+            if file_reference.last_verified_at is not None
+            else None
+        ),
+    }
+
+
 class UnverifiableFileReferenceError(DomainError):
     """Raised when verification is requested for a reference with no `absolute_path`, or one
     recorded for a different machine than the one performing the check (decision #9: only an
@@ -80,6 +114,7 @@ class FileService:
         file_references: FileReferenceRepository,
         store: ManagedFileStore,
         pending_operations: PendingFileOperationRepository,
+        unit_of_work_factory: Callable[[], ResearchUnitOfWork],
         *,
         max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
         current_machine_name: Callable[[], str] = socket.gethostname,
@@ -89,6 +124,7 @@ class FileService:
         self._file_references = file_references
         self._store = store
         self._pending_operations = pending_operations
+        self._unit_of_work_factory = unit_of_work_factory
         self._max_upload_bytes = max_upload_bytes
         self._current_machine_name = current_machine_name
 
@@ -127,7 +163,7 @@ class FileService:
     def upload_attachment(
         self, node_id: NodeId, *, file_name: str, mime_type: str, chunks: Iterable[bytes]
     ) -> Attachment:
-        self._require_node(node_id)
+        node = self._require_node(node_id)
         # Validate client metadata against the exact domain invariants before any store I/O:
         # an invalid file_name/mime_type must never finalize bytes it would then have to
         # compensate for (ST05-F01). `id`/size/checksum/path are placeholders re-validated
@@ -179,13 +215,25 @@ class FileService:
                 checksum_sha256=uploaded.checksum_sha256,
                 storage_relative_path=storage_relative_path,
             )
-            self._attachments.save(attachment)
+            with self._unit_of_work_factory() as unit_of_work:
+                self._attachments.save_without_commit(attachment)
+                record_activity_event(
+                    unit_of_work,
+                    workspace_id=node.workspace_id,
+                    context=MutationContext.rest(),
+                    entity_type="attachment",
+                    entity_id=attachment.id,
+                    action=MutationAction.CREATED,
+                    after_state=_attachment_snapshot(attachment),
+                )
         except BaseException as error:
-            # Compensate: the row was never committed, so the finalized file would
-            # otherwise be an orphan with nothing referencing it. If the compensation delete
-            # itself fails, the original error is what the caller must see — it is the actual
-            # cause — with the compensation failure attached as context, not swallowed. The
-            # journal entry is left in place so reconciliation can finish the cleanup later.
+            # Compensate: the row (and its event) were never committed, so the finalized file
+            # would otherwise be an orphan with nothing referencing it -- an event-commit
+            # failure is compensated exactly like a row-write failure (ST-07.2 plan slice 2).
+            # If the compensation delete itself fails, the original error is what the caller
+            # must see — it is the actual cause — with the compensation failure attached as
+            # context, not swallowed. The journal entry is left in place so reconciliation can
+            # finish the cleanup later.
             try:
                 self._store.delete(storage_relative_path)
             except BaseException as compensation_error:
@@ -226,6 +274,7 @@ class FileService:
         silently accepted orphan (ST05-F01).
         """
         attachment = self._require_attachment(attachment_id)
+        node = self._require_node(attachment.node_id)
         try:
             quarantine_token = self._store.quarantine(attachment.storage_relative_path)
         except BaseException as error:
@@ -239,7 +288,17 @@ class FileService:
         )
 
         try:
-            self._attachments.delete(attachment_id)
+            with self._unit_of_work_factory() as unit_of_work:
+                self._attachments.delete_without_commit(attachment_id)
+                record_activity_event(
+                    unit_of_work,
+                    workspace_id=node.workspace_id,
+                    context=MutationContext.rest(),
+                    entity_type="attachment",
+                    entity_id=attachment_id,
+                    action=MutationAction.DELETED,
+                    before_state=_attachment_snapshot(attachment),
+                )
         except BaseException as error:
             try:
                 self._store.restore(quarantine_token, attachment.storage_relative_path)
@@ -305,7 +364,7 @@ class FileService:
         absolute_path: str | None = None,
         git_ref: str | None = None,
     ) -> FileReference:
-        self._require_node(node_id)
+        node = self._require_node(node_id)
         reference = FileReference(
             node_id=node_id,
             machine_name=machine_name,
@@ -314,12 +373,33 @@ class FileService:
             absolute_path=absolute_path,
             git_ref=git_ref,
         )
-        self._file_references.save(reference)
+        with self._unit_of_work_factory() as unit_of_work:
+            self._file_references.save_without_commit(reference)
+            record_activity_event(
+                unit_of_work,
+                workspace_id=node.workspace_id,
+                context=MutationContext.rest(),
+                entity_type="file_reference",
+                entity_id=reference.id,
+                action=MutationAction.CREATED,
+                after_state=_file_reference_snapshot(reference),
+            )
         return reference
 
     def delete_file_reference(self, file_reference_id: FileReferenceId) -> None:
-        self._require_file_reference(file_reference_id)
-        self._file_references.delete(file_reference_id)
+        reference = self._require_file_reference(file_reference_id)
+        node = self._require_node(reference.node_id)
+        with self._unit_of_work_factory() as unit_of_work:
+            self._file_references.delete_without_commit(file_reference_id)
+            record_activity_event(
+                unit_of_work,
+                workspace_id=node.workspace_id,
+                context=MutationContext.rest(),
+                entity_type="file_reference",
+                entity_id=file_reference_id,
+                action=MutationAction.DELETED,
+                before_state=_file_reference_snapshot(reference),
+            )
 
     def verify_file_reference(self, file_reference_id: FileReferenceId) -> FileReference:
         """Check the reference's `absolute_path` on this machine and record the result.
@@ -351,7 +431,19 @@ class FileService:
             verified = reference.model_copy(
                 update={"is_missing": not present, "last_verified_at": datetime.now(UTC)}
             )
-            self._file_references.save(verified)
+            node = self._require_node(reference.node_id)
+            with self._unit_of_work_factory() as unit_of_work:
+                self._file_references.save_without_commit(verified)
+                record_activity_event(
+                    unit_of_work,
+                    workspace_id=node.workspace_id,
+                    context=MutationContext.rest(),
+                    entity_type="file_reference",
+                    entity_id=verified.id,
+                    action=MutationAction.UPDATED,
+                    before_state=_file_reference_snapshot(reference),
+                    after_state=_file_reference_snapshot(verified),
+                )
         except BaseException as error:
             _log_file_operation("verify_reference", "failure", error=error)
             raise

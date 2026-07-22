@@ -104,3 +104,84 @@ def test_get_activity_event_404s_for_cross_workspace_id(app: FastAPI, client: Te
     response = client.get(f"/activity-events/{event.id}?workspace_id=some-other-workspace")
 
     assert response.status_code == 404
+
+
+def _task_type_id(client: TestClient) -> str:
+    workspace = client.get("/workspace").json()
+    return next(nt for nt in workspace["node_types"] if nt["name"] == "Task")["id"]
+
+
+def test_creating_a_node_over_rest_atomically_records_exactly_one_activity_event(
+    client: TestClient,
+) -> None:
+    workspace_id = _workspace_id(client)
+    task_type_id = _task_type_id(client)
+
+    created = client.post(
+        "/nodes", json={"workspace_id": workspace_id, "node_type_id": task_type_id, "title": "x"}
+    ).json()
+
+    page = client.get(f"/activity-events?workspace_id={workspace_id}").json()
+    matching = [event for event in page["events"] if event["entity_id"] == created["id"]]
+    assert len(matching) == 1
+    event = matching[0]
+    assert event["entity_type"] == "node"
+    assert event["action"] == "created"
+    assert event["source"] == "rest"
+    assert event["actor_name"] == "human/local-user/rest"
+    assert event["is_undoable"] is True
+
+    detail = client.get(f"/activity-events/{event['id']}?workspace_id={workspace_id}").json()
+    assert detail["before_state"] is None
+    assert detail["after_state"]["title"] == "x"
+
+
+def test_updating_a_node_over_rest_records_before_and_after_state(client: TestClient) -> None:
+    workspace_id = _workspace_id(client)
+    task_type_id = _task_type_id(client)
+    created = client.post(
+        "/nodes",
+        json={"workspace_id": workspace_id, "node_type_id": task_type_id, "title": "before"},
+    ).json()
+
+    client.patch(f"/nodes/{created['id']}", json={"title": "after"})
+
+    page = client.get(f"/activity-events?workspace_id={workspace_id}").json()
+    updated_events = [
+        event
+        for event in page["events"]
+        if event["entity_id"] == created["id"] and event["action"] == "updated"
+    ]
+    assert len(updated_events) == 1
+    detail = client.get(
+        f"/activity-events/{updated_events[0]['id']}?workspace_id={workspace_id}"
+    ).json()
+    assert detail["before_state"]["title"] == "before"
+    assert detail["after_state"]["title"] == "after"
+
+
+def test_a_no_op_resource_update_over_rest_never_invents_an_activity_event(
+    client: TestClient,
+) -> None:
+    workspace_id = _workspace_id(client)
+    resource = client.post(
+        "/resources",
+        json={
+            "workspace_id": workspace_id,
+            "title": "A paper",
+            "raw_source": "https://example.com/paper-noop",
+        },
+    ).json()
+    # Same lifecycle_status as the resource already has -- a genuine no-op.
+    client.patch(
+        f"/resources/{resource['id']}",
+        json={"lifecycle_status": resource["lifecycle_status"]},
+    )
+
+    page_after = client.get(f"/activity-events?workspace_id={workspace_id}").json()
+    updated_events = [
+        event
+        for event in page_after["events"]
+        if event["entity_id"] == resource["id"] and event["action"] == "updated"
+    ]
+    assert updated_events == []

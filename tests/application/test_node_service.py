@@ -17,6 +17,7 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteNodeRepository,
     SqliteWorkspaceRepository,
 )
+from personal_graph_os.infrastructure.sqlite.research_unit_of_work import SqliteResearchUnitOfWork
 
 
 def _node_service(
@@ -34,7 +35,11 @@ def _node_service(
     workspace = new_workspace("Personal").model_copy(update={"node_types": (task_type,)})
     workspace_repository = SqliteWorkspaceRepository(sqlite_connection)
     workspace_repository.save(workspace)
-    node_service = NodeService(workspace_repository, SqliteNodeRepository(sqlite_connection))
+    node_service = NodeService(
+        workspace_repository,
+        SqliteNodeRepository(sqlite_connection),
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
+    )
     return node_service, task_type, workspace.id
 
 
@@ -134,7 +139,11 @@ def _node_service_with_object_reference_field(
     workspace = new_workspace("Personal").model_copy(update={"node_types": (task_type,)})
     workspace_repository = SqliteWorkspaceRepository(sqlite_connection)
     workspace_repository.save(workspace)
-    node_service = NodeService(workspace_repository, SqliteNodeRepository(sqlite_connection))
+    node_service = NodeService(
+        workspace_repository,
+        SqliteNodeRepository(sqlite_connection),
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
+    )
     return node_service, task_type, workspace.id
 
 

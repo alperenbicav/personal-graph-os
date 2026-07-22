@@ -24,12 +24,19 @@ from typing import Protocol
 
 from personal_graph_os.application.repositories import (
     ActivityEventRepository,
+    AttachmentRepository,
+    CanvasPlacementRepository,
+    CanvasRepository,
     ContextPackRepository,
     DiscoveryRunRepository,
     EdgeRepository,
+    FileReferenceRepository,
     IdempotencyReceiptRepository,
     NodeRepository,
+    ResearchSettingsRepository,
     ResourceRepository,
+    SavedViewRepository,
+    WorkspaceRepository,
 )
 
 
@@ -38,6 +45,9 @@ class ResearchUnitOfWork(Protocol):
     # would reject any concrete repository implementation that is merely structurally
     # compatible rather than the exact same class; a property is covariant instead.
     @property
+    def workspaces(self) -> WorkspaceRepository: ...
+
+    @property
     def nodes(self) -> NodeRepository: ...
 
     @property
@@ -45,6 +55,24 @@ class ResearchUnitOfWork(Protocol):
 
     @property
     def edges(self) -> EdgeRepository: ...
+
+    @property
+    def canvases(self) -> CanvasRepository: ...
+
+    @property
+    def placements(self) -> CanvasPlacementRepository: ...
+
+    @property
+    def saved_views(self) -> SavedViewRepository: ...
+
+    @property
+    def research_settings(self) -> ResearchSettingsRepository: ...
+
+    @property
+    def attachments(self) -> AttachmentRepository: ...
+
+    @property
+    def file_references(self) -> FileReferenceRepository: ...
 
     @property
     def discovery_runs(self) -> DiscoveryRunRepository: ...

@@ -57,15 +57,24 @@ def _fixture(sqlite_connection: sqlite3.Connection, tmp_path: Path):
     context_pack_repository = SqliteContextPackRepository(sqlite_connection)
 
     node_service = NodeService(
-        workspace_repository, node_repository, search_index=search_index_repository
+        workspace_repository,
+        node_repository,
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
+        search_index=search_index_repository,
     )
-    edge_service = EdgeService(workspace_repository, node_repository, edge_repository)
+    edge_service = EdgeService(
+        workspace_repository,
+        node_repository,
+        edge_repository,
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
+    )
     file_service = FileService(
         node_repository,
         attachment_repository,
         file_reference_repository,
         LocalManagedFileStore(tmp_path / "managed-root"),
         pending_file_operation_repository,
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
         current_machine_name=lambda: "laptop",
     )
 
@@ -486,6 +495,7 @@ def test_materialize_estimated_tokens_is_deterministic_across_a_fresh_service_in
             SqliteFileReferenceRepository(sqlite_connection),
             LocalManagedFileStore(tmp_path / "managed-root"),
             SqlitePendingFileOperationRepository(sqlite_connection),
+            lambda: SqliteResearchUnitOfWork(sqlite_connection),
             current_machine_name=lambda: "laptop",
         ),
         SqliteContextPackRepository(sqlite_connection),

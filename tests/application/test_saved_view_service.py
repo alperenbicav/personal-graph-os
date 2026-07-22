@@ -23,6 +23,7 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteSavedViewRepository,
     SqliteWorkspaceRepository,
 )
+from personal_graph_os.infrastructure.sqlite.research_unit_of_work import SqliteResearchUnitOfWork
 
 
 def _saved_view_service(
@@ -32,7 +33,9 @@ def _saved_view_service(
     workspace_repository = SqliteWorkspaceRepository(sqlite_connection)
     workspace_repository.save(workspace)
     saved_view_service = SavedViewService(
-        workspace_repository, SqliteSavedViewRepository(sqlite_connection)
+        workspace_repository,
+        SqliteSavedViewRepository(sqlite_connection),
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
     )
     return saved_view_service, workspace.id
 

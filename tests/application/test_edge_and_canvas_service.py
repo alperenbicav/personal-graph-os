@@ -29,6 +29,7 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteNodeRepository,
     SqliteWorkspaceRepository,
 )
+from personal_graph_os.infrastructure.sqlite.research_unit_of_work import SqliteResearchUnitOfWork
 
 
 def _services(sqlite_connection: sqlite3.Connection):
@@ -41,15 +42,21 @@ def _services(sqlite_connection: sqlite3.Connection):
     workspace_repository.save(workspace)
 
     node_repository = SqliteNodeRepository(sqlite_connection)
-    node_service = NodeService(workspace_repository, node_repository)
+    node_service = NodeService(
+        workspace_repository, node_repository, lambda: SqliteResearchUnitOfWork(sqlite_connection)
+    )
     edge_service = EdgeService(
-        workspace_repository, node_repository, SqliteEdgeRepository(sqlite_connection)
+        workspace_repository,
+        node_repository,
+        SqliteEdgeRepository(sqlite_connection),
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
     )
     canvas_service = CanvasService(
         workspace_repository,
         node_repository,
         SqliteCanvasRepository(sqlite_connection),
         SqliteCanvasPlacementRepository(sqlite_connection),
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
     )
     return node_service, edge_service, canvas_service, task_type, edge_type, workspace.id
 

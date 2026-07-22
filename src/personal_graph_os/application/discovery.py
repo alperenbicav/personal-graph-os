@@ -14,10 +14,16 @@ from enum import StrEnum
 
 from pydantic import BaseModel
 
+from personal_graph_os.application.activity_recording import MutationContext, record_activity_event
 from personal_graph_os.application.repositories import ResourceRepository, WorkspaceRepository
 from personal_graph_os.application.research_unit_of_work import ResearchUnitOfWork
 from personal_graph_os.application.services import ResourceService, WorkspaceNotFoundError
-from personal_graph_os.domain.activity import DiscoveredCandidate, DiscoveryOutcome, DiscoveryRun
+from personal_graph_os.domain.activity import (
+    DiscoveredCandidate,
+    DiscoveryOutcome,
+    DiscoveryRun,
+    MutationAction,
+)
 from personal_graph_os.domain.errors import DomainError
 from personal_graph_os.domain.graph import Node
 from personal_graph_os.domain.identifiers import ResourceId, WorkspaceId
@@ -180,6 +186,16 @@ class DiscoveryService:
                 candidates,
                 sources_searched=sources_searched,
                 filters_interpreted=filters_interpreted,
+            )
+            # One logical event per batch (ST-07.2, decision #6/#8 `WORK.md`), matching MCP's
+            # `apply_import`; discovery/import stays non-undoable (ST-07.3 allowlist).
+            record_activity_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                context=MutationContext.rest(),
+                entity_type="discovery_run",
+                entity_id=run.id,
+                action=MutationAction.CREATED,
             )
         for resource, node in newly_created:
             self._resource_service.index_created_resource(resource, node)

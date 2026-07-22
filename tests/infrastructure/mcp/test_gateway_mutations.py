@@ -63,9 +63,17 @@ def _build_gateway(sqlite_connection: sqlite3.Connection, tmp_path: Path):
     pending_file_operation_repository = SqlitePendingFileOperationRepository(sqlite_connection)
 
     node_service = NodeService(
-        workspace_repository, node_repository, search_index=search_index_repository
+        workspace_repository,
+        node_repository,
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
+        search_index=search_index_repository,
     )
-    edge_service = EdgeService(workspace_repository, node_repository, edge_repository)
+    edge_service = EdgeService(
+        workspace_repository,
+        node_repository,
+        edge_repository,
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
+    )
     resource_service = ResourceService(
         workspace_repository,
         resource_repository,
@@ -79,6 +87,7 @@ def _build_gateway(sqlite_connection: sqlite3.Connection, tmp_path: Path):
         file_reference_repository,
         LocalManagedFileStore(tmp_path / "managed-root"),
         pending_file_operation_repository,
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
         current_machine_name=lambda: "laptop",
     )
     workflow_chain_service = WorkflowChainService(

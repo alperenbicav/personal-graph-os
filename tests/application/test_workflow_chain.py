@@ -25,7 +25,9 @@ def _fixture(sqlite_connection: sqlite3.Connection):
     workspace_repository = SqliteWorkspaceRepository(sqlite_connection)
     workspace_repository.save(workspace)
     node_repository = SqliteNodeRepository(sqlite_connection)
-    node_service = NodeService(workspace_repository, node_repository)
+    node_service = NodeService(
+        workspace_repository, node_repository, lambda: SqliteResearchUnitOfWork(sqlite_connection)
+    )
     workflow_chain_service = WorkflowChainService(
         workspace_repository, node_repository, lambda: SqliteResearchUnitOfWork(sqlite_connection)
     )
@@ -63,7 +65,9 @@ def test_advance_connects_to_an_existing_node_instead_of_creating_one(
     takeaway_type = workspace.node_type_by_system_key("takeaway")
     assert takeaway_type is not None
     existing_takeaway = NodeService(
-        SqliteWorkspaceRepository(sqlite_connection), node_repository
+        SqliteWorkspaceRepository(sqlite_connection),
+        node_repository,
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
     ).capture(workspace.id, takeaway_type.id, "Existing takeaway")
 
     target_node, edge = workflow_chain_service.advance(
@@ -98,7 +102,9 @@ def test_advance_rejects_an_existing_target_node_of_the_wrong_role(
     resource_type = workspace.node_type_by_system_key("resource")
     assert resource_type is not None
     other_resource = NodeService(
-        SqliteWorkspaceRepository(sqlite_connection), _node_repository
+        SqliteWorkspaceRepository(sqlite_connection),
+        _node_repository,
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
     ).capture(workspace.id, resource_type.id, "Another resource")
 
     with pytest.raises(WorkflowStepMismatchError):

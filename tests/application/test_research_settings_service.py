@@ -14,6 +14,7 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteResearchSettingsRepository,
     SqliteWorkspaceRepository,
 )
+from personal_graph_os.infrastructure.sqlite.research_unit_of_work import SqliteResearchUnitOfWork
 
 
 def _service(sqlite_connection: sqlite3.Connection) -> tuple[ResearchSettingsService, WorkspaceId]:
@@ -21,7 +22,9 @@ def _service(sqlite_connection: sqlite3.Connection) -> tuple[ResearchSettingsSer
     workspace_repository = SqliteWorkspaceRepository(sqlite_connection)
     workspace_repository.save(workspace)
     service = ResearchSettingsService(
-        workspace_repository, SqliteResearchSettingsRepository(sqlite_connection)
+        workspace_repository,
+        SqliteResearchSettingsRepository(sqlite_connection),
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
     )
     return service, workspace.id
 

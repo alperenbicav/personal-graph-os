@@ -25,6 +25,7 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqlitePendingFileOperationRepository,
     SqliteWorkspaceRepository,
 )
+from personal_graph_os.infrastructure.sqlite.research_unit_of_work import SqliteResearchUnitOfWork
 
 
 def _service_with_node(
@@ -42,6 +43,7 @@ def _service_with_node(
         SqliteFileReferenceRepository(sqlite_connection),
         LocalManagedFileStore(tmp_path / "managed-root"),
         SqlitePendingFileOperationRepository(sqlite_connection),
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
         max_upload_bytes=1024,
         current_machine_name=lambda: "laptop",
     )
@@ -260,11 +262,20 @@ class _AttachmentRepositoryDeleteFailsOnce:
     def save(self, attachment):
         self._wrapped.save(attachment)
 
+    def save_without_commit(self, attachment):
+        self._wrapped.save_without_commit(attachment)
+
     def delete(self, attachment_id):
         self.delete_calls += 1
         if self.delete_calls == 1:
             raise sqlite3.OperationalError("simulated repository failure")
         self._wrapped.delete(attachment_id)
+
+    def delete_without_commit(self, attachment_id):
+        self.delete_calls += 1
+        if self.delete_calls == 1:
+            raise sqlite3.OperationalError("simulated repository failure")
+        self._wrapped.delete_without_commit(attachment_id)
 
 
 def test_delete_attachment_restores_bytes_when_the_repository_delete_fails(
@@ -279,6 +290,7 @@ def test_delete_attachment_restores_bytes_when_the_repository_delete_fails(
         SqliteFileReferenceRepository(sqlite_connection),
         LocalManagedFileStore(tmp_path / "managed-root"),
         SqlitePendingFileOperationRepository(sqlite_connection),
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
         current_machine_name=lambda: "laptop",
     )
     node_type = NodeType(name="Task")
@@ -317,7 +329,13 @@ class _AttachmentRepositoryDeleteAlwaysFails:
     def save(self, attachment):
         self._wrapped.save(attachment)
 
+    def save_without_commit(self, attachment):
+        self._wrapped.save_without_commit(attachment)
+
     def delete(self, attachment_id):
+        raise sqlite3.OperationalError("simulated repository delete failure")
+
+    def delete_without_commit(self, attachment_id):
         raise sqlite3.OperationalError("simulated repository delete failure")
 
 
@@ -370,6 +388,7 @@ def test_delete_attachment_journals_and_recovers_when_both_the_repository_delete
         SqliteFileReferenceRepository(sqlite_connection),
         _StoreRestoreAlwaysFails(real_store),
         pending_operations,
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
         current_machine_name=lambda: "laptop",
     )
     node_type = NodeType(name="Task")
@@ -398,6 +417,7 @@ def test_delete_attachment_journals_and_recovers_when_both_the_repository_delete
         SqliteFileReferenceRepository(sqlite_connection),
         real_store,
         pending_operations,
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
         current_machine_name=lambda: "laptop",
     )
     recovering_service.reconcile_pending_operations()
@@ -426,8 +446,14 @@ class _AttachmentRepositorySaveAlwaysFails:
     def save(self, attachment):
         raise sqlite3.OperationalError("simulated repository save failure")
 
+    def save_without_commit(self, attachment):
+        raise sqlite3.OperationalError("simulated repository save failure")
+
     def delete(self, attachment_id):
         self._wrapped.delete(attachment_id)
+
+    def delete_without_commit(self, attachment_id):
+        self._wrapped.delete_without_commit(attachment_id)
 
 
 class _StoreDeleteAlwaysFails:
@@ -479,6 +505,7 @@ def test_upload_attachment_preserves_the_error_and_journals_the_orphan_when_comp
         SqliteFileReferenceRepository(sqlite_connection),
         _StoreDeleteAlwaysFails(real_store),
         pending_operations,
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
         current_machine_name=lambda: "laptop",
     )
     node_type = NodeType(name="Task")
@@ -506,6 +533,7 @@ def test_upload_attachment_preserves_the_error_and_journals_the_orphan_when_comp
         SqliteFileReferenceRepository(sqlite_connection),
         real_store,
         pending_operations,
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
         current_machine_name=lambda: "laptop",
     )
     recovering_service.reconcile_pending_operations()
@@ -571,6 +599,7 @@ def test_delete_attachment_succeeds_even_when_purging_the_quarantined_file_fails
         SqliteFileReferenceRepository(sqlite_connection),
         flaky_store,
         pending_operations,
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
         current_machine_name=lambda: "laptop",
     )
     node_type = NodeType(name="Task")
@@ -598,6 +627,7 @@ def test_delete_attachment_succeeds_even_when_purging_the_quarantined_file_fails
         SqliteFileReferenceRepository(sqlite_connection),
         real_store,
         pending_operations,
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
         current_machine_name=lambda: "laptop",
     )
     recovering_service.reconcile_pending_operations()
