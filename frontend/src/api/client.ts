@@ -66,6 +66,18 @@ export function getWorkspace(): Promise<Workspace> {
   return request('/workspace')
 }
 
+export async function exportWorkspace(workspaceId: string): Promise<Blob> {
+  const params = new URLSearchParams({ workspace_id: workspaceId })
+  const response = await fetch(`${BASE_URL}/export?${params.toString()}`, {
+    headers: API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {},
+  })
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ detail: response.statusText }))
+    throw new ApiError(response.status, body.detail ?? response.statusText)
+  }
+  return response.blob()
+}
+
 export function listNodes(workspaceId: string): Promise<GraphNode[]> {
   return request(`/nodes?workspace_id=${encodeURIComponent(workspaceId)}`)
 }

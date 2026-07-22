@@ -20,6 +20,7 @@ from personal_graph_os.api.routers import (
     canvases,
     discovery,
     edges,
+    export,
     files,
     nodes,
     placements,
@@ -43,6 +44,7 @@ from personal_graph_os.application.bootstrap import (
 )
 from personal_graph_os.application.context_pack_service import ContextPackService
 from personal_graph_os.application.discovery import DiscoveryService
+from personal_graph_os.application.export_service import ExportService
 from personal_graph_os.application.file_service import (
     AttachmentNotFoundError,
     FileReferenceNotFoundError,
@@ -96,6 +98,7 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteCanvasPlacementRepository,
     SqliteCanvasRepository,
     SqliteContextPackRepository,
+    SqliteDiscoveryRunRepository,
     SqliteEdgeRepository,
     SqliteFileReferenceRepository,
     SqliteNodeRepository,
@@ -113,6 +116,7 @@ from personal_graph_os.infrastructure.sqlite.research_unit_of_work import (
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DATABASE_PATH = _REPO_ROOT / "workspace" / "graph.db"
 MANAGED_FILES_DIR_NAME = "managed-files"
+EXPORT_TEMP_DIR_NAME = ".export-tmp"
 
 _DEV_FRONTEND_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
@@ -153,6 +157,7 @@ def create_app(
     placement_repository = SqliteCanvasPlacementRepository(connection)
     resource_repository = SqliteResourceRepository(connection)
     context_pack_repository = SqliteContextPackRepository(connection)
+    discovery_run_repository = SqliteDiscoveryRunRepository(connection)
     saved_view_repository = SqliteSavedViewRepository(connection)
     search_index_repository = SqliteSearchIndexRepository(connection)
     research_settings_repository = SqliteResearchSettingsRepository(connection)
@@ -254,6 +259,30 @@ def create_app(
         research_settings_repository,
         lambda: SqliteResearchUnitOfWork(connection),
     )
+
+    def _list_activity_events_page(workspace_id, limit, cursor):
+        page = app.state.activity_service.list_workspace_events(
+            workspace_id, limit=limit, cursor=cursor
+        )
+        return list(page.events), page.next_cursor
+
+    app.state.export_service = ExportService(
+        workspace_repository,
+        node_repository,
+        edge_repository,
+        canvas_repository,
+        placement_repository,
+        resource_repository,
+        saved_view_repository,
+        context_pack_repository,
+        research_settings_repository,
+        discovery_run_repository,
+        attachment_repository,
+        file_reference_repository,
+        app.state.file_service,
+        _list_activity_events_page,
+        workspace_dir / EXPORT_TEMP_DIR_NAME,
+    )
     app.state.context_pack_service = ContextPackService(
         workspace_repository,
         node_repository,
@@ -337,6 +366,7 @@ def create_app(
     app.include_router(discovery.router, dependencies=auth_dependency)
     app.include_router(files.router, dependencies=auth_dependency)
     app.include_router(activity.router, dependencies=auth_dependency)
+    app.include_router(export.router, dependencies=auth_dependency)
 
     def _not_found(_request: Request, exc: Exception) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})

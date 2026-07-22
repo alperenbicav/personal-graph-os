@@ -559,6 +559,16 @@ function App() {
         onCapture={handleCapture}
         isCapturing={isCapturing}
         onOpenSchemaEditor={() => setIsSchemaEditorOpen(true)}
+        onExportWorkspace={async () => {
+          if (!workspace) return
+          const blob = await api.exportWorkspace(workspace.id)
+          const url = URL.createObjectURL(blob)
+          const link = document.createElement('a')
+          link.href = url
+          link.download = `${workspace.id}.pgos-export.zip`
+          link.click()
+          URL.revokeObjectURL(url)
+        }}
       />
 
       {actionError && (

@@ -6,11 +6,32 @@ interface TopBarProps {
   onCapture: (nodeTypeId: string, title: string) => void
   isCapturing: boolean
   onOpenSchemaEditor: () => void
+  onExportWorkspace: () => Promise<void>
 }
 
-export function TopBar({ captureNodeTypes, onCapture, isCapturing, onOpenSchemaEditor }: TopBarProps) {
+export function TopBar({
+  captureNodeTypes,
+  onCapture,
+  isCapturing,
+  onOpenSchemaEditor,
+  onExportWorkspace,
+}: TopBarProps) {
   const [nodeTypeId, setNodeTypeId] = useState(captureNodeTypes[0]?.id ?? '')
   const [title, setTitle] = useState('')
+  const [isExporting, setIsExporting] = useState(false)
+  const [exportError, setExportError] = useState<string | null>(null)
+
+  async function handleExport() {
+    setIsExporting(true)
+    setExportError(null)
+    try {
+      await onExportWorkspace()
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsExporting(false)
+    }
+  }
 
   const activeNodeTypeId = nodeTypeId || captureNodeTypes[0]?.id || ''
 
@@ -64,6 +85,10 @@ export function TopBar({ captureNodeTypes, onCapture, isCapturing, onOpenSchemaE
       <button type="button" className="schema-editor-button" onClick={onOpenSchemaEditor}>
         Schema
       </button>
+      <button type="button" onClick={handleExport} disabled={isExporting}>
+        {isExporting ? 'Exporting…' : 'Download export'}
+      </button>
+      {exportError && <span className="view-error">{exportError}</span>}
     </header>
   )
 }
