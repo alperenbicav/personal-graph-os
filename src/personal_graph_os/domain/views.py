@@ -180,3 +180,13 @@ class ContextPack(BaseModel):
                 f"ContextPack '{self.name}' selects {total_objects} objects, "
                 f"exceeding object_limit={self.object_limit}"
             )
+        missing_reasons = [
+            identifier
+            for identifier in (*self.node_ids, *self.edge_ids, *self.evidence_pointers)
+            if not self.inclusion_reasons.get(identifier, "").strip()
+        ]
+        if missing_reasons:
+            raise InvariantViolationError(
+                f"ContextPack '{self.name}' is missing an inclusion reason for: "
+                f"{', '.join(missing_reasons)}"
+            )

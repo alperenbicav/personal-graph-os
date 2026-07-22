@@ -36,6 +36,7 @@ from personal_graph_os.application.bootstrap import (
     get_or_create_default_canvas,
     get_or_create_default_workspace,
 )
+from personal_graph_os.application.context_pack_service import ContextPackService
 from personal_graph_os.application.discovery import DiscoveryService
 from personal_graph_os.application.file_service import (
     AttachmentNotFoundError,
@@ -87,6 +88,7 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteAttachmentRepository,
     SqliteCanvasPlacementRepository,
     SqliteCanvasRepository,
+    SqliteContextPackRepository,
     SqliteEdgeRepository,
     SqliteFileReferenceRepository,
     SqliteNodeRepository,
@@ -143,6 +145,7 @@ def create_app(
     canvas_repository = SqliteCanvasRepository(connection)
     placement_repository = SqliteCanvasPlacementRepository(connection)
     resource_repository = SqliteResourceRepository(connection)
+    context_pack_repository = SqliteContextPackRepository(connection)
     saved_view_repository = SqliteSavedViewRepository(connection)
     search_index_repository = SqliteSearchIndexRepository(connection)
     research_settings_repository = SqliteResearchSettingsRepository(connection)
@@ -213,6 +216,14 @@ def create_app(
         app.state.resource_service,
         lambda: SqliteResearchUnitOfWork(connection),
     )
+    app.state.context_pack_service = ContextPackService(
+        workspace_repository,
+        node_repository,
+        edge_repository,
+        resource_repository,
+        app.state.file_service,
+        context_pack_repository,
+    )
     app.state.default_workspace_id = default_workspace.id
     app.state.default_canvas_id = default_canvas.id
     app.state.db_lock = anyio.Lock()
@@ -234,6 +245,7 @@ def create_app(
         resource_service=app.state.resource_service,
         workflow_chain_service=app.state.workflow_chain_service,
         discovery_service=app.state.discovery_service,
+        context_pack_service=app.state.context_pack_service,
         unit_of_work_factory=lambda: SqliteResearchUnitOfWork(connection),
     )
     mcp_asgi_app, mcp_session_manager = create_mcp_asgi_app(agent_gateway)

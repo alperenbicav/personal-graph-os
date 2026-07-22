@@ -5,6 +5,7 @@ rejection and canonical read behavior end-to-end."""
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
 import threading
 from collections.abc import AsyncGenerator, Iterator
@@ -16,6 +17,7 @@ import uvicorn
 from mcp import types
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
+from pydantic import AnyUrl
 
 from personal_graph_os.api.app import create_app
 
@@ -101,6 +103,11 @@ def test_real_client_lists_all_tools(running_server: _RunningServer) -> None:
         "pgos_advance_workflow",
         "pgos_preview_import",
         "pgos_apply_import",
+        "pgos_create_context_pack",
+        "pgos_list_context_packs",
+        "pgos_get_context_pack",
+        "pgos_materialize_context_pack",
+        "pgos_delete_context_pack",
     }
 
 
@@ -228,6 +235,57 @@ def test_real_client_preview_import_is_read_only_and_apply_import_is_replay_safe
     assert replay_apply.structuredContent is not None
     assert replay_apply.structuredContent["replayed"] is True
     assert replay_apply.structuredContent["run"]["id"] == run_id
+
+
+async def _create_context_pack_then_read_its_resource(
+    server: _RunningServer,
+) -> tuple[types.CallToolResult, types.ReadResourceResult]:
+    async with _session(server.url, server.token) as session:
+        created = await session.call_tool(
+            "pgos_create_node",
+            {
+                "workspace_id": server.workspace_id,
+                "node_type_id": server.node_type_id,
+                "title": "Context pack source node",
+                "actor_name": "acceptance-test-agent",
+                "reason": "protocol acceptance",
+                "request_id": "acceptance-context-pack-source",
+            },
+        )
+        assert created.structuredContent is not None
+        node_id = created.structuredContent["node"]["id"]
+        pack_result = await session.call_tool(
+            "pgos_create_context_pack",
+            {
+                "workspace_id": server.workspace_id,
+                "name": "acceptance pack",
+                "node_ids": [node_id],
+                "inclusion_reasons": {node_id: "primary source"},
+                "actor_name": "acceptance-test-agent",
+                "reason": "protocol acceptance",
+                "request_id": "acceptance-context-pack-1",
+            },
+        )
+        assert pack_result.structuredContent is not None
+        pack_id = pack_result.structuredContent["context_pack"]["id"]
+        resource = await session.read_resource(AnyUrl(f"pgos://context-packs/{pack_id}"))
+        return pack_result, resource
+
+
+def test_real_client_creates_context_pack_and_reads_its_materialized_resource(
+    running_server: _RunningServer,
+) -> None:
+    pack_result, resource = asyncio.run(_create_context_pack_then_read_its_resource(running_server))
+
+    assert pack_result.isError is False
+    assert pack_result.structuredContent is not None
+    assert len(resource.contents) == 1
+    content = resource.contents[0]
+    assert isinstance(content, types.TextResourceContents)
+    materialized = json.loads(content.text)
+    expected_id = pack_result.structuredContent["context_pack"]["id"]
+    assert materialized["context_pack"]["id"] == expected_id
+    assert len(materialized["nodes"]) == 1
 
 
 async def _initialize_with_wrong_token(server: _RunningServer) -> None:

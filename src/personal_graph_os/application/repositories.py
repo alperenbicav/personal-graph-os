@@ -16,6 +16,7 @@ from personal_graph_os.domain.identifiers import (
     AttachmentId,
     CanvasId,
     CanvasPlacementId,
+    ContextPackId,
     DiscoveryRunId,
     EdgeId,
     FileReferenceId,
@@ -28,7 +29,7 @@ from personal_graph_os.domain.research_settings import WorkspaceResearchSettings
 from personal_graph_os.domain.resource import Resource
 from personal_graph_os.domain.schema import Workspace
 from personal_graph_os.domain.search import SearchEntityType, SearchHit
-from personal_graph_os.domain.views import SavedView
+from personal_graph_os.domain.views import ContextPack, SavedView
 
 
 class WorkspaceRepository(Protocol):
@@ -111,6 +112,15 @@ class FileReferenceRepository(Protocol):
 class ResearchSettingsRepository(Protocol):
     def get(self, workspace_id: WorkspaceId) -> WorkspaceResearchSettings | None: ...
     def save(self, settings: WorkspaceResearchSettings) -> None: ...
+
+
+class ContextPackRepository(Protocol):
+    def get(self, context_pack_id: ContextPackId) -> ContextPack | None: ...
+    def save(self, context_pack: ContextPack) -> None: ...
+    def save_without_commit(self, context_pack: ContextPack) -> None: ...
+    def list_by_workspace(self, workspace_id: WorkspaceId) -> tuple[ContextPack, ...]: ...
+    def delete(self, context_pack_id: ContextPackId) -> None: ...
+    def delete_without_commit(self, context_pack_id: ContextPackId) -> None: ...
 
 
 class ActivityEventRepository(Protocol):

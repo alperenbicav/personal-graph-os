@@ -118,6 +118,12 @@ class FileService:
         self._require_node(node_id)
         return self._attachments.list_by_node(node_id)
 
+    def get_attachment(self, attachment_id: AttachmentId) -> Attachment | None:
+        return self._attachments.get(attachment_id)
+
+    def get_file_reference(self, file_reference_id: FileReferenceId) -> FileReference | None:
+        return self._file_references.get(file_reference_id)
+
     def upload_attachment(
         self, node_id: NodeId, *, file_name: str, mime_type: str, chunks: Iterable[bytes]
     ) -> Attachment:

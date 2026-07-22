@@ -29,13 +29,24 @@ def test_context_pack_rejects_selection_beyond_object_limit() -> None:
 
 
 def test_context_pack_accepts_selection_within_object_limit() -> None:
+    first_id, second_id = NodeId(new_id()), NodeId(new_id())
     pack = ContextPack(
         workspace_id=WorkspaceId(new_id()),
         name="pack",
-        node_ids=(NodeId(new_id()), NodeId(new_id())),
+        node_ids=(first_id, second_id),
+        inclusion_reasons={first_id: "primary source", second_id: "related finding"},
         object_limit=5,
     )
     assert len(pack.node_ids) == 2
+
+
+def test_context_pack_rejects_a_selected_object_missing_an_inclusion_reason() -> None:
+    with pytest.raises(InvariantViolationError):
+        ContextPack(
+            workspace_id=WorkspaceId(new_id()),
+            name="pack",
+            node_ids=(NodeId(new_id()),),
+        )
 
 
 def test_filter_clause_rejects_a_field_outside_the_allowlist() -> None:

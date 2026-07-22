@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from personal_graph_os.application.context_pack_service import ContextPackService
 from personal_graph_os.application.discovery import DiscoveryService
 from personal_graph_os.application.file_service import FileService
 from personal_graph_os.application.search_service import SearchService
@@ -27,6 +28,7 @@ from personal_graph_os.infrastructure.mcp.gateway import (
 )
 from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteAttachmentRepository,
+    SqliteContextPackRepository,
     SqliteEdgeRepository,
     SqliteFileReferenceRepository,
     SqliteNodeRepository,
@@ -87,6 +89,15 @@ def _fixture(sqlite_connection: sqlite3.Connection, tmp_path: Path):
         resource_service,
         lambda: SqliteResearchUnitOfWork(sqlite_connection),
     )
+    context_pack_repository = SqliteContextPackRepository(sqlite_connection)
+    context_pack_service = ContextPackService(
+        workspace_repository,
+        node_repository,
+        edge_repository,
+        resource_repository,
+        file_service,
+        context_pack_repository,
+    )
 
     gateway = AgentGatewayService(
         workspace_repository,
@@ -100,6 +111,7 @@ def _fixture(sqlite_connection: sqlite3.Connection, tmp_path: Path):
         resource_service=resource_service,
         workflow_chain_service=workflow_chain_service,
         discovery_service=discovery_service,
+        context_pack_service=context_pack_service,
         unit_of_work_factory=lambda: SqliteResearchUnitOfWork(sqlite_connection),
     )
     return {

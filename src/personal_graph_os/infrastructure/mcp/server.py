@@ -13,13 +13,17 @@ import json
 from collections.abc import Awaitable, Callable
 
 from mcp.server.lowlevel import Server
+from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
-from mcp.types import TextContent, Tool
+from mcp.types import ResourceTemplate, TextContent, Tool
+from pydantic import AnyUrl
 from starlette.types import Receive, Scope, Send
 
 from personal_graph_os.application.discovery import DiscoveryCandidateInput
 from personal_graph_os.application.workflow_chain import WorkflowChainStep
 from personal_graph_os.domain.identifiers import (
+    ContextPackId,
+    EdgeId,
     EdgeTypeId,
     NodeId,
     NodeTypeId,
@@ -29,6 +33,8 @@ from personal_graph_os.domain.identifiers import (
 )
 from personal_graph_os.domain.resource import ResourceKind, ResourceLifecycleStatus
 from personal_graph_os.infrastructure.mcp.gateway import (
+    MAX_CONTEXT_PACK_OBJECTS,
+    MAX_CONTEXT_PACK_TOKEN_LIMIT,
     MAX_IMPORT_CANDIDATES,
     MAX_IMPORT_EVIDENCE_POINTERS,
     MAX_IMPORT_TEXT_LENGTH,
@@ -39,6 +45,8 @@ from personal_graph_os.infrastructure.mcp.gateway import (
     GatewayNotFoundError,
     GatewayValidationError,
 )
+
+_CONTEXT_PACK_URI_PREFIX = "pgos://context-packs/"
 
 SERVER_NAME = "personal-graph-os"
 
@@ -336,6 +344,96 @@ _DISCOVERY_TOOLS = (
 )
 
 _TOOLS = _TOOLS + _DISCOVERY_TOOLS
+
+_CONTEXT_PACK_SELECTION_PROPERTIES: dict[str, object] = {
+    "workspace_id": {"type": "string"},
+    "name": {"type": "string", "maxLength": 300},
+    "node_ids": {
+        "type": "array",
+        "items": {"type": "string"},
+        "maxItems": MAX_CONTEXT_PACK_OBJECTS,
+    },
+    "edge_ids": {
+        "type": "array",
+        "items": {"type": "string"},
+        "maxItems": MAX_CONTEXT_PACK_OBJECTS,
+    },
+    "evidence_pointers": {
+        "type": "array",
+        "items": {"type": "string"},
+        "maxItems": MAX_CONTEXT_PACK_OBJECTS,
+    },
+    "inclusion_reasons": {
+        "type": "object",
+        "description": "Maps every selected node_id/edge_id/evidence_pointer to its reason.",
+    },
+    "object_limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": MAX_CONTEXT_PACK_OBJECTS,
+        "default": MAX_CONTEXT_PACK_OBJECTS,
+    },
+    "token_limit": {"type": "integer", "minimum": 1, "maximum": MAX_CONTEXT_PACK_TOKEN_LIMIT},
+}
+
+_CONTEXT_PACK_TOOLS = (
+    _mutating_tool(
+        "pgos_create_context_pack",
+        "Create one immutable, bounded Context Pack manifest selecting existing nodes/edges/"
+        "evidence pointers. Every selected object needs an inclusion reason. Attributed and "
+        "idempotent by request_id; a Context Pack is never updated, only created or deleted.",
+        properties=_CONTEXT_PACK_SELECTION_PROPERTIES,
+        required=("workspace_id", "name", "inclusion_reasons"),
+    ),
+    Tool(
+        name="pgos_list_context_packs",
+        description="List a workspace's Context Pack manifests.",
+        inputSchema={
+            "type": "object",
+            "properties": {"workspace_id": {"type": "string"}},
+            "required": ["workspace_id"],
+            "additionalProperties": False,
+        },
+    ),
+    Tool(
+        name="pgos_get_context_pack",
+        description=(
+            "Get one Context Pack's selection manifest by id (not its materialized content)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {"context_pack_id": {"type": "string"}},
+            "required": ["context_pack_id"],
+            "additionalProperties": False,
+        },
+    ),
+    Tool(
+        name="pgos_materialize_context_pack",
+        description=(
+            "Resolve a Context Pack's manifest against current canonical state: returns the "
+            "live nodes/edges/resources/evidence, reports missing/archived/unresolved members, "
+            "and applies the pack's estimated-token budget with deterministic omissions. Never "
+            "snapshots content or dereferences file bytes."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {"context_pack_id": {"type": "string"}},
+            "required": ["context_pack_id"],
+            "additionalProperties": False,
+        },
+    ),
+    _mutating_tool(
+        "pgos_delete_context_pack",
+        "Delete a Context Pack manifest. Attributed and idempotent by request_id.",
+        properties={
+            "workspace_id": {"type": "string"},
+            "context_pack_id": {"type": "string"},
+        },
+        required=("workspace_id", "context_pack_id"),
+    ),
+)
+
+_TOOLS = _TOOLS + _CONTEXT_PACK_TOOLS
 
 _ToolHandler = Callable[[AgentGatewayService, dict[str, object]], dict[str, object]]
 
@@ -638,6 +736,68 @@ def _apply_import(gateway: AgentGatewayService, arguments: dict[str, object]) ->
     )
 
 
+def _str_str_dict_arg(arguments: dict[str, object], key: str) -> dict[str, str]:
+    raw = _dict_arg(arguments, key)
+    return {str(k): str(v) for k, v in raw.items()}
+
+
+def _create_context_pack(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    object_limit = _int_arg(arguments, "object_limit", MAX_CONTEXT_PACK_OBJECTS)
+    token_limit = _optional_int_arg(arguments, "token_limit")
+    return gateway.create_context_pack(
+        WorkspaceId(_str_arg(arguments, "workspace_id")),
+        _str_arg(arguments, "name"),
+        node_ids=tuple(NodeId(item) for item in _str_tuple_arg(arguments, "node_ids")),
+        edge_ids=tuple(EdgeId(item) for item in _str_tuple_arg(arguments, "edge_ids")),
+        evidence_pointers=_str_tuple_arg(arguments, "evidence_pointers"),
+        inclusion_reasons=_str_str_dict_arg(arguments, "inclusion_reasons"),
+        object_limit=object_limit,
+        token_limit=token_limit,
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _list_context_packs(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    context_packs = gateway.list_context_packs(WorkspaceId(_str_arg(arguments, "workspace_id")))
+    return {"context_packs": [pack.model_dump(mode="json") for pack in context_packs]}
+
+
+def _get_context_pack(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    context_pack = gateway.get_context_pack(ContextPackId(_str_arg(arguments, "context_pack_id")))
+    return context_pack.model_dump(mode="json")
+
+
+def _materialize_context_pack(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    materialization = gateway.materialize_context_pack(
+        ContextPackId(_str_arg(arguments, "context_pack_id"))
+    )
+    return materialization.model_dump(mode="json")
+
+
+def _delete_context_pack(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.delete_context_pack(
+        WorkspaceId(_str_arg(arguments, "workspace_id")),
+        ContextPackId(_str_arg(arguments, "context_pack_id")),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
 _HANDLERS: dict[str, _ToolHandler] = {
     "pgos_get_workspace": _get_workspace,
     "pgos_list_nodes": _list_nodes,
@@ -657,6 +817,11 @@ _HANDLERS: dict[str, _ToolHandler] = {
     "pgos_advance_workflow": _advance_workflow,
     "pgos_preview_import": _preview_import,
     "pgos_apply_import": _apply_import,
+    "pgos_create_context_pack": _create_context_pack,
+    "pgos_list_context_packs": _list_context_packs,
+    "pgos_get_context_pack": _get_context_pack,
+    "pgos_materialize_context_pack": _materialize_context_pack,
+    "pgos_delete_context_pack": _delete_context_pack,
 }
 
 
@@ -677,6 +842,37 @@ def build_mcp_server(gateway: AgentGatewayService) -> Server:
             return handler(gateway, arguments)
         except (GatewayNotFoundError, GatewayValidationError, GatewayConflictError) as error:
             raise ValueError(str(error)) from error
+
+    @server.list_resource_templates()
+    async def list_resource_templates() -> list[ResourceTemplate]:
+        return [
+            ResourceTemplate(
+                name="context-pack",
+                uriTemplate=f"{_CONTEXT_PACK_URI_PREFIX}{{id}}",
+                description=(
+                    "A Context Pack's materialized content: current nodes/edges/resources/"
+                    "evidence plus missing/archived/unresolved/omitted reporting."
+                ),
+                mimeType="application/json",
+            )
+        ]
+
+    @server.read_resource()
+    async def read_resource(uri: AnyUrl) -> list[ReadResourceContents]:
+        uri_text = str(uri)
+        if not uri_text.startswith(_CONTEXT_PACK_URI_PREFIX):
+            raise ValueError(f"Unknown resource: {uri_text}")
+        context_pack_id = ContextPackId(uri_text[len(_CONTEXT_PACK_URI_PREFIX) :])
+        try:
+            materialization = gateway.materialize_context_pack(context_pack_id)
+        except GatewayNotFoundError as error:
+            raise ValueError(str(error)) from error
+        return [
+            ReadResourceContents(
+                content=json.dumps(materialization.model_dump(mode="json")),
+                mime_type="application/json",
+            )
+        ]
 
     return server
 

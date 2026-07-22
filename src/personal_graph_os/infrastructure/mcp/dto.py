@@ -11,6 +11,7 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from personal_graph_os.application.context_pack_service import ContextPackMaterialization
 from personal_graph_os.application.discovery import DiscoveryCandidatePreview, DiscoveryPreview
 from personal_graph_os.domain.activity import DiscoveredCandidate, DiscoveryRun
 from personal_graph_os.domain.files import Attachment, FileReference
@@ -18,6 +19,7 @@ from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.resource import Resource
 from personal_graph_os.domain.schema import Workspace
 from personal_graph_os.domain.search import SearchResult
+from personal_graph_os.domain.views import ContextPack
 
 
 class WorkspaceDTO(BaseModel):
@@ -278,4 +280,73 @@ class DiscoveryRunDTO(BaseModel):
             completed_at=run.completed_at,
             imported_count=run.imported_count,
             skipped_count=run.skipped_count,
+        )
+
+
+class ContextPackDTO(BaseModel):
+    id: str
+    workspace_id: str
+    name: str
+    node_ids: tuple[str, ...]
+    edge_ids: tuple[str, ...]
+    evidence_pointers: tuple[str, ...]
+    inclusion_reasons: dict[str, str]
+    object_limit: int
+    token_limit: int | None
+    created_at: datetime
+
+    @classmethod
+    def from_domain(cls, context_pack: ContextPack) -> ContextPackDTO:
+        return cls(
+            id=context_pack.id,
+            workspace_id=context_pack.workspace_id,
+            name=context_pack.name,
+            node_ids=context_pack.node_ids,
+            edge_ids=context_pack.edge_ids,
+            evidence_pointers=context_pack.evidence_pointers,
+            inclusion_reasons=context_pack.inclusion_reasons,
+            object_limit=context_pack.object_limit,
+            token_limit=context_pack.token_limit,
+            created_at=context_pack.created_at,
+        )
+
+
+class MaterializedContextPackDTO(BaseModel):
+    context_pack: ContextPackDTO
+    nodes: tuple[NodeDTO, ...]
+    resources: tuple[ResourceDTO, ...]
+    edges: tuple[EdgeDTO, ...]
+    evidence: tuple[EvidencePointerDTO, ...]
+    archived_node_ids: tuple[str, ...]
+    missing_node_ids: tuple[str, ...]
+    missing_edge_ids: tuple[str, ...]
+    unresolved_evidence_pointers: tuple[str, ...]
+    omitted_for_token_budget: tuple[str, ...]
+    estimated_tokens: int
+    token_estimate_version: str
+
+    @classmethod
+    def from_domain(cls, materialization: ContextPackMaterialization) -> MaterializedContextPackDTO:
+        evidence: list[EvidencePointerDTO] = []
+        for member in materialization.evidence:
+            if member.attachment is not None:
+                evidence.append(EvidencePointerDTO.from_attachment(member.attachment))
+            elif member.file_reference is not None:
+                evidence.append(EvidencePointerDTO.from_file_reference(member.file_reference))
+        return cls(
+            context_pack=ContextPackDTO.from_domain(materialization.context_pack),
+            nodes=tuple(NodeDTO.from_domain(node) for node in materialization.nodes),
+            resources=tuple(
+                ResourceDTO.from_domain(resource)
+                for resource in materialization.resources_by_node_id.values()
+            ),
+            edges=tuple(EdgeDTO.from_domain(edge) for edge in materialization.edges),
+            evidence=tuple(evidence),
+            archived_node_ids=materialization.archived_node_ids,
+            missing_node_ids=materialization.missing_node_ids,
+            missing_edge_ids=materialization.missing_edge_ids,
+            unresolved_evidence_pointers=materialization.unresolved_evidence_pointers,
+            omitted_for_token_budget=materialization.omitted_for_token_budget,
+            estimated_tokens=materialization.estimated_tokens,
+            token_estimate_version=materialization.token_estimate_version,
         )

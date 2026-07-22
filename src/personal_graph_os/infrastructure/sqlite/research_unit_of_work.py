@@ -15,6 +15,7 @@ from types import TracebackType
 
 from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteActivityEventRepository,
+    SqliteContextPackRepository,
     SqliteDiscoveryRunRepository,
     SqliteEdgeRepository,
     SqliteNodeRepository,
@@ -30,6 +31,7 @@ class SqliteResearchUnitOfWork:
         self.edges = SqliteEdgeRepository(connection)
         self.discovery_runs = SqliteDiscoveryRunRepository(connection)
         self.activity_events = SqliteActivityEventRepository(connection)
+        self.context_packs = SqliteContextPackRepository(connection)
         self._savepoint_count = 0
 
     def __enter__(self) -> SqliteResearchUnitOfWork:

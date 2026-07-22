@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from personal_graph_os.application.context_pack_service import ContextPackService
 from personal_graph_os.application.discovery import DiscoveryCandidateInput, DiscoveryService
 from personal_graph_os.application.file_service import FileService
 from personal_graph_os.application.search_service import SearchService
@@ -21,7 +22,7 @@ from personal_graph_os.application.services import (
 )
 from personal_graph_os.application.workflow_chain import WorkflowChainService, WorkflowChainStep
 from personal_graph_os.domain.errors import UnknownSchemaReferenceError
-from personal_graph_os.domain.identifiers import NodeId, NodeTypeId
+from personal_graph_os.domain.identifiers import ContextPackId, NodeId, NodeTypeId
 from personal_graph_os.domain.resource import ResourceKind, ResourceLifecycleStatus
 from personal_graph_os.domain.schema import EdgeType, NodeType
 from personal_graph_os.infrastructure.local_file_store import LocalManagedFileStore
@@ -32,6 +33,7 @@ from personal_graph_os.infrastructure.mcp.gateway import (
 )
 from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteAttachmentRepository,
+    SqliteContextPackRepository,
     SqliteEdgeRepository,
     SqliteFileReferenceRepository,
     SqliteNodeRepository,
@@ -91,6 +93,15 @@ def _fixture(sqlite_connection: sqlite3.Connection, tmp_path: Path):
         resource_service,
         lambda: SqliteResearchUnitOfWork(sqlite_connection),
     )
+    context_pack_repository = SqliteContextPackRepository(sqlite_connection)
+    context_pack_service = ContextPackService(
+        workspace_repository,
+        node_repository,
+        edge_repository,
+        resource_repository,
+        file_service,
+        context_pack_repository,
+    )
 
     gateway = AgentGatewayService(
         workspace_repository,
@@ -104,6 +115,7 @@ def _fixture(sqlite_connection: sqlite3.Connection, tmp_path: Path):
         resource_service=resource_service,
         workflow_chain_service=workflow_chain_service,
         discovery_service=discovery_service,
+        context_pack_service=context_pack_service,
         unit_of_work_factory=lambda: SqliteResearchUnitOfWork(sqlite_connection),
     )
     return {
@@ -111,6 +123,7 @@ def _fixture(sqlite_connection: sqlite3.Connection, tmp_path: Path):
         "node_repository": node_repository,
         "edge_repository": edge_repository,
         "resource_repository": resource_repository,
+        "context_pack_repository": context_pack_repository,
         "workspace_id": workspace.id,
         "task_type": task_type,
         "resource_type": resource_type,
@@ -585,3 +598,134 @@ def test_apply_import_too_many_candidates_is_rejected(
         )
 
     assert ctx["resource_repository"].list_by_workspace(ctx["workspace_id"]) == ()
+
+
+def test_create_context_pack_replay_by_request_id_does_not_create_a_second_pack(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    ctx = _fixture(sqlite_connection, tmp_path)
+    gateway: AgentGatewayService = ctx["gateway"]
+    created = gateway.create_node(
+        ctx["workspace_id"],
+        ctx["task_type"].id,
+        "Source node",
+        actor_name="agent-1",
+        reason="r",
+        request_id="req-source",
+    )
+    node_id = created["node"]["id"]
+
+    first = gateway.create_context_pack(
+        ctx["workspace_id"],
+        "pack",
+        node_ids=(node_id,),
+        inclusion_reasons={node_id: "primary source"},
+        actor_name="agent-1",
+        reason="handoff",
+        request_id="req-pack-1",
+    )
+    replay = gateway.create_context_pack(
+        ctx["workspace_id"],
+        "pack",
+        node_ids=(node_id,),
+        inclusion_reasons={node_id: "primary source"},
+        actor_name="agent-1",
+        reason="handoff",
+        request_id="req-pack-1",
+    )
+
+    assert first["replayed"] is False
+    assert replay["replayed"] is True
+    assert replay["context_pack_id"] == first["context_pack"]["id"]
+    all_packs = ctx["context_pack_repository"].list_by_workspace(ctx["workspace_id"])
+    assert len(all_packs) == 1
+
+
+def test_create_context_pack_missing_inclusion_reason_is_rejected(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    ctx = _fixture(sqlite_connection, tmp_path)
+    gateway: AgentGatewayService = ctx["gateway"]
+    created = gateway.create_node(
+        ctx["workspace_id"],
+        ctx["task_type"].id,
+        "Source node",
+        actor_name="agent-1",
+        reason="r",
+        request_id="req-source",
+    )
+    node_id = created["node"]["id"]
+
+    with pytest.raises(GatewayValidationError):
+        gateway.create_context_pack(
+            ctx["workspace_id"],
+            "pack",
+            node_ids=(node_id,),
+            inclusion_reasons={},
+            actor_name="agent-1",
+            reason="handoff",
+            request_id="req-pack-missing-reason",
+        )
+    assert ctx["context_pack_repository"].list_by_workspace(ctx["workspace_id"]) == ()
+
+
+def test_get_and_materialize_and_delete_context_pack(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    ctx = _fixture(sqlite_connection, tmp_path)
+    gateway: AgentGatewayService = ctx["gateway"]
+    created = gateway.create_node(
+        ctx["workspace_id"],
+        ctx["task_type"].id,
+        "Source node",
+        actor_name="agent-1",
+        reason="r",
+        request_id="req-source",
+    )
+    node_id = created["node"]["id"]
+    pack_result = gateway.create_context_pack(
+        ctx["workspace_id"],
+        "pack",
+        node_ids=(node_id,),
+        inclusion_reasons={node_id: "primary source"},
+        actor_name="agent-1",
+        reason="handoff",
+        request_id="req-pack-1",
+    )
+    pack_id = pack_result["context_pack"]["id"]
+
+    fetched = gateway.get_context_pack(pack_id)
+    assert fetched.id == pack_id
+
+    materialized = gateway.materialize_context_pack(pack_id)
+    assert [node.id for node in materialized.nodes] == [node_id]
+
+    first_delete = gateway.delete_context_pack(
+        ctx["workspace_id"],
+        pack_id,
+        actor_name="agent-1",
+        reason="cleanup",
+        request_id="req-delete-1",
+    )
+    replay_delete = gateway.delete_context_pack(
+        ctx["workspace_id"],
+        pack_id,
+        actor_name="agent-1",
+        reason="cleanup",
+        request_id="req-delete-1",
+    )
+
+    assert first_delete["replayed"] is False
+    assert replay_delete["replayed"] is True
+    with pytest.raises(GatewayNotFoundError):
+        gateway.get_context_pack(pack_id)
+
+
+def test_get_context_pack_raises_not_found_for_unknown_id(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    ctx = _fixture(sqlite_connection, tmp_path)
+    gateway: AgentGatewayService = ctx["gateway"]
+
+    with pytest.raises(GatewayNotFoundError):
+        gateway.get_context_pack(ContextPackId("does-not-exist"))

@@ -13,6 +13,10 @@ import sqlite3
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from personal_graph_os.application.context_pack_service import (
+    ContextPackNotFoundError,
+    ContextPackService,
+)
 from personal_graph_os.application.discovery import DiscoveryCandidateInput, DiscoveryService
 from personal_graph_os.application.file_service import FileService
 from personal_graph_os.application.repositories import (
@@ -27,7 +31,9 @@ from personal_graph_os.application.services import EdgeService, NodeService, Res
 from personal_graph_os.application.workflow_chain import WorkflowChainService, WorkflowChainStep
 from personal_graph_os.domain.activity import ActivityEvent, ActorKind, MutationAction
 from personal_graph_os.domain.identifiers import (
+    ContextPackId,
     DiscoveryRunId,
+    EdgeId,
     EdgeTypeId,
     NodeId,
     NodeTypeId,
@@ -37,10 +43,12 @@ from personal_graph_os.domain.identifiers import (
 )
 from personal_graph_os.domain.resource import ResourceKind, ResourceLifecycleStatus
 from personal_graph_os.infrastructure.mcp.dto import (
+    ContextPackDTO,
     DiscoveryPreviewDTO,
     DiscoveryRunDTO,
     EdgeDTO,
     EvidencePointerDTO,
+    MaterializedContextPackDTO,
     NodeDTO,
     ResourceDTO,
     SearchHitDTO,
@@ -56,6 +64,9 @@ MAX_TITLE_LENGTH = 300
 MAX_IMPORT_TEXT_LENGTH = 4_000
 MAX_IMPORT_CANDIDATES = 50
 MAX_IMPORT_EVIDENCE_POINTERS = 20
+MAX_CONTEXT_PACK_OBJECTS = 200
+MAX_CONTEXT_PACK_TOKEN_LIMIT = 32_000
+MAX_INCLUSION_REASON_LENGTH = 1_000
 
 _MCP_SOURCE = "mcp"
 
@@ -103,6 +114,7 @@ class AgentGatewayService:
         resource_service: ResourceService,
         workflow_chain_service: WorkflowChainService,
         discovery_service: DiscoveryService,
+        context_pack_service: ContextPackService,
         unit_of_work_factory: Callable[[], ResearchUnitOfWork],
     ) -> None:
         self._workspaces = workspaces
@@ -116,6 +128,7 @@ class AgentGatewayService:
         self._resource_service = resource_service
         self._workflow_chain_service = workflow_chain_service
         self._discovery_service = discovery_service
+        self._context_pack_service = context_pack_service
         self._unit_of_work_factory = unit_of_work_factory
 
     def _require_workspace(self, workspace_id: WorkspaceId) -> None:
@@ -677,3 +690,138 @@ class AgentGatewayService:
             "run": DiscoveryRunDTO.from_domain(run).model_dump(mode="json"),
             "replayed": False,
         }
+
+    # -- Immutable Context Packs (06.4, decisions #15/#16/#17, `WORK.md`) -------------------
+
+    def _validate_inclusion_reasons(
+        self, identifiers: Sequence[str], inclusion_reasons: dict[str, str]
+    ) -> dict[str, str]:
+        validated: dict[str, str] = {}
+        for identifier in identifiers:
+            reason = inclusion_reasons.get(identifier)
+            if reason is None:
+                raise GatewayValidationError(f"missing inclusion reason for {identifier!r}")
+            validated[identifier] = _validate_bounded_text(
+                reason, field_name="inclusion_reasons", maximum=MAX_INCLUSION_REASON_LENGTH
+            )
+        return validated
+
+    def create_context_pack(
+        self,
+        workspace_id: WorkspaceId,
+        name: str,
+        *,
+        node_ids: Sequence[NodeId] = (),
+        edge_ids: Sequence[EdgeId] = (),
+        evidence_pointers: Sequence[str] = (),
+        inclusion_reasons: dict[str, str],
+        object_limit: int = MAX_CONTEXT_PACK_OBJECTS,
+        token_limit: int | None = None,
+        actor_name: str,
+        reason: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        name = _validate_bounded_text(name, field_name="name", maximum=MAX_TITLE_LENGTH)
+        total_objects = len(set(node_ids) | set(edge_ids))
+        if total_objects > MAX_CONTEXT_PACK_OBJECTS:
+            raise GatewayValidationError(
+                f"selected objects must not exceed {MAX_CONTEXT_PACK_OBJECTS}, got {total_objects}"
+            )
+        if object_limit < 1 or object_limit > MAX_CONTEXT_PACK_OBJECTS:
+            raise GatewayValidationError(
+                f"object_limit must be between 1 and {MAX_CONTEXT_PACK_OBJECTS}"
+            )
+        if token_limit is not None and (
+            token_limit < 1 or token_limit > MAX_CONTEXT_PACK_TOKEN_LIMIT
+        ):
+            raise GatewayValidationError(
+                f"token_limit must be between 1 and {MAX_CONTEXT_PACK_TOKEN_LIMIT}"
+            )
+        validated_reasons = self._validate_inclusion_reasons(
+            (*node_ids, *edge_ids, *evidence_pointers), inclusion_reasons
+        )
+        with self._unit_of_work_factory() as unit_of_work:
+            replay = self._find_replay(unit_of_work, workspace_id, actor_name, request_id)
+            if replay is not None:
+                return {"context_pack_id": replay.entity_id, "replayed": True}
+            context_pack = self._context_pack_service.create_within(
+                unit_of_work,
+                workspace_id,
+                name,
+                node_ids=node_ids,
+                edge_ids=edge_ids,
+                evidence_pointers=evidence_pointers,
+                inclusion_reasons=validated_reasons,
+                object_limit=object_limit,
+                token_limit=token_limit,
+            )
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="context_pack",
+                entity_id=context_pack.id,
+                action=MutationAction.CREATED,
+            )
+        return {
+            "context_pack": ContextPackDTO.from_domain(context_pack).model_dump(mode="json"),
+            "replayed": False,
+        }
+
+    def list_context_packs(self, workspace_id: WorkspaceId) -> tuple[ContextPackDTO, ...]:
+        self._require_workspace(workspace_id)
+        context_packs = self._context_pack_service.list_by_workspace(workspace_id)
+        ordered = sorted(context_packs, key=lambda pack: (pack.created_at, pack.id))
+        return tuple(ContextPackDTO.from_domain(pack) for pack in ordered)
+
+    def get_context_pack(self, context_pack_id: ContextPackId) -> ContextPackDTO:
+        try:
+            context_pack = self._context_pack_service.get(context_pack_id)
+        except ContextPackNotFoundError as error:
+            raise GatewayNotFoundError(str(error)) from error
+        return ContextPackDTO.from_domain(context_pack)
+
+    def materialize_context_pack(
+        self, context_pack_id: ContextPackId
+    ) -> MaterializedContextPackDTO:
+        try:
+            materialization = self._context_pack_service.materialize(context_pack_id)
+        except ContextPackNotFoundError as error:
+            raise GatewayNotFoundError(str(error)) from error
+        return MaterializedContextPackDTO.from_domain(materialization)
+
+    def delete_context_pack(
+        self,
+        workspace_id: WorkspaceId,
+        context_pack_id: ContextPackId,
+        *,
+        actor_name: str,
+        reason: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """`workspace_id` is required (unlike `archive_*`): a hard delete leaves nothing to
+        read the owning workspace from on a replay, so the replay lookup must be keyed by the
+        caller-supplied workspace_id checked *before* the pack is resolved or removed."""
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        with self._unit_of_work_factory() as unit_of_work:
+            replay = self._find_replay(unit_of_work, workspace_id, actor_name, request_id)
+            if replay is not None:
+                return {"context_pack_id": replay.entity_id, "replayed": True}
+            existing = unit_of_work.context_packs.get(context_pack_id)
+            if existing is None or existing.workspace_id != workspace_id:
+                raise GatewayNotFoundError(f"Context pack {context_pack_id} does not exist")
+            deleted = self._context_pack_service.delete_within(unit_of_work, context_pack_id)
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="context_pack",
+                entity_id=deleted.id,
+                action=MutationAction.DELETED,
+            )
+        return {"context_pack_id": deleted.id, "replayed": False}

@@ -24,6 +24,7 @@ from typing import Protocol
 
 from personal_graph_os.application.repositories import (
     ActivityEventRepository,
+    ContextPackRepository,
     DiscoveryRunRepository,
     EdgeRepository,
     NodeRepository,
@@ -49,6 +50,9 @@ class ResearchUnitOfWork(Protocol):
 
     @property
     def activity_events(self) -> ActivityEventRepository: ...
+
+    @property
+    def context_packs(self) -> ContextPackRepository: ...
 
     def __enter__(self) -> ResearchUnitOfWork: ...
 

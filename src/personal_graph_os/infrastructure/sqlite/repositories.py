@@ -27,6 +27,7 @@ from personal_graph_os.domain.identifiers import (
     AttachmentId,
     CanvasId,
     CanvasPlacementId,
+    ContextPackId,
     DiscoveryRunId,
     EdgeId,
     FileReferenceId,
@@ -46,7 +47,7 @@ from personal_graph_os.domain.schema import (
     Workspace,
 )
 from personal_graph_os.domain.search import SearchEntityType, SearchHit, compile_fts5_query
-from personal_graph_os.domain.views import SavedView, ViewKind
+from personal_graph_os.domain.views import ContextPack, SavedView, ViewKind
 
 
 class SqliteWorkspaceRepository:
@@ -630,6 +631,68 @@ class SqliteSavedViewRepository:
             view_kind=ViewKind(row["view_kind"]),
             filter_definition=json.loads(row["filter_definition_json"]),
             sort_definition=json.loads(row["sort_definition_json"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+
+class SqliteContextPackRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(self, context_pack_id: ContextPackId) -> ContextPack | None:
+        row = self._connection.execute(
+            "SELECT * FROM context_packs WHERE id = ?", (context_pack_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def list_by_workspace(self, workspace_id: WorkspaceId) -> tuple[ContextPack, ...]:
+        rows = self._connection.execute(
+            "SELECT * FROM context_packs WHERE workspace_id = ?", (workspace_id,)
+        ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
+    def save(self, context_pack: ContextPack) -> None:
+        with self._connection:
+            self.save_without_commit(context_pack)
+
+    def save_without_commit(self, context_pack: ContextPack) -> None:
+        self._connection.execute(
+            "INSERT INTO context_packs "
+            "(id, workspace_id, name, node_ids_json, edge_ids_json, evidence_pointers_json, "
+            " inclusion_reasons_json, object_limit, token_limit, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                context_pack.id,
+                context_pack.workspace_id,
+                context_pack.name,
+                json.dumps(list(context_pack.node_ids)),
+                json.dumps(list(context_pack.edge_ids)),
+                json.dumps(list(context_pack.evidence_pointers)),
+                json.dumps(context_pack.inclusion_reasons),
+                context_pack.object_limit,
+                context_pack.token_limit,
+                context_pack.created_at.isoformat(),
+            ),
+        )
+
+    def delete(self, context_pack_id: ContextPackId) -> None:
+        with self._connection:
+            self.delete_without_commit(context_pack_id)
+
+    def delete_without_commit(self, context_pack_id: ContextPackId) -> None:
+        self._connection.execute("DELETE FROM context_packs WHERE id = ?", (context_pack_id,))
+
+    def _hydrate(self, row: sqlite3.Row) -> ContextPack:
+        return ContextPack(
+            id=row["id"],
+            workspace_id=row["workspace_id"],
+            name=row["name"],
+            node_ids=tuple(json.loads(row["node_ids_json"])),
+            edge_ids=tuple(json.loads(row["edge_ids_json"])),
+            evidence_pointers=tuple(json.loads(row["evidence_pointers_json"])),
+            inclusion_reasons=json.loads(row["inclusion_reasons_json"]),
+            object_limit=row["object_limit"],
+            token_limit=row["token_limit"],
             created_at=datetime.fromisoformat(row["created_at"]),
         )
 
