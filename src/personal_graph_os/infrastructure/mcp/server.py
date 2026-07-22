@@ -17,6 +17,7 @@ from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.types import TextContent, Tool
 from starlette.types import Receive, Scope, Send
 
+from personal_graph_os.application.discovery import DiscoveryCandidateInput
 from personal_graph_os.application.workflow_chain import WorkflowChainStep
 from personal_graph_os.domain.identifiers import (
     EdgeTypeId,
@@ -28,6 +29,9 @@ from personal_graph_os.domain.identifiers import (
 )
 from personal_graph_os.domain.resource import ResourceKind, ResourceLifecycleStatus
 from personal_graph_os.infrastructure.mcp.gateway import (
+    MAX_IMPORT_CANDIDATES,
+    MAX_IMPORT_EVIDENCE_POINTERS,
+    MAX_IMPORT_TEXT_LENGTH,
     MAX_LIST_LIMIT,
     MAX_SEARCH_LIMIT,
     AgentGatewayService,
@@ -276,6 +280,63 @@ _TOOLS = (
     ),
 )
 
+_DISCOVERY_CANDIDATE_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "identifier": {"type": "string", "maxLength": MAX_IMPORT_TEXT_LENGTH},
+        "title": {"type": "string", "maxLength": 300},
+        "kind": {"type": "string", "enum": [kind.value for kind in ResourceKind]},
+        "description": {"type": "string", "maxLength": MAX_IMPORT_TEXT_LENGTH},
+        "evidence": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": MAX_IMPORT_EVIDENCE_POINTERS,
+        },
+    },
+    "required": ["identifier", "title"],
+    "additionalProperties": False,
+}
+
+_DISCOVERY_IMPORT_PROPERTIES: dict[str, object] = {
+    "workspace_id": {"type": "string"},
+    "instruction": {"type": "string", "maxLength": MAX_IMPORT_TEXT_LENGTH},
+    "sources_searched": {"type": "array", "items": {"type": "string"}},
+    "filters_interpreted": {"type": "object"},
+    "candidates": {
+        "type": "array",
+        "items": _DISCOVERY_CANDIDATE_SCHEMA,
+        "minItems": 1,
+        "maxItems": MAX_IMPORT_CANDIDATES,
+    },
+}
+
+_DISCOVERY_TOOLS = (
+    Tool(
+        name="pgos_preview_import",
+        description=(
+            "Side-effect-free preview of caller-supplied import candidates: canonicalizes "
+            "each identifier and reports create/reuse/reject with a reason. Never searches "
+            "the web or writes anything."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": _DISCOVERY_IMPORT_PROPERTIES,
+            "required": ["workspace_id", "instruction", "candidates"],
+            "additionalProperties": False,
+        },
+    ),
+    _mutating_tool(
+        "pgos_apply_import",
+        "Import caller-supplied candidates into one completed, attributed DiscoveryRun. "
+        "Attributed and idempotent by request_id; the actor becomes the run's sole "
+        "agent_identity. Never searches the web, fetches a URL, or uses Git/LLM work.",
+        properties=_DISCOVERY_IMPORT_PROPERTIES,
+        required=("workspace_id", "instruction", "candidates"),
+    ),
+)
+
+_TOOLS = _TOOLS + _DISCOVERY_TOOLS
+
 _ToolHandler = Callable[[AgentGatewayService, dict[str, object]], dict[str, object]]
 
 
@@ -508,6 +569,75 @@ def _advance_workflow(
     )
 
 
+def _str_tuple_arg(arguments: dict[str, object], key: str) -> tuple[str, ...]:
+    value = arguments.get(key)
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ValueError(f"{key} must be an array of strings")
+    return tuple(str(item) for item in value)
+
+
+def _dict_arg(arguments: dict[str, object], key: str) -> dict[str, object]:
+    value = arguments.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{key} must be an object")
+    return value
+
+
+def _candidate_inputs(arguments: dict[str, object]) -> list[DiscoveryCandidateInput]:
+    raw_candidates = arguments.get("candidates")
+    if not isinstance(raw_candidates, list):
+        raise ValueError("candidates must be an array")
+    candidates: list[DiscoveryCandidateInput] = []
+    for raw_candidate in raw_candidates:
+        if not isinstance(raw_candidate, dict):
+            raise ValueError("each candidate must be an object")
+        kind = raw_candidate.get("kind")
+        evidence = raw_candidate.get("evidence", [])
+        if not isinstance(evidence, list):
+            raise ValueError("candidate evidence must be an array of strings")
+        candidates.append(
+            DiscoveryCandidateInput(
+                identifier=str(raw_candidate["identifier"]),
+                title=str(raw_candidate["title"]),
+                kind=ResourceKind(str(kind)) if kind is not None else None,
+                description=str(raw_candidate.get("description", "")),
+                evidence=tuple(str(item) for item in evidence),
+            )
+        )
+    return candidates
+
+
+def _preview_import(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    preview = gateway.preview_import(
+        WorkspaceId(_str_arg(arguments, "workspace_id")),
+        _str_arg(arguments, "instruction"),
+        _candidate_inputs(arguments),
+        sources_searched=_str_tuple_arg(arguments, "sources_searched"),
+        filters_interpreted=_dict_arg(arguments, "filters_interpreted"),
+    )
+    return preview.model_dump(mode="json")
+
+
+def _apply_import(gateway: AgentGatewayService, arguments: dict[str, object]) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.apply_import(
+        WorkspaceId(_str_arg(arguments, "workspace_id")),
+        _str_arg(arguments, "instruction"),
+        _candidate_inputs(arguments),
+        sources_searched=_str_tuple_arg(arguments, "sources_searched"),
+        filters_interpreted=_dict_arg(arguments, "filters_interpreted"),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
 _HANDLERS: dict[str, _ToolHandler] = {
     "pgos_get_workspace": _get_workspace,
     "pgos_list_nodes": _list_nodes,
@@ -525,6 +655,8 @@ _HANDLERS: dict[str, _ToolHandler] = {
     "pgos_update_resource": _update_resource,
     "pgos_archive_resource": _archive_resource,
     "pgos_advance_workflow": _advance_workflow,
+    "pgos_preview_import": _preview_import,
+    "pgos_apply_import": _apply_import,
 }
 
 

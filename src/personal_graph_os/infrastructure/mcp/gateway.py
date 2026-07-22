@@ -10,9 +10,10 @@ canonical validation and atomic multi-table commit never fork from REST's.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
+from personal_graph_os.application.discovery import DiscoveryCandidateInput, DiscoveryService
 from personal_graph_os.application.file_service import FileService
 from personal_graph_os.application.repositories import (
     EdgeRepository,
@@ -26,6 +27,7 @@ from personal_graph_os.application.services import EdgeService, NodeService, Res
 from personal_graph_os.application.workflow_chain import WorkflowChainService, WorkflowChainStep
 from personal_graph_os.domain.activity import ActivityEvent, ActorKind, MutationAction
 from personal_graph_os.domain.identifiers import (
+    DiscoveryRunId,
     EdgeTypeId,
     NodeId,
     NodeTypeId,
@@ -35,6 +37,8 @@ from personal_graph_os.domain.identifiers import (
 )
 from personal_graph_os.domain.resource import ResourceKind, ResourceLifecycleStatus
 from personal_graph_os.infrastructure.mcp.dto import (
+    DiscoveryPreviewDTO,
+    DiscoveryRunDTO,
     EdgeDTO,
     EvidencePointerDTO,
     NodeDTO,
@@ -49,6 +53,9 @@ MAX_ACTOR_NAME_LENGTH = 200
 MAX_REASON_LENGTH = 1_000
 MAX_REQUEST_ID_LENGTH = 200
 MAX_TITLE_LENGTH = 300
+MAX_IMPORT_TEXT_LENGTH = 4_000
+MAX_IMPORT_CANDIDATES = 50
+MAX_IMPORT_EVIDENCE_POINTERS = 20
 
 _MCP_SOURCE = "mcp"
 
@@ -95,6 +102,7 @@ class AgentGatewayService:
         edge_service: EdgeService,
         resource_service: ResourceService,
         workflow_chain_service: WorkflowChainService,
+        discovery_service: DiscoveryService,
         unit_of_work_factory: Callable[[], ResearchUnitOfWork],
     ) -> None:
         self._workspaces = workspaces
@@ -107,6 +115,7 @@ class AgentGatewayService:
         self._edge_service = edge_service
         self._resource_service = resource_service
         self._workflow_chain_service = workflow_chain_service
+        self._discovery_service = discovery_service
         self._unit_of_work_factory = unit_of_work_factory
 
     def _require_workspace(self, workspace_id: WorkspaceId) -> None:
@@ -557,5 +566,114 @@ class AgentGatewayService:
         return {
             "target_node": NodeDTO.from_domain(target_node).model_dump(mode="json"),
             "edge": EdgeDTO.from_domain(edge).model_dump(mode="json"),
+            "replayed": False,
+        }
+
+    # -- Provenance-preserving import (06.3, decisions #4/#14, `WORK.md`) -------------------
+
+    def _validate_import_candidates(
+        self, candidates: Sequence[DiscoveryCandidateInput]
+    ) -> tuple[DiscoveryCandidateInput, ...]:
+        if not candidates:
+            raise GatewayValidationError("candidates must not be empty")
+        if len(candidates) > MAX_IMPORT_CANDIDATES:
+            raise GatewayValidationError(
+                f"candidates must not exceed {MAX_IMPORT_CANDIDATES}, got {len(candidates)}"
+            )
+        validated: list[DiscoveryCandidateInput] = []
+        for candidate in candidates:
+            identifier = _validate_bounded_text(
+                candidate.identifier, field_name="identifier", maximum=MAX_IMPORT_TEXT_LENGTH
+            )
+            title = _validate_bounded_text(
+                candidate.title, field_name="title", maximum=MAX_TITLE_LENGTH
+            )
+            if len(candidate.description) > MAX_IMPORT_TEXT_LENGTH:
+                raise GatewayValidationError(
+                    f"description must not exceed {MAX_IMPORT_TEXT_LENGTH} characters"
+                )
+            if len(candidate.evidence) > MAX_IMPORT_EVIDENCE_POINTERS:
+                raise GatewayValidationError(
+                    f"evidence must not exceed {MAX_IMPORT_EVIDENCE_POINTERS} entries"
+                )
+            validated.append(
+                candidate.model_copy(update={"identifier": identifier, "title": title})
+            )
+        return tuple(validated)
+
+    def preview_import(
+        self,
+        workspace_id: WorkspaceId,
+        instruction: str,
+        candidates: Sequence[DiscoveryCandidateInput],
+        *,
+        sources_searched: Sequence[str] = (),
+        filters_interpreted: dict[str, object] | None = None,
+    ) -> DiscoveryPreviewDTO:
+        instruction = _validate_bounded_text(
+            instruction, field_name="instruction", maximum=MAX_IMPORT_TEXT_LENGTH
+        )
+        validated_candidates = self._validate_import_candidates(candidates)
+        preview = self._discovery_service.preview(
+            workspace_id,
+            instruction,
+            validated_candidates,
+            sources_searched=sources_searched,
+            filters_interpreted=filters_interpreted,
+        )
+        return DiscoveryPreviewDTO.from_domain(preview)
+
+    def apply_import(
+        self,
+        workspace_id: WorkspaceId,
+        instruction: str,
+        candidates: Sequence[DiscoveryCandidateInput],
+        *,
+        sources_searched: Sequence[str] = (),
+        filters_interpreted: dict[str, object] | None = None,
+        actor_name: str,
+        reason: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        instruction = _validate_bounded_text(
+            instruction, field_name="instruction", maximum=MAX_IMPORT_TEXT_LENGTH
+        )
+        validated_candidates = self._validate_import_candidates(candidates)
+        with self._unit_of_work_factory() as unit_of_work:
+            replay = self._find_replay(unit_of_work, workspace_id, actor_name, request_id)
+            if replay is not None:
+                run = unit_of_work.discovery_runs.get(DiscoveryRunId(replay.entity_id))
+                if run is None:
+                    raise GatewayConflictError(
+                        f"replayed discovery run {replay.entity_id!r} no longer exists"
+                    )
+                return {
+                    "run": DiscoveryRunDTO.from_domain(run).model_dump(mode="json"),
+                    "replayed": True,
+                }
+            run, newly_created = self._discovery_service.apply_within(
+                unit_of_work,
+                workspace_id,
+                actor_name,
+                instruction,
+                validated_candidates,
+                sources_searched=sources_searched,
+                filters_interpreted=filters_interpreted,
+            )
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="discovery_run",
+                entity_id=run.id,
+                action=MutationAction.CREATED,
+            )
+        for resource, node in newly_created:
+            self._resource_service.index_created_resource(resource, node)
+        return {
+            "run": DiscoveryRunDTO.from_domain(run).model_dump(mode="json"),
             "replayed": False,
         }

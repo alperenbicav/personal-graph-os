@@ -11,6 +11,8 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from personal_graph_os.application.discovery import DiscoveryCandidatePreview, DiscoveryPreview
+from personal_graph_os.domain.activity import DiscoveredCandidate, DiscoveryRun
 from personal_graph_os.domain.files import Attachment, FileReference
 from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.resource import Resource
@@ -169,4 +171,111 @@ class EvidencePointerDTO(BaseModel):
                 file_reference.last_verified_at is not None and not file_reference.is_missing
             ),
             created_at=file_reference.last_verified_at,
+        )
+
+
+class DiscoveryCandidatePreviewDTO(BaseModel):
+    identifier: str
+    title: str
+    kind: str | None
+    description: str
+    evidence: tuple[str, ...]
+    canonical_identifier: str | None
+    decision: str
+    reason: str
+    existing_resource_id: str | None
+    duplicate_of_candidate_index: int | None
+
+    @classmethod
+    def from_domain(cls, preview: DiscoveryCandidatePreview) -> DiscoveryCandidatePreviewDTO:
+        return cls(
+            identifier=preview.candidate.identifier,
+            title=preview.candidate.title,
+            kind=preview.candidate.kind.value if preview.candidate.kind else None,
+            description=preview.candidate.description,
+            evidence=preview.candidate.evidence,
+            canonical_identifier=preview.canonical_identifier,
+            decision=preview.decision.value,
+            reason=preview.reason,
+            existing_resource_id=preview.existing_resource_id,
+            duplicate_of_candidate_index=preview.duplicate_of_candidate_index,
+        )
+
+
+class DiscoveryPreviewDTO(BaseModel):
+    instruction: str
+    sources_searched: tuple[str, ...]
+    filters_interpreted: dict[str, object]
+    candidates: tuple[DiscoveryCandidatePreviewDTO, ...]
+
+    @classmethod
+    def from_domain(cls, preview: DiscoveryPreview) -> DiscoveryPreviewDTO:
+        return cls(
+            instruction=preview.instruction,
+            sources_searched=preview.sources_searched,
+            filters_interpreted=preview.filters_interpreted,
+            candidates=tuple(
+                DiscoveryCandidatePreviewDTO.from_domain(candidate)
+                for candidate in preview.candidates
+            ),
+        )
+
+
+class DiscoveredCandidateDTO(BaseModel):
+    raw_identifier: str
+    canonical_identifier: str | None
+    title: str
+    kind: str | None
+    description: str
+    evidence: tuple[str, ...]
+    outcome: str
+    reason: str | None
+    existing_resource_id: str | None
+    imported_node_id: str | None
+
+    @classmethod
+    def from_domain(cls, candidate: DiscoveredCandidate) -> DiscoveredCandidateDTO:
+        return cls(
+            raw_identifier=candidate.raw_identifier,
+            canonical_identifier=candidate.canonical_identifier,
+            title=candidate.title,
+            kind=candidate.kind.value if candidate.kind else None,
+            description=candidate.description,
+            evidence=candidate.evidence,
+            outcome=candidate.outcome.value,
+            reason=candidate.reason,
+            existing_resource_id=candidate.existing_resource_id,
+            imported_node_id=candidate.imported_node_id,
+        )
+
+
+class DiscoveryRunDTO(BaseModel):
+    id: str
+    workspace_id: str
+    agent_identity: str
+    instruction: str
+    sources_searched: tuple[str, ...]
+    filters_interpreted: dict[str, object]
+    candidates: tuple[DiscoveredCandidateDTO, ...]
+    started_at: datetime
+    completed_at: datetime | None
+    imported_count: int
+    skipped_count: int
+
+    @classmethod
+    def from_domain(cls, run: DiscoveryRun) -> DiscoveryRunDTO:
+        return cls(
+            id=run.id,
+            workspace_id=run.workspace_id,
+            agent_identity=run.agent_identity,
+            instruction=run.instruction,
+            sources_searched=run.sources_searched,
+            filters_interpreted=run.filters_interpreted,
+            candidates=tuple(
+                DiscoveredCandidateDTO.from_domain(candidate) for candidate in run.candidates
+            ),
+            started_at=run.started_at,
+            completed_at=run.completed_at,
+            imported_count=run.imported_count,
+            skipped_count=run.skipped_count,
         )

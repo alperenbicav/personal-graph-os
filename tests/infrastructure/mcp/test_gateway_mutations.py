@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from personal_graph_os.application.discovery import DiscoveryCandidateInput, DiscoveryService
 from personal_graph_os.application.file_service import FileService
 from personal_graph_os.application.search_service import SearchService
 from personal_graph_os.application.semantic_schema import ensure_semantic_schema
@@ -24,7 +25,11 @@ from personal_graph_os.domain.identifiers import NodeId, NodeTypeId
 from personal_graph_os.domain.resource import ResourceKind, ResourceLifecycleStatus
 from personal_graph_os.domain.schema import EdgeType, NodeType
 from personal_graph_os.infrastructure.local_file_store import LocalManagedFileStore
-from personal_graph_os.infrastructure.mcp.gateway import AgentGatewayService, GatewayNotFoundError
+from personal_graph_os.infrastructure.mcp.gateway import (
+    AgentGatewayService,
+    GatewayNotFoundError,
+    GatewayValidationError,
+)
 from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteAttachmentRepository,
     SqliteEdgeRepository,
@@ -80,6 +85,12 @@ def _fixture(sqlite_connection: sqlite3.Connection, tmp_path: Path):
     workflow_chain_service = WorkflowChainService(
         workspace_repository, node_repository, lambda: SqliteResearchUnitOfWork(sqlite_connection)
     )
+    discovery_service = DiscoveryService(
+        workspace_repository,
+        resource_repository,
+        resource_service,
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
+    )
 
     gateway = AgentGatewayService(
         workspace_repository,
@@ -92,12 +103,14 @@ def _fixture(sqlite_connection: sqlite3.Connection, tmp_path: Path):
         edge_service=edge_service,
         resource_service=resource_service,
         workflow_chain_service=workflow_chain_service,
+        discovery_service=discovery_service,
         unit_of_work_factory=lambda: SqliteResearchUnitOfWork(sqlite_connection),
     )
     return {
         "gateway": gateway,
         "node_repository": node_repository,
         "edge_repository": edge_repository,
+        "resource_repository": resource_repository,
         "workspace_id": workspace.id,
         "task_type": task_type,
         "resource_type": resource_type,
@@ -467,3 +480,108 @@ def test_mutation_validation_error_rolls_back_without_writing_an_event(
 
     all_nodes = ctx["node_repository"].list_by_workspace(ctx["workspace_id"])
     assert all_nodes == ()
+
+
+def _candidate(identifier: str, title: str) -> DiscoveryCandidateInput:
+    return DiscoveryCandidateInput(identifier=identifier, title=title)
+
+
+def test_preview_import_is_side_effect_free(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    ctx = _fixture(sqlite_connection, tmp_path)
+    gateway: AgentGatewayService = ctx["gateway"]
+
+    preview = gateway.preview_import(
+        ctx["workspace_id"],
+        "import one paper",
+        [_candidate("https://example.com/paper", "A Paper")],
+    )
+
+    assert len(preview.candidates) == 1
+    assert preview.candidates[0].decision == "create"
+    assert ctx["resource_repository"].list_by_workspace(ctx["workspace_id"]) == ()
+
+
+def test_apply_import_replay_by_request_id_does_not_import_twice(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    ctx = _fixture(sqlite_connection, tmp_path)
+    gateway: AgentGatewayService = ctx["gateway"]
+    candidates = [_candidate("https://example.com/paper", "A Paper")]
+
+    first = gateway.apply_import(
+        ctx["workspace_id"],
+        "import one paper",
+        candidates,
+        actor_name="agent-1",
+        reason="import a paper",
+        request_id="req-import-1",
+    )
+    replay = gateway.apply_import(
+        ctx["workspace_id"],
+        "import one paper",
+        candidates,
+        actor_name="agent-1",
+        reason="import a paper",
+        request_id="req-import-1",
+    )
+
+    assert first["replayed"] is False
+    assert first["run"]["agent_identity"] == "agent-1"
+    assert first["run"]["imported_count"] == 1
+    assert replay["replayed"] is True
+    assert replay["run"]["id"] == first["run"]["id"]
+    all_resources = ctx["resource_repository"].list_by_workspace(ctx["workspace_id"])
+    assert len(all_resources) == 1
+
+
+def test_apply_import_reapplying_the_same_candidate_reuses_instead_of_duplicating(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    ctx = _fixture(sqlite_connection, tmp_path)
+    gateway: AgentGatewayService = ctx["gateway"]
+
+    gateway.apply_import(
+        ctx["workspace_id"],
+        "import one paper",
+        [_candidate("https://example.com/paper", "A Paper")],
+        actor_name="agent-1",
+        reason="import a paper",
+        request_id="req-import-1",
+    )
+    second = gateway.apply_import(
+        ctx["workspace_id"],
+        "import the same paper again",
+        [_candidate("https://example.com/paper", "A Paper")],
+        actor_name="agent-1",
+        reason="import a paper",
+        request_id="req-import-2",
+    )
+
+    assert second["replayed"] is False
+    assert second["run"]["imported_count"] == 0
+    all_resources = ctx["resource_repository"].list_by_workspace(ctx["workspace_id"])
+    assert len(all_resources) == 1
+
+
+def test_apply_import_too_many_candidates_is_rejected(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    ctx = _fixture(sqlite_connection, tmp_path)
+    gateway: AgentGatewayService = ctx["gateway"]
+    candidates = [
+        _candidate(f"https://example.com/{index}", f"Paper {index}") for index in range(51)
+    ]
+
+    with pytest.raises(GatewayValidationError):
+        gateway.apply_import(
+            ctx["workspace_id"],
+            "import too many",
+            candidates,
+            actor_name="agent-1",
+            reason="r",
+            request_id="req-too-many",
+        )
+
+    assert ctx["resource_repository"].list_by_workspace(ctx["workspace_id"]) == ()

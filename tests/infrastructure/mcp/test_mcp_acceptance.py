@@ -99,6 +99,8 @@ def test_real_client_lists_all_tools(running_server: _RunningServer) -> None:
         "pgos_update_resource",
         "pgos_archive_resource",
         "pgos_advance_workflow",
+        "pgos_preview_import",
+        "pgos_apply_import",
     }
 
 
@@ -175,6 +177,57 @@ def test_real_client_create_node_is_attributed_and_replay_safe(
     assert replay.structuredContent is not None
     assert replay.structuredContent["replayed"] is True
     assert replay.structuredContent["node_id"] == created_node_id
+
+
+async def _call_preview_then_apply_import_twice(
+    server: _RunningServer,
+) -> tuple[types.CallToolResult, types.CallToolResult, types.CallToolResult]:
+    async with _session(server.url, server.token) as session:
+        candidate = {
+            "identifier": "https://example.com/acceptance-paper",
+            "title": "Acceptance Paper",
+        }
+        preview = await session.call_tool(
+            "pgos_preview_import",
+            {
+                "workspace_id": server.workspace_id,
+                "instruction": "import one paper",
+                "candidates": [candidate],
+            },
+        )
+        apply_arguments = {
+            "workspace_id": server.workspace_id,
+            "instruction": "import one paper",
+            "candidates": [candidate],
+            "actor_name": "acceptance-test-agent",
+            "reason": "protocol acceptance",
+            "request_id": "acceptance-import-1",
+        }
+        first_apply = await session.call_tool("pgos_apply_import", apply_arguments)
+        replay_apply = await session.call_tool("pgos_apply_import", apply_arguments)
+        return preview, first_apply, replay_apply
+
+
+def test_real_client_preview_import_is_read_only_and_apply_import_is_replay_safe(
+    running_server: _RunningServer,
+) -> None:
+    preview, first_apply, replay_apply = asyncio.run(
+        _call_preview_then_apply_import_twice(running_server)
+    )
+
+    assert preview.isError is False
+    assert preview.structuredContent is not None
+    assert preview.structuredContent["candidates"][0]["decision"] == "create"
+
+    assert first_apply.isError is False
+    assert first_apply.structuredContent is not None
+    assert first_apply.structuredContent["replayed"] is False
+    run_id = first_apply.structuredContent["run"]["id"]
+
+    assert replay_apply.isError is False
+    assert replay_apply.structuredContent is not None
+    assert replay_apply.structuredContent["replayed"] is True
+    assert replay_apply.structuredContent["run"]["id"] == run_id
 
 
 async def _initialize_with_wrong_token(server: _RunningServer) -> None:

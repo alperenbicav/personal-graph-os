@@ -171,67 +171,92 @@ class DiscoveryService:
         existing resource (no new `Node`/`Resource` is written), so no duplicate resources are
         ever created, even across repeated calls with the same request.
         """
+        with self._unit_of_work_factory() as unit_of_work:
+            run, newly_created = self.apply_within(
+                unit_of_work,
+                workspace_id,
+                agent_identity,
+                instruction,
+                candidates,
+                sources_searched=sources_searched,
+                filters_interpreted=filters_interpreted,
+            )
+        for resource, node in newly_created:
+            self._resource_service.index_created_resource(resource, node)
+        return run
+
+    def apply_within(
+        self,
+        unit_of_work: ResearchUnitOfWork,
+        workspace_id: WorkspaceId,
+        agent_identity: str,
+        instruction: str,
+        candidates: Sequence[DiscoveryCandidateInput],
+        *,
+        sources_searched: Sequence[str] = (),
+        filters_interpreted: dict[str, object] | None = None,
+    ) -> tuple[DiscoveryRun, list[tuple[Resource, Node]]]:
+        """Same import as `apply`, but inside a caller-owned, already-open `unit_of_work`.
+
+        Writes the `DiscoveryRun` without committing and returns newly created
+        `(Resource, Node)` pairs uncommitted/unindexed; the caller commits (by closing its
+        `unit_of_work`) and indexes them afterward — used by the MCP gateway so the run and its
+        attributed `ActivityEvent` commit atomically in one transaction (decision #14, `WORK.md`).
+        """
         self._require_workspace(workspace_id)
         recorded: list[DiscoveredCandidate] = []
         newly_created: list[tuple[Resource, Node]] = []
 
-        with self._unit_of_work_factory() as unit_of_work:
-            for candidate in candidates:
-                try:
-                    with unit_of_work.savepoint():
-                        resource, was_created, node = self._resource_service.create_or_reuse_within(
-                            unit_of_work,
-                            workspace_id,
-                            candidate.title,
-                            candidate.identifier,
-                            kind=candidate.kind,
-                            body=candidate.description,
-                        )
-                except DomainError as error:
-                    recorded.append(
-                        DiscoveredCandidate(
-                            raw_identifier=candidate.identifier,
-                            title=candidate.title,
-                            kind=candidate.kind,
-                            description=candidate.description,
-                            evidence=candidate.evidence,
-                            outcome=DiscoveryOutcome.FAILED,
-                            reason=str(error),
-                        )
+        for candidate in candidates:
+            try:
+                with unit_of_work.savepoint():
+                    resource, was_created, node = self._resource_service.create_or_reuse_within(
+                        unit_of_work,
+                        workspace_id,
+                        candidate.title,
+                        candidate.identifier,
+                        kind=candidate.kind,
+                        body=candidate.description,
                     )
-                    continue
-
+            except DomainError as error:
                 recorded.append(
                     DiscoveredCandidate(
                         raw_identifier=candidate.identifier,
-                        canonical_identifier=resource.canonical_identifier,
                         title=candidate.title,
                         kind=candidate.kind,
                         description=candidate.description,
                         evidence=candidate.evidence,
-                        outcome=DiscoveryOutcome.IMPORTED
-                        if was_created
-                        else DiscoveryOutcome.REUSED,
-                        reason=None if was_created else "reused existing resource",
-                        existing_resource_id=None if was_created else resource.id,
-                        imported_node_id=resource.node_id,
+                        outcome=DiscoveryOutcome.FAILED,
+                        reason=str(error),
                     )
                 )
-                if was_created and node is not None:
-                    newly_created.append((resource, node))
+                continue
 
-            run = DiscoveryRun(
-                workspace_id=workspace_id,
-                agent_identity=agent_identity,
-                instruction=instruction,
-                sources_searched=tuple(sources_searched),
-                filters_interpreted=dict(filters_interpreted or {}),
-                candidates=tuple(recorded),
-                completed_at=datetime.now(UTC),
+            recorded.append(
+                DiscoveredCandidate(
+                    raw_identifier=candidate.identifier,
+                    canonical_identifier=resource.canonical_identifier,
+                    title=candidate.title,
+                    kind=candidate.kind,
+                    description=candidate.description,
+                    evidence=candidate.evidence,
+                    outcome=DiscoveryOutcome.IMPORTED if was_created else DiscoveryOutcome.REUSED,
+                    reason=None if was_created else "reused existing resource",
+                    existing_resource_id=None if was_created else resource.id,
+                    imported_node_id=resource.node_id,
+                )
             )
-            unit_of_work.discovery_runs.save_without_commit(run)
+            if was_created and node is not None:
+                newly_created.append((resource, node))
 
-        for resource, node in newly_created:
-            self._resource_service.index_created_resource(resource, node)
-
-        return run
+        run = DiscoveryRun(
+            workspace_id=workspace_id,
+            agent_identity=agent_identity,
+            instruction=instruction,
+            sources_searched=tuple(sources_searched),
+            filters_interpreted=dict(filters_interpreted or {}),
+            candidates=tuple(recorded),
+            completed_at=datetime.now(UTC),
+        )
+        unit_of_work.discovery_runs.save_without_commit(run)
+        return run, newly_created

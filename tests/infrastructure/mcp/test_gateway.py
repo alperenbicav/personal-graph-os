@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from personal_graph_os.application.discovery import DiscoveryService
 from personal_graph_os.application.file_service import FileService
 from personal_graph_os.application.search_service import SearchService
 from personal_graph_os.application.semantic_schema import ensure_semantic_schema
@@ -80,6 +81,12 @@ def _fixture(sqlite_connection: sqlite3.Connection, tmp_path: Path):
     workflow_chain_service = WorkflowChainService(
         workspace_repository, node_repository, lambda: SqliteResearchUnitOfWork(sqlite_connection)
     )
+    discovery_service = DiscoveryService(
+        workspace_repository,
+        resource_repository,
+        resource_service,
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
+    )
 
     gateway = AgentGatewayService(
         workspace_repository,
@@ -92,6 +99,7 @@ def _fixture(sqlite_connection: sqlite3.Connection, tmp_path: Path):
         edge_service=edge_service,
         resource_service=resource_service,
         workflow_chain_service=workflow_chain_service,
+        discovery_service=discovery_service,
         unit_of_work_factory=lambda: SqliteResearchUnitOfWork(sqlite_connection),
     )
     return {
