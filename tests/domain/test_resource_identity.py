@@ -22,6 +22,20 @@ def test_doi_variants_canonicalize_to_the_same_identity(raw: str, expected_ident
     assert identity.normalized_source_url == f"https://doi.org/{expected_identifier[4:]}"
 
 
+_DOI_TRACKING_CASES = [
+    "https://doi.org/10.1000/xyz123?utm_source=one",
+    "https://doi.org/10.1000/xyz123?utm_source=two",
+    "https://doi.org/10.1000/xyz123#section-2",
+    "https://dx.doi.org/10.1000/XYZ123?gclid=abc",
+]
+
+
+@pytest.mark.parametrize("raw", _DOI_TRACKING_CASES)
+def test_doi_query_and_fragment_are_excluded_from_the_canonical_identifier(raw: str) -> None:
+    identity = canonicalize_resource_identity(raw)
+    assert identity.canonical_identifier == "doi:10.1000/xyz123"
+
+
 _ARXIV_CASES = [
     ("https://arxiv.org/abs/2401.00001", "arxiv:2401.00001"),
     ("https://arxiv.org/abs/2401.00001v1", "arxiv:2401.00001"),
@@ -86,6 +100,7 @@ def test_canonicalization_is_idempotent_for_every_kind() -> None:
         "https://arxiv.org/abs/2401.00001v2",
         "https://github.com/octocat/Hello-World",
         "https://example.com/a/b?z=1&a=2",
+        "https://[2001:db8::1]:8443/paper",
     ):
         once = canonicalize_resource_identity(raw)
         twice = canonicalize_resource_identity(once.canonical_identifier)
@@ -93,8 +108,36 @@ def test_canonicalization_is_idempotent_for_every_kind() -> None:
 
 
 @pytest.mark.parametrize(
-    "raw", ["", "   ", "not a url", "ftp://example.com/file", "javascript:alert(1)"]
+    "raw",
+    [
+        "",
+        "   ",
+        "not a url",
+        "ftp://example.com/file",
+        "javascript:alert(1)",
+        "https://example.com:bad/path",
+        "https://[bad",
+        "https://example.com:99999/path",
+        "https://[::1]:99999/path",
+    ],
 )
 def test_invalid_or_unsupported_input_is_rejected(raw: str) -> None:
     with pytest.raises(InvariantViolationError):
         canonicalize_resource_identity(raw)
+
+
+@pytest.mark.parametrize(
+    "raw,expected_identifier",
+    [
+        ("https://[::1]/path", "https://[::1]/path"),
+        ("https://[::1]:443/path", "https://[::1]/path"),
+        ("https://[::1]:8443/path", "https://[::1]:8443/path"),
+        ("https://[2001:DB8::1]/paper", "https://[2001:db8::1]/paper"),
+    ],
+)
+def test_ipv6_urls_preserve_brackets_and_canonicalize(raw: str, expected_identifier: str) -> None:
+    identity = canonicalize_resource_identity(raw)
+    assert identity.canonical_identifier == expected_identifier
+    # The result must itself be a valid, re-canonicalizable URL — not merely accepted once.
+    replayed = canonicalize_resource_identity(identity.canonical_identifier)
+    assert replayed.canonical_identifier == expected_identifier

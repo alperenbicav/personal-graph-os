@@ -1,6 +1,9 @@
 import type {
   Canvas,
   CanvasPlacement,
+  DiscoveryCandidateInput,
+  DiscoveryPreview,
+  DiscoveryRun,
   EdgeType,
   FieldDefinition,
   FieldType,
@@ -353,6 +356,8 @@ export interface UpdateResourcePatch {
   next_action_dismissed?: boolean
   open_questions?: string[]
   takeaways?: string[]
+  progress_percent?: number
+  clear_progress_percent?: boolean
   review_at?: string | null
   clear_review_at?: boolean
 }
@@ -461,6 +466,34 @@ export function advanceWorkflowChain(
       source_node_id: sourceNodeId,
       step,
       ...patch,
+    }),
+  })
+}
+
+export function previewDiscovery(
+  workspaceId: string,
+  instruction: string,
+  candidates: DiscoveryCandidateInput[],
+): Promise<DiscoveryPreview> {
+  return request('/discovery/preview', {
+    method: 'POST',
+    body: JSON.stringify({ workspace_id: workspaceId, instruction, candidates }),
+  })
+}
+
+export function applyDiscovery(
+  workspaceId: string,
+  agentIdentity: string,
+  instruction: string,
+  candidates: DiscoveryCandidateInput[],
+): Promise<DiscoveryRun> {
+  return request('/discovery/apply', {
+    method: 'POST',
+    body: JSON.stringify({
+      workspace_id: workspaceId,
+      agent_identity: agentIdentity,
+      instruction,
+      candidates,
     }),
   })
 }

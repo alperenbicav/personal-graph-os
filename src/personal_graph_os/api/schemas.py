@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StrictInt
 
 from personal_graph_os.application.projections import ProjectionItem
 from personal_graph_os.application.workflow_chain import WorkflowChainStep
@@ -21,6 +21,10 @@ from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.resource import Resource, ResourceKind, ResourceLifecycleStatus
 from personal_graph_os.domain.schema import FieldType
 from personal_graph_os.domain.views import FilterField, ProjectionQuery, ViewKind
+
+_MAX_DISCOVERY_CANDIDATES = 50
+_MAX_DISCOVERY_TEXT_LENGTH = 4000
+_MAX_DISCOVERY_TITLE_LENGTH = 300
 
 
 class CaptureNodeRequest(BaseModel):
@@ -141,6 +145,8 @@ class UpdateResourceRequest(BaseModel):
     next_action_dismissed: bool | None = None
     open_questions: list[str] | None = None
     takeaways: list[str] | None = None
+    progress_percent: StrictInt | None = Field(default=None, ge=0, le=100)
+    clear_progress_percent: bool = False
     review_at: datetime | None = None
     clear_review_at: bool = False
 
@@ -157,6 +163,7 @@ class ResourceResponse(BaseModel):
     next_action_dismissed: bool
     open_questions: list[str]
     takeaways: list[str]
+    progress_percent: int | None
     review_at: datetime | None
     last_activity_at: datetime
     title: str
@@ -176,6 +183,7 @@ class ResourceResponse(BaseModel):
             next_action_dismissed=resource.next_action_dismissed,
             open_questions=list(resource.open_questions),
             takeaways=list(resource.takeaways),
+            progress_percent=resource.progress_percent,
             review_at=resource.review_at,
             last_activity_at=resource.last_activity_at,
             title=node.title,
@@ -248,3 +256,25 @@ class AdvanceWorkflowChainRequest(BaseModel):
 class WorkflowChainStepResponse(BaseModel):
     node: Node
     edge: Edge
+
+
+class DiscoveryCandidateRequest(BaseModel):
+    identifier: str = Field(min_length=1, max_length=_MAX_DISCOVERY_TEXT_LENGTH)
+    title: str = Field(min_length=1, max_length=_MAX_DISCOVERY_TITLE_LENGTH)
+    kind: ResourceKind | None = None
+    description: str = Field(default="", max_length=_MAX_DISCOVERY_TEXT_LENGTH)
+    evidence: list[str] = Field(default_factory=list, max_length=20)
+
+
+class DiscoveryPreviewRequest(BaseModel):
+    workspace_id: str
+    instruction: str = Field(min_length=1, max_length=_MAX_DISCOVERY_TEXT_LENGTH)
+    sources_searched: list[str] = Field(default_factory=list, max_length=20)
+    filters_interpreted: dict[str, object] = Field(default_factory=dict)
+    candidates: list[DiscoveryCandidateRequest] = Field(
+        min_length=1, max_length=_MAX_DISCOVERY_CANDIDATES
+    )
+
+
+class DiscoveryApplyRequest(DiscoveryPreviewRequest):
+    agent_identity: str = Field(min_length=1, max_length=_MAX_DISCOVERY_TITLE_LENGTH)

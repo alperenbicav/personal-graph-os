@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from pydantic import ValidationError
 
 from personal_graph_os.domain.errors import InvariantViolationError
 from personal_graph_os.domain.identifiers import NodeId, WorkspaceId, new_id
@@ -28,6 +29,50 @@ def _resource(
         review_at=review_at,
         last_activity_at=last_activity_at if last_activity_at is not None else datetime.now(UTC),
     )
+
+
+@pytest.mark.parametrize("value", [0, 1, 50, 99, 100])
+def test_progress_percent_accepts_the_full_bounded_range(value: int) -> None:
+    resource = Resource(
+        workspace_id=WorkspaceId(new_id()),
+        node_id=NodeId(new_id()),
+        kind=ResourceKind.PAPER,
+        canonical_identifier="arxiv:2401.00001",
+        progress_percent=value,
+    )
+    assert resource.progress_percent == value
+
+
+@pytest.mark.parametrize("value", [-1, 101, 1000])
+def test_progress_percent_rejects_out_of_bounds_values(value: int) -> None:
+    with pytest.raises(InvariantViolationError):
+        Resource(
+            workspace_id=WorkspaceId(new_id()),
+            node_id=NodeId(new_id()),
+            kind=ResourceKind.PAPER,
+            canonical_identifier="arxiv:2401.00001",
+            progress_percent=value,
+        )
+
+
+@pytest.mark.parametrize("value", [True, False, 1.5, "50"])
+def test_progress_percent_rejects_non_integer_types(value: object) -> None:
+    """A bool is an `int` subclass in Python; without strict typing, Pydantic would silently
+    coerce `True`/`False` into 1/0 progress instead of rejecting the type mismatch."""
+    with pytest.raises(ValidationError):
+        Resource.model_validate(
+            {
+                "workspace_id": WorkspaceId(new_id()),
+                "node_id": NodeId(new_id()),
+                "kind": ResourceKind.PAPER,
+                "canonical_identifier": "arxiv:2401.00001",
+                "progress_percent": value,
+            }
+        )
+
+
+def test_progress_percent_defaults_to_none() -> None:
+    assert _resource().progress_percent is None
 
 
 def test_paused_resource_requires_a_next_action_or_explicit_dismissal() -> None:

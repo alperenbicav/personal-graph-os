@@ -136,8 +136,11 @@ def _validate_object_references(nodes: NodeRepository, node: Node, node_type: No
             )
 
 
-def _index_node_text(search_index: SearchIndexRepository | None, node: Node) -> None:
-    """Keep `search_documents` current with a node's own title/body.
+def _index_node_text(
+    search_index: SearchIndexRepository | None, node: Node, node_type: NodeType
+) -> None:
+    """Keep `search_documents` current with a node's own title/body plus its searchable
+    (`FieldType.TEXT`) custom-field values.
 
     A resource's identity/kind/takeaways/questions are indexed separately by `ResourceService`
     under the same `entity_id` (see `SqliteSearchIndexRepository`), so this never touches that
@@ -149,7 +152,7 @@ def _index_node_text(search_index: SearchIndexRepository | None, node: Node) -> 
         workspace_id=node.workspace_id,
         entity_type=SearchEntityType.NODE,
         entity_id=node.id,
-        text=build_node_search_text(node),
+        text=build_node_search_text(node, node_type),
     )
 
 
@@ -185,7 +188,7 @@ class NodeService:
         node.validate_against(node_type)
         _validate_object_references(self._nodes, node, node_type)
         self._nodes.save(node)
-        _index_node_text(self._search_index, node)
+        _index_node_text(self._search_index, node, node_type)
         return node
 
     def update(
@@ -227,7 +230,7 @@ class NodeService:
         updated.validate_against(node_type)
         _validate_object_references(self._nodes, updated, node_type)
         self._nodes.save(updated)
-        _index_node_text(self._search_index, updated)
+        _index_node_text(self._search_index, updated, node_type)
         return updated
 
     def archive(self, node_id: NodeId) -> Node:
@@ -384,11 +387,17 @@ class SchemaService:
     """
 
     def __init__(
-        self, workspaces: WorkspaceRepository, nodes: NodeRepository, edges: EdgeRepository
+        self,
+        workspaces: WorkspaceRepository,
+        nodes: NodeRepository,
+        edges: EdgeRepository,
+        *,
+        search_index: SearchIndexRepository | None = None,
     ) -> None:
         self._workspaces = workspaces
         self._nodes = nodes
         self._edges = edges
+        self._search_index = search_index
 
     def _require_workspace(self, workspace_id: WorkspaceId) -> Workspace:
         workspace = self._workspaces.get(workspace_id)
@@ -409,9 +418,12 @@ class SchemaService:
         return edge_type
 
     def _replace_node_type(self, workspace: Workspace, updated_node_type: NodeType) -> NodeType:
-        for node in self._nodes.list_by_workspace(workspace.id, include_archived=True):
-            if node.node_type_id != updated_node_type.id:
-                continue
+        affected_nodes = [
+            node
+            for node in self._nodes.list_by_workspace(workspace.id, include_archived=True)
+            if node.node_type_id == updated_node_type.id
+        ]
+        for node in affected_nodes:
             try:
                 node.validate_against(updated_node_type)
                 # Reuses the same repository-backed check `NodeService` runs on every direct
@@ -436,6 +448,18 @@ class SchemaService:
             edge_types=workspace.edge_types,
         )
         self._workspaces.save(updated_workspace)
+        # A field's type moving into/out of `FieldType.TEXT` (or a TEXT field being removed)
+        # changes what every existing node of this type should contribute to search — reindex
+        # them against the now-canonical schema so search stays immediately consistent instead
+        # of only catching up on the next node write or process restart.
+        if self._search_index is not None:
+            for node in affected_nodes:
+                self._search_index.index_document(
+                    workspace_id=node.workspace_id,
+                    entity_type=SearchEntityType.NODE,
+                    entity_id=node.id,
+                    text=build_node_search_text(node, updated_node_type),
+                )
         return updated_node_type
 
     def _replace_edge_type(self, workspace: Workspace, updated_edge_type: EdgeType) -> EdgeType:
@@ -836,30 +860,88 @@ class ResourceService:
         """
         workspace = self._require_workspace(workspace_id)
         node_type = self._require_resource_node_type(workspace)
-        identity = canonicalize_resource_identity(raw_source)
+        with self._unit_of_work_factory() as unit_of_work:
+            resource, was_created, node = self._write_resource(
+                unit_of_work, workspace, node_type, title, raw_source, kind=kind, body=body
+            )
+        if was_created:
+            assert node is not None
+            self.index_created_resource(resource, node)
+            return resource, True
 
+        identity = canonicalize_resource_identity(raw_source)
+        return self._maybe_enrich_source_url(resource, identity.normalized_source_url), False
+
+    def create_or_reuse_within(
+        self,
+        unit_of_work: ResearchUnitOfWork,
+        workspace_id: WorkspaceId,
+        title: str,
+        raw_source: str,
+        *,
+        kind: ResourceKind | None = None,
+        body: str = "",
+    ) -> tuple[Resource, bool, Node | None]:
+        """Same write path as `create_or_reuse`, but into a caller-managed, already-open
+        `unit_of_work` (typically inside a caller-managed `savepoint()`) instead of opening its
+        own transaction. Used by `DiscoveryService` so a batch import's per-candidate writes
+        live inside one nested savepoint rather than each candidate committing independently.
+
+        Returns `(resource, was_created, node)`; `node` is `None` on reuse. Callers must index
+        the result themselves via `index_created_resource` only after their own transaction has
+        actually committed — indexing here would commit the caller's transaction early (see
+        `index_created_resource`). Does not enrich an existing resource's `source_url` on reuse;
+        that stays `create_or_reuse`'s job only, to keep this path's side effects minimal.
+        """
+        workspace = self._require_workspace(workspace_id)
+        node_type = self._require_resource_node_type(workspace)
+        return self._write_resource(
+            unit_of_work, workspace, node_type, title, raw_source, kind=kind, body=body
+        )
+
+    def index_created_resource(self, resource: Resource, node: Node) -> None:
+        """Index a `(resource, node)` pair created via `create_or_reuse_within`.
+
+        Call only after the unit of work that wrote them has committed: `SqliteSearchIndexRepository
+        .index_document` commits its own connection, which would end a still-open caller
+        transaction early if called beforehand.
+        """
+        workspace = self._require_workspace(resource.workspace_id)
+        node_type = self._require_resource_node_type(workspace)
+        _index_node_text(self._search_index, node, node_type)
+        self._index_resource_text(resource)
+
+    def _write_resource(
+        self,
+        unit_of_work: ResearchUnitOfWork,
+        workspace: Workspace,
+        node_type: NodeType,
+        title: str,
+        raw_source: str,
+        *,
+        kind: ResourceKind | None,
+        body: str,
+    ) -> tuple[Resource, bool, Node | None]:
+        identity = canonicalize_resource_identity(raw_source)
         existing = self._resources.get_by_canonical_identifier(
-            workspace_id, identity.canonical_identifier
+            workspace.id, identity.canonical_identifier
         )
         if existing is not None:
-            return self._maybe_enrich_source_url(existing, identity.normalized_source_url), False
+            return existing, False, None
 
         resolved_kind = identity.detected_kind or kind or ResourceKind.OTHER
-        node = Node(workspace_id=workspace_id, node_type_id=node_type.id, title=title, body=body)
+        node = Node(workspace_id=workspace.id, node_type_id=node_type.id, title=title, body=body)
         node.validate_against(node_type)
         resource = Resource(
-            workspace_id=workspace_id,
+            workspace_id=workspace.id,
             node_id=node.id,
             kind=resolved_kind,
             canonical_identifier=identity.canonical_identifier,
             source_url=identity.normalized_source_url,
         )
-        with self._unit_of_work_factory() as unit_of_work:
-            unit_of_work.nodes.save_without_commit(node)
-            unit_of_work.resources.save_without_commit(resource)
-        _index_node_text(self._search_index, node)
-        self._index_resource_text(resource)
-        return resource, True
+        unit_of_work.nodes.save_without_commit(node)
+        unit_of_work.resources.save_without_commit(resource)
+        return resource, True, node
 
     def _maybe_enrich_source_url(
         self, existing: Resource, normalized_source_url: str | None
@@ -887,6 +969,8 @@ class ResourceService:
         next_action_dismissed: bool | None = None,
         open_questions: tuple[str, ...] | None = None,
         takeaways: tuple[str, ...] | None = None,
+        progress_percent: int | None = None,
+        clear_progress_percent: bool = False,
         review_at: datetime | None = None,
         clear_review_at: bool = False,
     ) -> Resource:
@@ -918,6 +1002,13 @@ class ResourceService:
                 open_questions if open_questions is not None else existing.open_questions
             ),
             takeaways=takeaways if takeaways is not None else existing.takeaways,
+            progress_percent=(
+                None
+                if clear_progress_percent
+                else (
+                    progress_percent if progress_percent is not None else existing.progress_percent
+                )
+            ),
             review_at=(
                 None
                 if clear_review_at

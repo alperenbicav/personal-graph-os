@@ -18,6 +18,7 @@ from personal_graph_os.domain.identifiers import (
     WorkspaceId,
     new_id,
 )
+from personal_graph_os.domain.resource import ResourceKind
 
 
 class ActorKind(StrEnum):
@@ -61,14 +62,33 @@ class ActivityEvent(BaseModel):
         return stripped
 
 
-class DiscoveredCandidate(BaseModel):
-    """One candidate a `DiscoveryRun` considered, whether imported or skipped."""
+class DiscoveryOutcome(StrEnum):
+    """What ultimately happened to one candidate during `DiscoveryService.apply()`."""
 
-    identifier: str
+    IMPORTED = "imported"
+    REUSED = "reused"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
+class DiscoveredCandidate(BaseModel):
+    """One candidate a `DiscoveryRun` considered, with the evidence it was submitted with and
+    what ultimately happened to it — the durable provenance record ST-06 attributes imports to."""
+
+    raw_identifier: str
+    canonical_identifier: str | None = None
     title: str
-    was_imported: bool
-    skip_reason: str | None = None
+    kind: ResourceKind | None = None
+    description: str = ""
+    evidence: tuple[str, ...] = ()
+    outcome: DiscoveryOutcome
+    reason: str | None = None
+    existing_resource_id: str | None = None
     imported_node_id: str | None = None
+
+    @property
+    def was_imported(self) -> bool:
+        return self.outcome is DiscoveryOutcome.IMPORTED
 
 
 class DiscoveryRun(BaseModel):
@@ -95,8 +115,12 @@ class DiscoveryRun(BaseModel):
 
     @property
     def imported_count(self) -> int:
-        return sum(1 for candidate in self.candidates if candidate.was_imported)
+        return sum(
+            1 for candidate in self.candidates if candidate.outcome is DiscoveryOutcome.IMPORTED
+        )
 
     @property
     def skipped_count(self) -> int:
-        return sum(1 for candidate in self.candidates if not candidate.was_imported)
+        return sum(
+            1 for candidate in self.candidates if candidate.outcome is not DiscoveryOutcome.IMPORTED
+        )

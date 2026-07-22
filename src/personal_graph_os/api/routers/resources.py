@@ -85,6 +85,8 @@ def update_resource(
             tuple(payload.open_questions) if payload.open_questions is not None else None
         ),
         takeaways=tuple(payload.takeaways) if payload.takeaways is not None else None,
+        progress_percent=payload.progress_percent,
+        clear_progress_percent=payload.clear_progress_percent,
         review_at=payload.review_at,
         clear_review_at=payload.clear_review_at,
     )

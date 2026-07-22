@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from personal_graph_os.domain.activity import DiscoveredCandidate, DiscoveryRun
+from personal_graph_os.domain.activity import DiscoveredCandidate, DiscoveryOutcome, DiscoveryRun
 from personal_graph_os.domain.canvas import Canvas, CanvasPlacement
 from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.identifiers import NodeId, ResourceId, WorkspaceId
@@ -328,9 +328,18 @@ def test_discovery_run_round_trips_candidates(sqlite_connection: sqlite3.Connect
         sources_searched=("arxiv",),
         filters_interpreted={"kind": "paper"},
         candidates=(
-            DiscoveredCandidate(identifier="arxiv:1", title="A", was_imported=True),
             DiscoveredCandidate(
-                identifier="arxiv:2", title="B", was_imported=False, skip_reason="duplicate"
+                raw_identifier="arxiv:1",
+                canonical_identifier="arxiv:1",
+                title="A",
+                outcome=DiscoveryOutcome.IMPORTED,
+            ),
+            DiscoveredCandidate(
+                raw_identifier="arxiv:2",
+                canonical_identifier="arxiv:2",
+                title="B",
+                outcome=DiscoveryOutcome.REUSED,
+                reason="duplicate",
             ),
         ),
     )
@@ -342,7 +351,9 @@ def test_discovery_run_round_trips_candidates(sqlite_connection: sqlite3.Connect
     assert reloaded is not None
     assert reloaded.imported_count == 1
     assert reloaded.skipped_count == 1
-    assert reloaded.candidates[1].skip_reason == "duplicate"
+    assert reloaded.candidates[0].was_imported is True
+    assert reloaded.candidates[1].was_imported is False
+    assert reloaded.candidates[1].reason == "duplicate"
     assert repository.list_by_workspace(workspace.id) == (reloaded,)
 
 

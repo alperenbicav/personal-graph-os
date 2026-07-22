@@ -127,6 +127,7 @@ export interface Resource {
   next_action_dismissed: boolean
   open_questions: string[]
   takeaways: string[]
+  progress_percent: number | null
   review_at: string | null
   last_activity_at: string
   title: string
@@ -207,3 +208,56 @@ export type WorkflowChainStep =
   | 'takeaway_to_decision'
   | 'decision_to_task'
   | 'task_to_implementation'
+
+export type DiscoveryDecision = 'create' | 'reuse' | 'reject'
+
+export interface DiscoveryCandidateInput {
+  identifier: string
+  title: string
+  kind?: ResourceKind
+  description?: string
+  evidence?: string[]
+}
+
+export interface DiscoveryCandidatePreview {
+  candidate: DiscoveryCandidateInput
+  canonical_identifier: string | null
+  decision: DiscoveryDecision
+  reason: string
+  existing_resource_id: string | null
+  duplicate_of_candidate_index: number | null
+}
+
+export interface DiscoveryPreview {
+  instruction: string
+  sources_searched: string[]
+  filters_interpreted: Record<string, unknown>
+  candidates: DiscoveryCandidatePreview[]
+}
+
+export type DiscoveryOutcome = 'imported' | 'reused' | 'skipped' | 'failed'
+
+export interface DiscoveredCandidate {
+  raw_identifier: string
+  canonical_identifier: string | null
+  title: string
+  kind: ResourceKind | null
+  description: string
+  evidence: string[]
+  outcome: DiscoveryOutcome
+  reason: string | null
+  existing_resource_id: string | null
+  imported_node_id: string | null
+}
+
+export interface DiscoveryRun {
+  id: string
+  workspace_id: string
+  agent_identity: string
+  instruction: string
+  sources_searched: string[]
+  filters_interpreted: Record<string, unknown>
+  candidates: DiscoveredCandidate[]
+  started_at: string
+  completed_at: string | null
+}

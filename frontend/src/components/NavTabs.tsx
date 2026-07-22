@@ -1,4 +1,4 @@
-export type AppView = 'canvas' | 'table' | 'kanban' | 'timeline' | 'search' | 'research'
+export type AppView = 'canvas' | 'table' | 'kanban' | 'timeline' | 'search' | 'research' | 'discovery'
 
 const TABS: { id: AppView; label: string }[] = [
   { id: 'canvas', label: 'Canvas' },
@@ -7,6 +7,7 @@ const TABS: { id: AppView; label: string }[] = [
   { id: 'timeline', label: 'Timeline' },
   { id: 'search', label: 'Search' },
   { id: 'research', label: 'Research' },
+  { id: 'discovery', label: 'Discovery' },
 ]
 
 interface NavTabsProps {

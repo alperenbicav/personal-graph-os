@@ -64,6 +64,32 @@ def test_duplicate_import_returns_200_and_reuses_the_same_resource(client: TestC
     assert second_response.json()["id"] == first["id"]
 
 
+def test_ipv6_resource_canonicalizes_and_replays_idempotently(client: TestClient) -> None:
+    workspace_id = _workspace_id(client)
+    created = client.post(
+        "/resources",
+        json={
+            "workspace_id": workspace_id,
+            "title": "An IPv6-hosted paper",
+            "raw_source": "https://[2001:db8::1]:8443/paper",
+        },
+    )
+    assert created.status_code == 201
+    canonical_identifier = created.json()["canonical_identifier"]
+    assert canonical_identifier == "https://[2001:db8::1]:8443/paper"
+
+    replay = client.post(
+        "/resources",
+        json={
+            "workspace_id": workspace_id,
+            "title": "Duplicate",
+            "raw_source": canonical_identifier,
+        },
+    )
+    assert replay.status_code == 200
+    assert replay.json()["id"] == created.json()["id"]
+
+
 def test_create_resource_rejects_unknown_workspace(client: TestClient) -> None:
     response = client.post(
         "/resources",
@@ -131,6 +157,59 @@ def test_update_resource_lifecycle_and_pause_dismissal_contract(client: TestClie
     assert accepted.status_code == 200
     assert accepted.json()["lifecycle_status"] == "paused"
     assert accepted.json()["next_action_dismissed"] is True
+
+
+def test_update_resource_sets_and_clears_progress_percent(client: TestClient) -> None:
+    workspace_id = _workspace_id(client)
+    created = client.post(
+        "/resources",
+        json={
+            "workspace_id": workspace_id,
+            "title": "A paper",
+            "raw_source": "https://example.com/paper",
+        },
+    ).json()
+    assert created["progress_percent"] is None
+
+    updated = client.patch(f"/resources/{created['id']}", json={"progress_percent": 42})
+    assert updated.status_code == 200
+    assert updated.json()["progress_percent"] == 42
+
+    cleared = client.patch(f"/resources/{created['id']}", json={"clear_progress_percent": True})
+    assert cleared.json()["progress_percent"] is None
+
+
+def test_update_resource_rejects_a_progress_percent_out_of_bounds(client: TestClient) -> None:
+    workspace_id = _workspace_id(client)
+    created = client.post(
+        "/resources",
+        json={
+            "workspace_id": workspace_id,
+            "title": "A paper",
+            "raw_source": "https://example.com/paper",
+        },
+    ).json()
+
+    response = client.patch(f"/resources/{created['id']}", json={"progress_percent": 150})
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("value", [True, False, 1.5, "50"])
+def test_update_resource_rejects_a_non_integer_progress_percent(
+    client: TestClient, value: object
+) -> None:
+    workspace_id = _workspace_id(client)
+    created = client.post(
+        "/resources",
+        json={
+            "workspace_id": workspace_id,
+            "title": "A paper",
+            "raw_source": "https://example.com/paper",
+        },
+    ).json()
+
+    response = client.patch(f"/resources/{created['id']}", json={"progress_percent": value})
+    assert response.status_code == 422
 
 
 def test_archive_resource_via_delete_sets_lifecycle_archived(client: TestClient) -> None:

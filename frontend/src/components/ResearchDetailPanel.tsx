@@ -76,9 +76,14 @@ interface ResearchDetailPanelProps {
   onUpdate: (patch: UpdateResourcePatch) => Promise<boolean>
 }
 
+function progressDraftFrom(resource: Resource): string {
+  return resource.progress_percent !== null ? String(resource.progress_percent) : ''
+}
+
 export function ResearchDetailPanel({ resource, onUpdate }: ResearchDetailPanelProps) {
   const [nextActionDraft, setNextActionDraft] = useState(resource.next_action ?? '')
   const [reviewAtDraft, setReviewAtDraft] = useState(resource.review_at?.slice(0, 10) ?? '')
+  const [progressDraft, setProgressDraft] = useState(progressDraftFrom(resource))
   const [error, setError] = useState<string | null>(null)
 
   async function commit(patch: UpdateResourcePatch, revert?: () => void) {
@@ -136,6 +141,34 @@ export function ResearchDetailPanel({ resource, onUpdate }: ResearchDetailPanelP
           />
           <span>Dismissed (paused on purpose, no next action)</span>
         </label>
+      </div>
+
+      <div className="field">
+        <label className="field-label" htmlFor="research-progress">
+          Progress (%)
+        </label>
+        <input
+          id="research-progress"
+          type="number"
+          min={0}
+          max={100}
+          value={progressDraft}
+          onChange={(event) => setProgressDraft(event.target.value)}
+          onBlur={() => {
+            const trimmed = progressDraft.trim()
+            if (!trimmed) {
+              commit({ clear_progress_percent: true })
+              return
+            }
+            const parsed = Number(trimmed)
+            if (!Number.isInteger(parsed) || parsed < 0 || parsed > 100) {
+              setError('Progress must be a whole number between 0 and 100')
+              setProgressDraft(progressDraftFrom(resource))
+              return
+            }
+            commit({ progress_percent: parsed }, () => setProgressDraft(progressDraftFrom(resource)))
+          }}
+        />
       </div>
 
       <div className="field">

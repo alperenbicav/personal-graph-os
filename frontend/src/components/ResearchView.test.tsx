@@ -16,6 +16,7 @@ function makeResource(id: string, nodeId: string, title: string): Resource {
     next_action_dismissed: false,
     open_questions: [],
     takeaways: [],
+    progress_percent: null,
     review_at: null,
     last_activity_at: '2026-01-01T00:00:00Z',
     title,

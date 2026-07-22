@@ -518,15 +518,16 @@ class SqliteResourceRepository:
             "INSERT INTO resources "
             "(id, workspace_id, node_id, kind, canonical_identifier, source_url, "
             " lifecycle_status, next_action, next_action_dismissed, open_questions_json, "
-            " takeaways_json, review_at, last_activity_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            " takeaways_json, progress_percent, review_at, last_activity_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (id) DO UPDATE SET kind = excluded.kind, "
             "canonical_identifier = excluded.canonical_identifier, "
             "source_url = excluded.source_url, lifecycle_status = excluded.lifecycle_status, "
             "next_action = excluded.next_action, "
             "next_action_dismissed = excluded.next_action_dismissed, "
             "open_questions_json = excluded.open_questions_json, "
-            "takeaways_json = excluded.takeaways_json, review_at = excluded.review_at, "
+            "takeaways_json = excluded.takeaways_json, "
+            "progress_percent = excluded.progress_percent, review_at = excluded.review_at, "
             "last_activity_at = excluded.last_activity_at",
             (
                 resource.id,
@@ -540,6 +541,7 @@ class SqliteResourceRepository:
                 int(resource.next_action_dismissed),
                 json.dumps(list(resource.open_questions)),
                 json.dumps(list(resource.takeaways)),
+                resource.progress_percent,
                 resource.review_at.isoformat() if resource.review_at is not None else None,
                 resource.last_activity_at.isoformat(),
             ),
@@ -558,6 +560,7 @@ class SqliteResourceRepository:
             next_action_dismissed=bool(row["next_action_dismissed"]),
             open_questions=tuple(json.loads(row["open_questions_json"])),
             takeaways=tuple(json.loads(row["takeaways_json"])),
+            progress_percent=row["progress_percent"],
             review_at=(
                 datetime.fromisoformat(row["review_at"]) if row["review_at"] is not None else None
             ),

@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StrictInt, field_validator
 
 from personal_graph_os.domain.errors import InvariantViolationError
 from personal_graph_os.domain.identifiers import NodeId, ResourceId, WorkspaceId, new_id
@@ -55,6 +55,10 @@ class Resource(BaseModel):
     next_action_dismissed: bool = False
     open_questions: tuple[str, ...] = ()
     takeaways: tuple[str, ...] = ()
+    # How far the user has actually gotten (0-100), independent of `lifecycle_status` — a
+    # `reading` resource can be 10% or 90% through, and resurfacing/prioritization benefit from
+    # knowing which. `None` means no progress has been recorded, not "0%".
+    progress_percent: StrictInt | None = None
     review_at: datetime | None = None
     last_activity_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -65,6 +69,15 @@ class Resource(BaseModel):
         if not stripped:
             raise InvariantViolationError("Resource.canonical_identifier must not be empty")
         return stripped
+
+    @field_validator("progress_percent")
+    @classmethod
+    def _validate_progress_percent(cls, value: StrictInt | None) -> StrictInt | None:
+        if value is not None and not (0 <= value <= 100):
+            raise InvariantViolationError(
+                f"Resource.progress_percent must be between 0 and 100, got {value}"
+            )
+        return value
 
     def model_post_init(self, _context: object) -> None:
         is_paused_without_a_plan = (

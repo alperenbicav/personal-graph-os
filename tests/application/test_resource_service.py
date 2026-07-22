@@ -72,6 +72,23 @@ def test_create_or_reuse_deduplicates_by_canonical_identity_without_a_second_nod
     assert second.node_id == first.node_id
 
 
+def test_create_or_reuse_deduplicates_doi_tracking_variants(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    service, workspace_id = _resource_service(sqlite_connection)
+
+    first, first_created = service.create_or_reuse(
+        workspace_id, "A paper", "https://doi.org/10.1000/xyz123?utm_source=one"
+    )
+    second, second_created = service.create_or_reuse(
+        workspace_id, "Same paper", "https://doi.org/10.1000/xyz123?utm_source=two"
+    )
+
+    assert first_created is True
+    assert second_created is False
+    assert second.id == first.id
+
+
 def test_create_or_reuse_enriches_a_missing_source_url_on_reuse(
     sqlite_connection: sqlite3.Connection,
 ) -> None:
@@ -127,6 +144,30 @@ def test_update_advances_last_activity_only_on_a_meaningful_change(
     changed = service.update(resource.id, lifecycle_status=ResourceLifecycleStatus.READING)
     assert changed.last_activity_at >= resource.last_activity_at
     assert changed.lifecycle_status is ResourceLifecycleStatus.READING
+
+
+def test_update_sets_and_clears_progress_percent(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    service, workspace_id = _resource_service(sqlite_connection)
+    resource, _ = service.create_or_reuse(workspace_id, "A paper", "https://example.com/paper")
+    assert resource.progress_percent is None
+
+    updated = service.update(resource.id, progress_percent=42)
+    assert updated.progress_percent == 42
+
+    cleared = service.update(updated.id, clear_progress_percent=True)
+    assert cleared.progress_percent is None
+
+
+def test_update_rejects_a_progress_percent_out_of_bounds(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    service, workspace_id = _resource_service(sqlite_connection)
+    resource, _ = service.create_or_reuse(workspace_id, "A paper", "https://example.com/paper")
+
+    with pytest.raises(InvariantViolationError):
+        service.update(resource.id, progress_percent=101)
 
 
 def test_update_pausing_requires_next_action_or_explicit_dismissal(

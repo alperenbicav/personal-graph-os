@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from personal_graph_os.api.auth import TOKEN_FILE_NAME, get_or_create_api_token, require_api_token
 from personal_graph_os.api.routers import (
     canvases,
+    discovery,
     edges,
     nodes,
     placements,
@@ -31,6 +32,7 @@ from personal_graph_os.application.bootstrap import (
     get_or_create_default_canvas,
     get_or_create_default_workspace,
 )
+from personal_graph_os.application.discovery import DiscoveryService
 from personal_graph_os.application.projections import ProjectionService
 from personal_graph_os.application.research_dashboard import ResearchDashboardService
 from personal_graph_os.application.search_service import SearchService
@@ -122,7 +124,7 @@ def create_app(
     default_workspace = get_or_create_default_workspace(workspace_repository)
     default_canvas = get_or_create_default_canvas(canvas_repository, default_workspace)
     backfill_search_index(
-        node_repository, resource_repository, search_index_repository, default_workspace.id
+        node_repository, resource_repository, search_index_repository, default_workspace
     )
 
     app.state.connection = connection
@@ -141,7 +143,12 @@ def create_app(
     app.state.canvas_service = CanvasService(
         workspace_repository, node_repository, canvas_repository, placement_repository
     )
-    app.state.schema_service = SchemaService(workspace_repository, node_repository, edge_repository)
+    app.state.schema_service = SchemaService(
+        workspace_repository,
+        node_repository,
+        edge_repository,
+        search_index=search_index_repository,
+    )
     app.state.resource_service = ResourceService(
         workspace_repository,
         resource_repository,
@@ -161,6 +168,12 @@ def create_app(
     )
     app.state.workflow_chain_service = WorkflowChainService(
         workspace_repository, node_repository, lambda: SqliteResearchUnitOfWork(connection)
+    )
+    app.state.discovery_service = DiscoveryService(
+        workspace_repository,
+        resource_repository,
+        app.state.resource_service,
+        lambda: SqliteResearchUnitOfWork(connection),
     )
     app.state.default_workspace_id = default_workspace.id
     app.state.default_canvas_id = default_canvas.id
@@ -184,6 +197,7 @@ def create_app(
     app.include_router(views.router, dependencies=auth_dependency)
     app.include_router(research.router, dependencies=auth_dependency)
     app.include_router(workflow_chain.router, dependencies=auth_dependency)
+    app.include_router(discovery.router, dependencies=auth_dependency)
 
     def _not_found(_request: Request, exc: Exception) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})

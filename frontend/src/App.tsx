@@ -3,6 +3,7 @@ import './App.css'
 import * as api from './api/client'
 import { CanvasRail } from './components/CanvasRail'
 import { ConnectEdgeModal, type PendingConnection } from './components/ConnectEdgeModal'
+import { DiscoveryView } from './components/DiscoveryView'
 import { GraphCanvas } from './components/GraphCanvas'
 import { Inspector, type RelationRow } from './components/Inspector'
 import { KanbanView } from './components/KanbanView'
@@ -14,7 +15,10 @@ import { SearchView } from './components/SearchView'
 import { TableView } from './components/TableView'
 import { TimelineView } from './components/TimelineView'
 import { TopBar } from './components/TopBar'
-import { WorkflowChainPanel } from './components/WorkflowChainPanel'
+import {
+  WorkflowChainPanel,
+  type WorkflowChainAdvanceInput,
+} from './components/WorkflowChainPanel'
 import { messageFor } from './lib/errors'
 import { neighborhoodWithinDepth } from './lib/neighborhood'
 import { NEXT_WORKFLOW_STEP } from './lib/workflowChain'
@@ -22,6 +26,7 @@ import { SchemaEditor } from './components/SchemaEditor'
 import type {
   Canvas,
   CanvasPlacement,
+  DiscoveryCandidateInput,
   GraphEdge,
   GraphNode,
   ProjectionItem,
@@ -31,6 +36,8 @@ import type {
   WorkflowChainStep,
   Workspace,
 } from './types'
+
+const DISCOVERY_AGENT_IDENTITY = 'manual-import'
 
 const CAPTURE_TYPE_ORDER = ['Note', 'Task', 'Project', 'Resource']
 const MAX_FOCUS_DEPTH = 3
@@ -230,6 +237,20 @@ function App() {
     ? NEXT_WORKFLOW_STEP[selectedNodeType.system_key]
     : undefined
 
+  // Same-workspace, correct-semantic-type nodes the guided chain can connect the selected
+  // node to instead of creating a duplicate (ST04-F07).
+  const workflowChainCandidates = useMemo(() => {
+    if (!nextWorkflowStep) return []
+    const targetTypeIds = new Set(
+      (workspace?.node_types ?? [])
+        .filter((nodeType) => nodeType.system_key === nextWorkflowStep.targetSystemKey)
+        .map((nodeType) => nodeType.id),
+    )
+    return visibleNodes
+      .filter((node) => targetTypeIds.has(node.node_type_id))
+      .map((node) => ({ id: node.id, title: node.title }))
+  }, [nextWorkflowStep, workspace, visibleNodes])
+
   const relations = useMemo<RelationRow[]>(() => {
     if (!selectedNodeId) return []
     return edges
@@ -375,17 +396,56 @@ function App() {
   )
 
   const handleAdvanceWorkflow = useCallback(
-    async (step: WorkflowChainStep, title: string) => {
+    async (step: WorkflowChainStep, input: WorkflowChainAdvanceInput) => {
       if (!workspace || !selectedNodeId) return
-      const { node, edge } = await api.advanceWorkflowChain(workspace.id, selectedNodeId, step, {
-        title,
-      })
-      setNodes((current) => [...current, node])
+      const patch =
+        'title' in input
+          ? { title: input.title }
+          : { existing_target_node_id: input.existingTargetNodeId }
+      const { node, edge } = await api.advanceWorkflowChain(
+        workspace.id,
+        selectedNodeId,
+        step,
+        patch,
+      )
+      // A selected-existing target is already in `nodes`; re-adding it would duplicate the row.
+      setNodes((current) => (current.some((n) => n.id === node.id) ? current : [...current, node]))
       setEdges((current) => [...current, edge])
       setSelectedNodeId(node.id)
       refreshActiveViewData(workspace.id, activeView)
     },
     [workspace, selectedNodeId, activeView, refreshActiveViewData],
+  )
+
+  const handleDiscoveryPreview = useCallback(
+    (instruction: string, candidates: DiscoveryCandidateInput[]) => {
+      if (!workspace) throw new Error('Workspace has not loaded yet')
+      return api.previewDiscovery(workspace.id, instruction, candidates)
+    },
+    [workspace],
+  )
+
+  const handleDiscoveryApply = useCallback(
+    async (instruction: string, candidates: DiscoveryCandidateInput[]) => {
+      if (!workspace) throw new Error('Workspace has not loaded yet')
+      const run = await api.applyDiscovery(
+        workspace.id,
+        DISCOVERY_AGENT_IDENTITY,
+        instruction,
+        candidates,
+      )
+      // A run may have created new Node+Resource pairs; a targeted refetch keeps every other
+      // view (table/Kanban/timeline/research/canvas) consistent with what was just imported.
+      const [nodesResponse, resourcesResponse] = await Promise.all([
+        api.listNodes(workspace.id),
+        api.listResources(workspace.id),
+      ])
+      setNodes(nodesResponse)
+      setResources(resourcesResponse)
+      refreshActiveViewData(workspace.id, activeView)
+      return run
+    },
+    [workspace, activeView, refreshActiveViewData],
   )
 
   const handleArchiveSelected = useCallback(async () => {
@@ -619,6 +679,12 @@ function App() {
           </div>
         )}
 
+        {activeView === 'discovery' && (
+          <div className="view-frame">
+            <DiscoveryView onPreview={handleDiscoveryPreview} onApply={handleDiscoveryApply} />
+          </div>
+        )}
+
         <div className="inspector-column">
           <Inspector
             node={selectedNode}
@@ -630,12 +696,17 @@ function App() {
             onArchive={handleArchiveSelected}
           />
           {selectedResource && (
-            <ResearchDetailPanel resource={selectedResource} onUpdate={handleUpdateResource} />
+            <ResearchDetailPanel
+              key={selectedResource.id}
+              resource={selectedResource}
+              onUpdate={handleUpdateResource}
+            />
           )}
           {nextWorkflowStep && (
             <WorkflowChainPanel
               nodeSystemKey={selectedNodeType?.system_key}
-              onAdvance={(title) => handleAdvanceWorkflow(nextWorkflowStep.step, title)}
+              existingTargetCandidates={workflowChainCandidates}
+              onAdvance={(input) => handleAdvanceWorkflow(nextWorkflowStep.step, input)}
             />
           )}
         </div>
