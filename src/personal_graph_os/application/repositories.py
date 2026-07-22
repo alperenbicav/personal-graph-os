@@ -13,6 +13,7 @@ from personal_graph_os.domain.canvas import Canvas, CanvasPlacement
 from personal_graph_os.domain.files import Attachment, FileReference
 from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.identifiers import (
+    ActivityEventId,
     AttachmentId,
     CanvasId,
     CanvasPlacementId,
@@ -127,6 +128,25 @@ class ActivityEventRepository(Protocol):
     def get_by_request(
         self, workspace_id: WorkspaceId, source: str, actor_name: str, request_id: str
     ) -> ActivityEvent | None: ...
+    def get(self, event_id: ActivityEventId) -> ActivityEvent | None: ...
+    def get_by_reverses(self, reversed_event_id: ActivityEventId) -> ActivityEvent | None: ...
+    def list_by_workspace(
+        self,
+        workspace_id: WorkspaceId,
+        *,
+        limit: int,
+        before_occurred_at: str | None = None,
+        before_id: str | None = None,
+    ) -> tuple[ActivityEvent, ...]: ...
+    def list_by_entity(
+        self,
+        entity_type: str,
+        entity_id: str,
+        *,
+        limit: int,
+        before_occurred_at: str | None = None,
+        before_id: str | None = None,
+    ) -> tuple[ActivityEvent, ...]: ...
     def save(self, event: ActivityEvent) -> None: ...
     def save_without_commit(self, event: ActivityEvent) -> None: ...
 

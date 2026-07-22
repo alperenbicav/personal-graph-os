@@ -16,6 +16,7 @@ from starlette.routing import Route
 
 from personal_graph_os.api.auth import TOKEN_FILE_NAME, get_or_create_api_token, require_api_token
 from personal_graph_os.api.routers import (
+    activity,
     canvases,
     discovery,
     edges,
@@ -30,6 +31,10 @@ from personal_graph_os.api.routers import (
     views,
     workflow_chain,
     workspace,
+)
+from personal_graph_os.application.activity_service import (
+    ActivityEventNotFoundError,
+    ActivityService,
 )
 from personal_graph_os.application.bootstrap import (
     backfill_search_index,
@@ -85,6 +90,7 @@ from personal_graph_os.infrastructure.mcp.server import create_mcp_asgi_app
 from personal_graph_os.infrastructure.sqlite.connection import open_connection
 from personal_graph_os.infrastructure.sqlite.migrations.runner import run_migrations
 from personal_graph_os.infrastructure.sqlite.repositories import (
+    SqliteActivityEventRepository,
     SqliteAttachmentRepository,
     SqliteCanvasPlacementRepository,
     SqliteCanvasRepository,
@@ -152,6 +158,7 @@ def create_app(
     attachment_repository = SqliteAttachmentRepository(connection)
     file_reference_repository = SqliteFileReferenceRepository(connection)
     pending_file_operation_repository = SqlitePendingFileOperationRepository(connection)
+    activity_event_repository = SqliteActivityEventRepository(connection)
     managed_file_store = LocalManagedFileStore(workspace_dir / MANAGED_FILES_DIR_NAME)
 
     default_workspace = get_or_create_default_workspace(workspace_repository)
@@ -169,6 +176,7 @@ def create_app(
     app.state.resource_repository = resource_repository
     app.state.saved_view_repository = saved_view_repository
     app.state.search_index_repository = search_index_repository
+    app.state.activity_event_repository = activity_event_repository
     app.state.file_service = FileService(
         node_repository,
         attachment_repository,
@@ -216,6 +224,7 @@ def create_app(
         app.state.resource_service,
         lambda: SqliteResearchUnitOfWork(connection),
     )
+    app.state.activity_service = ActivityService(activity_event_repository)
     app.state.context_pack_service = ContextPackService(
         workspace_repository,
         node_repository,
@@ -254,6 +263,7 @@ def create_app(
         workflow_chain_service=app.state.workflow_chain_service,
         discovery_service=app.state.discovery_service,
         context_pack_service=app.state.context_pack_service,
+        activity_service=app.state.activity_service,
         unit_of_work_factory=lambda: SqliteResearchUnitOfWork(connection),
     )
     mcp_asgi_app, mcp_session_manager, app.state.mcp_telemetry = create_mcp_asgi_app(
@@ -297,6 +307,7 @@ def create_app(
     app.include_router(workflow_chain.router, dependencies=auth_dependency)
     app.include_router(discovery.router, dependencies=auth_dependency)
     app.include_router(files.router, dependencies=auth_dependency)
+    app.include_router(activity.router, dependencies=auth_dependency)
 
     def _not_found(_request: Request, exc: Exception) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
@@ -329,6 +340,7 @@ def create_app(
         AttachmentNotFoundError,
         FileReferenceNotFoundError,
         AttachmentContentMissingError,
+        ActivityEventNotFoundError,
     ):
         app.add_exception_handler(not_found_error_type, _not_found)
     app.add_exception_handler(DomainError, _unprocessable)

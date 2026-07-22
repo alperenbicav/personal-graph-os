@@ -889,6 +889,65 @@ class SqliteActivityEventRepository:
         ).fetchone()
         return None if row is None else self._hydrate(row)
 
+    def get(self, event_id: ActivityEventId) -> ActivityEvent | None:
+        row = self._connection.execute(
+            "SELECT * FROM activity_events WHERE id = ?", (event_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def get_by_reverses(self, reversed_event_id: ActivityEventId) -> ActivityEvent | None:
+        row = self._connection.execute(
+            "SELECT * FROM activity_events WHERE reverses_event_id = ?", (reversed_event_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def list_by_workspace(
+        self,
+        workspace_id: WorkspaceId,
+        *,
+        limit: int,
+        before_occurred_at: str | None = None,
+        before_id: str | None = None,
+    ) -> tuple[ActivityEvent, ...]:
+        if before_occurred_at is None or before_id is None:
+            rows = self._connection.execute(
+                "SELECT * FROM activity_events WHERE workspace_id = ? "
+                "ORDER BY occurred_at DESC, id DESC LIMIT ?",
+                (workspace_id, limit),
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                "SELECT * FROM activity_events WHERE workspace_id = ? "
+                "AND (occurred_at, id) < (?, ?) "
+                "ORDER BY occurred_at DESC, id DESC LIMIT ?",
+                (workspace_id, before_occurred_at, before_id, limit),
+            ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
+    def list_by_entity(
+        self,
+        entity_type: str,
+        entity_id: str,
+        *,
+        limit: int,
+        before_occurred_at: str | None = None,
+        before_id: str | None = None,
+    ) -> tuple[ActivityEvent, ...]:
+        if before_occurred_at is None or before_id is None:
+            rows = self._connection.execute(
+                "SELECT * FROM activity_events WHERE entity_type = ? AND entity_id = ? "
+                "ORDER BY occurred_at DESC, id DESC LIMIT ?",
+                (entity_type, entity_id, limit),
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                "SELECT * FROM activity_events WHERE entity_type = ? AND entity_id = ? "
+                "AND (occurred_at, id) < (?, ?) "
+                "ORDER BY occurred_at DESC, id DESC LIMIT ?",
+                (entity_type, entity_id, before_occurred_at, before_id, limit),
+            ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
     def save(self, event: ActivityEvent) -> None:
         with self._connection:
             self.save_without_commit(event)
@@ -898,8 +957,8 @@ class SqliteActivityEventRepository:
             "INSERT INTO activity_events "
             "(id, workspace_id, actor_kind, actor_name, source, entity_type, entity_id, action, "
             " session_id, reason, before_state_json, after_state_json, is_undoable, occurred_at, "
-            " request_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " request_id, reverses_event_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 event.id,
                 event.workspace_id,
@@ -916,6 +975,7 @@ class SqliteActivityEventRepository:
                 int(event.is_undoable),
                 event.occurred_at.isoformat(),
                 event.request_id,
+                event.reverses_event_id,
             ),
         )
 
@@ -942,6 +1002,11 @@ class SqliteActivityEventRepository:
             is_undoable=bool(row["is_undoable"]),
             occurred_at=datetime.fromisoformat(row["occurred_at"]),
             request_id=row["request_id"],
+            reverses_event_id=(
+                ActivityEventId(row["reverses_event_id"])
+                if row["reverses_event_id"] is not None
+                else None
+            ),
         )
 
 

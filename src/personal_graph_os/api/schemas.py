@@ -15,8 +15,10 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, StrictInt
 
+from personal_graph_os.application.activity_service import ActivityEventPage
 from personal_graph_os.application.projections import ProjectionItem
 from personal_graph_os.application.workflow_chain import WorkflowChainStep
+from personal_graph_os.domain.activity import ActivityEvent
 from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.resource import Resource, ResourceKind, ResourceLifecycleStatus
 from personal_graph_os.domain.schema import FieldType
@@ -286,3 +288,12 @@ class DiscoveryPreviewRequest(BaseModel):
 
 class DiscoveryApplyRequest(DiscoveryPreviewRequest):
     agent_identity: str = Field(min_length=1, max_length=_MAX_DISCOVERY_TITLE_LENGTH)
+
+
+class ActivityEventPageResponse(BaseModel):
+    events: list[ActivityEvent]
+    next_cursor: str | None
+
+    @classmethod
+    def from_page(cls, page: ActivityEventPage) -> ActivityEventPageResponse:
+        return cls(events=list(page.events), next_cursor=page.next_cursor)

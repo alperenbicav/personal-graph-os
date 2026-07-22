@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from personal_graph_os.application.context_pack_service import ContextPackMaterialization
 from personal_graph_os.application.discovery import DiscoveryCandidatePreview, DiscoveryPreview
-from personal_graph_os.domain.activity import DiscoveredCandidate, DiscoveryRun
+from personal_graph_os.domain.activity import ActivityEvent, DiscoveredCandidate, DiscoveryRun
 from personal_graph_os.domain.files import Attachment, FileReference
 from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.resource import Resource
@@ -485,3 +485,77 @@ class MaterializedContextPackDTO(BaseModel):
             estimated_tokens=materialization.estimated_tokens,
             token_estimate_version=materialization.token_estimate_version,
         )
+
+
+class ActivityEventSummaryDTO(BaseModel):
+    """One list-row summary -- never the before/after snapshot (ST-07.1 plan: detail alone
+    returns bounded snapshots)."""
+
+    id: str
+    workspace_id: str
+    actor_kind: str
+    actor_name: str
+    source: str
+    entity_type: str
+    entity_id: str
+    action: str
+    reason: str | None
+    is_undoable: bool
+    occurred_at: datetime
+    reverses_event_id: str | None
+
+    @classmethod
+    def from_domain(cls, event: ActivityEvent) -> ActivityEventSummaryDTO:
+        return cls(
+            id=event.id,
+            workspace_id=event.workspace_id,
+            actor_kind=event.actor_kind.value,
+            actor_name=event.actor_name,
+            source=event.source,
+            entity_type=event.entity_type,
+            entity_id=event.entity_id,
+            action=event.action.value,
+            reason=event.reason,
+            is_undoable=event.is_undoable,
+            occurred_at=event.occurred_at,
+            reverses_event_id=event.reverses_event_id,
+        )
+
+
+class ActivityEventDTO(ActivityEventSummaryDTO):
+    """Full detail, including bounded before/after snapshots."""
+
+    before_state: dict[str, object] | None
+    after_state: dict[str, object] | None
+
+    @classmethod
+    def from_domain(cls, event: ActivityEvent) -> ActivityEventDTO:
+        return cls(
+            id=event.id,
+            workspace_id=event.workspace_id,
+            actor_kind=event.actor_kind.value,
+            actor_name=event.actor_name,
+            source=event.source,
+            entity_type=event.entity_type,
+            entity_id=event.entity_id,
+            action=event.action.value,
+            reason=event.reason,
+            is_undoable=event.is_undoable,
+            occurred_at=event.occurred_at,
+            reverses_event_id=event.reverses_event_id,
+            before_state=(
+                _bounded_field_values(dict(event.before_state))
+                if event.before_state is not None
+                else None
+            ),
+            after_state=(
+                _bounded_field_values(dict(event.after_state))
+                if event.after_state is not None
+                else None
+            ),
+        )
+
+
+class ActivityEventPageDTO(BaseModel):
+    events: tuple[ActivityEventSummaryDTO, ...]
+    next_cursor: str | None

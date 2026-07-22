@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from personal_graph_os.application.activity_service import ActivityService
 from personal_graph_os.application.context_pack_service import ContextPackService
 from personal_graph_os.application.discovery import DiscoveryService
 from personal_graph_os.application.file_service import FileService
@@ -17,6 +18,7 @@ from personal_graph_os.application.services import (
     new_workspace,
 )
 from personal_graph_os.application.workflow_chain import WorkflowChainService
+from personal_graph_os.domain.activity import ActivityEvent, ActorKind, MutationAction
 from personal_graph_os.domain.identifiers import NodeId, ResourceId, WorkspaceId
 from personal_graph_os.domain.resource import ResourceKind
 from personal_graph_os.domain.schema import EdgeType, NodeType
@@ -27,6 +29,7 @@ from personal_graph_os.infrastructure.mcp.gateway import (
     GatewayValidationError,
 )
 from personal_graph_os.infrastructure.sqlite.repositories import (
+    SqliteActivityEventRepository,
     SqliteAttachmentRepository,
     SqliteContextPackRepository,
     SqliteEdgeRepository,
@@ -98,6 +101,7 @@ def _fixture(sqlite_connection: sqlite3.Connection, tmp_path: Path):
         file_service,
         context_pack_repository,
     )
+    activity_service = ActivityService(SqliteActivityEventRepository(sqlite_connection))
 
     gateway = AgentGatewayService(
         workspace_repository,
@@ -112,6 +116,7 @@ def _fixture(sqlite_connection: sqlite3.Connection, tmp_path: Path):
         workflow_chain_service=workflow_chain_service,
         discovery_service=discovery_service,
         context_pack_service=context_pack_service,
+        activity_service=activity_service,
         unit_of_work_factory=lambda: SqliteResearchUnitOfWork(sqlite_connection),
     )
     return {
@@ -120,6 +125,7 @@ def _fixture(sqlite_connection: sqlite3.Connection, tmp_path: Path):
         "edge_service": edge_service,
         "resource_service": resource_service,
         "file_service": file_service,
+        "activity_event_repository": SqliteActivityEventRepository(sqlite_connection),
         "workspace_id": workspace.id,
         "task_type": task_type,
         "resource_type": resource_type,
@@ -240,6 +246,32 @@ def test_list_resources_and_get_resource(
 
     with pytest.raises(GatewayNotFoundError):
         ctx["gateway"].get_resource(ResourceId("does-not-exist"))
+
+
+def test_list_and_get_activity_events_are_bounded_and_workspace_scoped(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    ctx = _fixture(sqlite_connection, tmp_path)
+    repository = ctx["activity_event_repository"]
+    event = ActivityEvent(
+        workspace_id=ctx["workspace_id"],
+        actor_kind=ActorKind.HUMAN,
+        actor_name="human/local-user/rest",
+        source="rest",
+        entity_type="node",
+        entity_id="node-1",
+        action=MutationAction.CREATED,
+    )
+    repository.save(event)
+
+    page = ctx["gateway"].list_activity_events(ctx["workspace_id"])
+    assert [item.id for item in page.events] == [event.id]
+
+    fetched = ctx["gateway"].get_activity_event(ctx["workspace_id"], event.id)
+    assert fetched.id == event.id
+
+    with pytest.raises(GatewayNotFoundError):
+        ctx["gateway"].get_activity_event(WorkspaceId("other-workspace"), event.id)
 
 
 def test_list_node_evidence_returns_privacy_safe_pointers(

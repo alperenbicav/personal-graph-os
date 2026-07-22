@@ -50,6 +50,7 @@ _ALL_MIGRATION_NAMES = (
     "0004_pending_file_operations.sql",
     "0005_activity_event_request_id.sql",
     "0006_idempotency_receipts.sql",
+    "0007_activity_event_reversal.sql",
 )
 
 
@@ -99,6 +100,7 @@ def test_upgrading_an_existing_0001_database_preserves_ids_and_data() -> None:
         "0004_pending_file_operations.sql",
         "0005_activity_event_request_id.sql",
         "0006_idempotency_receipts.sql",
+        "0007_activity_event_reversal.sql",
     )
 
     resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()
@@ -141,6 +143,37 @@ def test_0003_adds_a_nullable_progress_percent_column(
     connection.commit()
     row = connection.execute("SELECT progress_percent FROM resources WHERE id = 'res-1'").fetchone()
     assert row["progress_percent"] == 42
+
+
+def test_0007_reverses_event_id_is_nullable_and_at_most_one_per_reversed_event(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    """ST-07.1: existing events keep `reverses_event_id = NULL`, and the unique partial index
+    rejects a second compensating event pointing at the same reversed event."""
+    connection = sqlite_connection
+    connection.execute(
+        "INSERT INTO workspaces (id, name, created_at) VALUES ('ws-1', 'Personal', 't0')"
+    )
+    connection.executemany(
+        "INSERT INTO activity_events "
+        "(id, workspace_id, actor_kind, actor_name, source, entity_type, entity_id, action, "
+        " occurred_at) VALUES (?, 'ws-1', 'human', 'me', 'rest', 'node', 'node-1', 'updated', ?)",
+        [("evt-1", "t0"), ("evt-2", "t1"), ("evt-3", "t2")],
+    )
+    connection.commit()
+
+    row = connection.execute(
+        "SELECT reverses_event_id FROM activity_events WHERE id = 'evt-1'"
+    ).fetchone()
+    assert row["reverses_event_id"] is None
+
+    connection.execute("UPDATE activity_events SET reverses_event_id = 'evt-1' WHERE id = 'evt-2'")
+    connection.commit()
+
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            "UPDATE activity_events SET reverses_event_id = 'evt-1' WHERE id = 'evt-3'"
+        )
 
 
 def test_apply_migration_script_is_atomic_and_a_corrected_retry_succeeds() -> None:

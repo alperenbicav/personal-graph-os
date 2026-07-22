@@ -57,6 +57,10 @@ class ActivityEvent(BaseModel):
     # is unique, so an exact replay is detected before any mutation runs rather than creating a
     # second event or entity.
     request_id: str | None = None
+    # ST-07: set only on a compensating (undo) event, pointing back at the event it reverses.
+    # At most one compensating event may reference a given `reverses_event_id` (DB unique
+    # index) -- undo is not repeatable. `None` for every ordinary mutation event.
+    reverses_event_id: ActivityEventId | None = None
 
     @field_validator("actor_name", "source", "entity_type", "entity_id")
     @classmethod

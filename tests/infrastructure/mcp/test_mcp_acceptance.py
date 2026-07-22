@@ -98,6 +98,8 @@ def test_real_client_lists_all_tools(running_server: _RunningServer) -> None:
         "pgos_list_resources",
         "pgos_get_resource",
         "pgos_list_node_evidence",
+        "pgos_list_activity_events",
+        "pgos_get_activity_event",
         "pgos_create_node",
         "pgos_update_node",
         "pgos_archive_node",

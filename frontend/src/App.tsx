@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import * as api from './api/client'
+import { ActivityView } from './components/ActivityView'
 import { CanvasRail } from './components/CanvasRail'
 import { ConnectEdgeModal, type PendingConnection } from './components/ConnectEdgeModal'
 import { DiscoveryView } from './components/DiscoveryView'
@@ -682,6 +683,18 @@ function App() {
         {activeView === 'discovery' && (
           <div className="view-frame">
             <DiscoveryView onPreview={handleDiscoveryPreview} onApply={handleDiscoveryApply} />
+          </div>
+        )}
+
+        {activeView === 'activity' && (
+          <div className="view-frame">
+            <ActivityView
+              onLoadPage={(cursor) =>
+                workspace
+                  ? api.listActivityEvents(workspace.id, 50, cursor)
+                  : Promise.resolve({ events: [], next_cursor: null })
+              }
+            />
           </div>
         )}
 

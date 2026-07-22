@@ -1,4 +1,6 @@
 import type {
+  ActivityEvent,
+  ActivityEventPage,
   Attachment,
   Canvas,
   CanvasPlacement,
@@ -388,6 +390,21 @@ export function search(
     include_archived: String(includeArchived),
   })
   return request(`/search?${params.toString()}`)
+}
+
+export function listActivityEvents(
+  workspaceId: string,
+  limit = 50,
+  cursor?: string | null,
+): Promise<ActivityEventPage> {
+  const params = new URLSearchParams({ workspace_id: workspaceId, limit: String(limit) })
+  if (cursor) params.set('cursor', cursor)
+  return request(`/activity-events?${params.toString()}`)
+}
+
+export function getActivityEvent(workspaceId: string, eventId: string): Promise<ActivityEvent> {
+  const params = new URLSearchParams({ workspace_id: workspaceId })
+  return request(`/activity-events/${encodeURIComponent(eventId)}?${params.toString()}`)
 }
 
 export function listSavedViews(workspaceId: string): Promise<SavedView[]> {

@@ -15,6 +15,10 @@ import sqlite3
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from personal_graph_os.application.activity_service import (
+    ActivityEventNotFoundError,
+    ActivityService,
+)
 from personal_graph_os.application.context_pack_service import (
     ContextPackNotFoundError,
     ContextPackSelectionError,
@@ -40,6 +44,7 @@ from personal_graph_os.domain.activity import (
     MutationAction,
 )
 from personal_graph_os.domain.identifiers import (
+    ActivityEventId,
     ContextPackId,
     EdgeId,
     EdgeTypeId,
@@ -51,6 +56,9 @@ from personal_graph_os.domain.identifiers import (
 )
 from personal_graph_os.domain.resource import ResourceKind, ResourceLifecycleStatus
 from personal_graph_os.infrastructure.mcp.dto import (
+    ActivityEventDTO,
+    ActivityEventPageDTO,
+    ActivityEventSummaryDTO,
     ContextPackDTO,
     DiscoveryPreviewDTO,
     DiscoveryRunDTO,
@@ -166,6 +174,7 @@ class AgentGatewayService:
         workflow_chain_service: WorkflowChainService,
         discovery_service: DiscoveryService,
         context_pack_service: ContextPackService,
+        activity_service: ActivityService,
         unit_of_work_factory: Callable[[], ResearchUnitOfWork],
     ) -> None:
         self._workspaces = workspaces
@@ -180,6 +189,7 @@ class AgentGatewayService:
         self._workflow_chain_service = workflow_chain_service
         self._discovery_service = discovery_service
         self._context_pack_service = context_pack_service
+        self._activity_service = activity_service
         self._unit_of_work_factory = unit_of_work_factory
 
     def _require_workspace(self, workspace_id: WorkspaceId) -> None:
@@ -253,6 +263,35 @@ class AgentGatewayService:
             resources, key=lambda resource: (resource.last_activity_at, resource.id), reverse=True
         )
         return tuple(ResourceDTO.from_domain(resource) for resource in ordered[:limit])
+
+    def list_activity_events(
+        self,
+        workspace_id: WorkspaceId,
+        *,
+        limit: int = MAX_LIST_LIMIT,
+        cursor: str | None = None,
+    ) -> ActivityEventPageDTO:
+        _validate_limit(limit, maximum=MAX_LIST_LIMIT)
+        self._require_workspace(workspace_id)
+        try:
+            page = self._activity_service.list_workspace_events(
+                workspace_id, limit=limit, cursor=cursor
+            )
+        except ValueError as error:
+            raise GatewayValidationError(str(error)) from error
+        return ActivityEventPageDTO(
+            events=tuple(ActivityEventSummaryDTO.from_domain(event) for event in page.events),
+            next_cursor=page.next_cursor,
+        )
+
+    def get_activity_event(
+        self, workspace_id: WorkspaceId, event_id: ActivityEventId
+    ) -> ActivityEventDTO:
+        try:
+            event = self._activity_service.get_event(workspace_id, event_id)
+        except ActivityEventNotFoundError as error:
+            raise GatewayNotFoundError(str(error)) from error
+        return ActivityEventDTO.from_domain(event)
 
     def get_resource(self, resource_id: ResourceId) -> ResourceDTO:
         resource = self._resources.get(resource_id)

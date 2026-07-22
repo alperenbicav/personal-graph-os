@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from personal_graph_os.application.activity_service import ActivityService
 from personal_graph_os.application.context_pack_service import ContextPackService
 from personal_graph_os.application.discovery import DiscoveryCandidateInput, DiscoveryService
 from personal_graph_os.application.file_service import FileService
@@ -34,6 +35,7 @@ from personal_graph_os.infrastructure.mcp.gateway import (
     GatewayValidationError,
 )
 from personal_graph_os.infrastructure.sqlite.repositories import (
+    SqliteActivityEventRepository,
     SqliteAttachmentRepository,
     SqliteContextPackRepository,
     SqliteEdgeRepository,
@@ -97,6 +99,7 @@ def _build_gateway(sqlite_connection: sqlite3.Connection, tmp_path: Path):
         file_service,
         context_pack_repository,
     )
+    activity_service = ActivityService(SqliteActivityEventRepository(sqlite_connection))
 
     gateway = AgentGatewayService(
         workspace_repository,
@@ -111,6 +114,7 @@ def _build_gateway(sqlite_connection: sqlite3.Connection, tmp_path: Path):
         workflow_chain_service=workflow_chain_service,
         discovery_service=discovery_service,
         context_pack_service=context_pack_service,
+        activity_service=activity_service,
         unit_of_work_factory=lambda: SqliteResearchUnitOfWork(sqlite_connection),
     )
     return {

@@ -27,6 +27,7 @@ from starlette.types import Receive, Scope, Send
 from personal_graph_os.application.discovery import DiscoveryCandidateInput
 from personal_graph_os.application.workflow_chain import WorkflowChainStep
 from personal_graph_os.domain.identifiers import (
+    ActivityEventId,
     ContextPackId,
     EdgeId,
     EdgeTypeId,
@@ -199,6 +200,38 @@ _TOOLS = (
                 "limit": _limit_property(MAX_LIST_LIMIT),
             },
             "required": ["node_id"],
+            "additionalProperties": False,
+        },
+    ),
+    Tool(
+        name="pgos_list_activity_events",
+        description=(
+            "List a workspace's append-only activity/audit events, most recent first, "
+            "bounded. Read-only; each row omits before/after snapshots -- use "
+            "pgos_get_activity_event for detail."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string"},
+                "limit": _limit_property(MAX_LIST_LIMIT),
+                "cursor": {"type": "string"},
+            },
+            "required": ["workspace_id"],
+            "additionalProperties": False,
+        },
+    ),
+    Tool(
+        name="pgos_get_activity_event",
+        description="Get one activity/audit event by id, including its bounded before/after "
+        "snapshot when recorded.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string"},
+                "event_id": {"type": "string"},
+            },
+            "required": ["workspace_id", "event_id"],
             "additionalProperties": False,
         },
     ),
@@ -565,6 +598,27 @@ def _list_node_evidence(
     return {"evidence": [pointer.model_dump(mode="json") for pointer in pointers]}
 
 
+def _list_activity_events(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    page = gateway.list_activity_events(
+        WorkspaceId(str(arguments["workspace_id"])),
+        limit=_int_arg(arguments, "limit", MAX_LIST_LIMIT),
+        cursor=_optional_str_arg(arguments, "cursor"),
+    )
+    return page.model_dump(mode="json")
+
+
+def _get_activity_event(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    event = gateway.get_activity_event(
+        WorkspaceId(str(arguments["workspace_id"])),
+        ActivityEventId(str(arguments["event_id"])),
+    )
+    return event.model_dump(mode="json")
+
+
 def _create_node(gateway: AgentGatewayService, arguments: dict[str, object]) -> dict[str, object]:
     actor_name, reason, request_id = _attribution_args(arguments)
     return gateway.create_node(
@@ -829,6 +883,8 @@ _HANDLERS: dict[str, _ToolHandler] = {
     "pgos_list_resources": _list_resources,
     "pgos_get_resource": _get_resource,
     "pgos_list_node_evidence": _list_node_evidence,
+    "pgos_list_activity_events": _list_activity_events,
+    "pgos_get_activity_event": _get_activity_event,
     "pgos_create_node": _create_node,
     "pgos_update_node": _update_node,
     "pgos_archive_node": _archive_node,
