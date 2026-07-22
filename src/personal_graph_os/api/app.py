@@ -4,12 +4,15 @@ as a FastAPI app for the local frontend.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import anyio
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.routing import Route
 
 from personal_graph_os.api.auth import TOKEN_FILE_NAME, get_or_create_api_token, require_api_token
 from personal_graph_os.api.routers import (
@@ -75,6 +78,9 @@ from personal_graph_os.domain.errors import (
     UploadTooLargeError,
 )
 from personal_graph_os.infrastructure.local_file_store import LocalManagedFileStore
+from personal_graph_os.infrastructure.mcp.auth import with_bearer_token
+from personal_graph_os.infrastructure.mcp.gateway import AgentGatewayService
+from personal_graph_os.infrastructure.mcp.server import create_mcp_asgi_app
 from personal_graph_os.infrastructure.sqlite.connection import open_connection
 from personal_graph_os.infrastructure.sqlite.migrations.runner import run_migrations
 from personal_graph_os.infrastructure.sqlite.repositories import (
@@ -215,6 +221,38 @@ def create_app(
     async def _serialize_requests(request: Request, call_next):
         async with request.app.state.db_lock:
             return await call_next(request)
+
+    agent_gateway = AgentGatewayService(
+        workspace_repository,
+        node_repository,
+        edge_repository,
+        resource_repository,
+        app.state.search_service,
+        app.state.file_service,
+    )
+    mcp_asgi_app, mcp_session_manager = create_mcp_asgi_app(agent_gateway)
+
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # The MCP session manager owns its own task group for the process lifetime; nothing
+        # else in this app currently needs a lifespan, so this only wires that one concern in.
+        async with mcp_session_manager.run():
+            yield
+
+    app.router.lifespan_context = _lifespan
+    # A plain Starlette `Route` wrapping a raw ASGI app, not `Mount`: `Mount`'s path pattern
+    # always requires a trailing slash to match, so an exact `/mcp` request (no trailing
+    # slash) would 307-redirect before the bearer check ever ran — a real MCP client (httpx
+    # without follow_redirects) would see the redirect, not the actual protocol response.
+    # FastAPI's typed `add_route` only accepts a `Request`-handling endpoint, so the route is
+    # constructed directly and appended to the router instead.
+    app.router.routes.append(
+        Route(
+            "/mcp",
+            with_bearer_token(mcp_asgi_app, lambda: app.state.api_token),
+            methods=["GET", "POST", "DELETE"],
+        )
+    )
 
     auth_dependency = [Depends(require_api_token)]
     app.include_router(workspace.router, dependencies=auth_dependency)
