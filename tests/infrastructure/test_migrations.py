@@ -31,6 +31,7 @@ _EXPECTED_TABLES = {
     "workspace_research_settings",
     "search_documents",
     "pending_file_operations",
+    "idempotency_receipts",
 }
 
 
@@ -48,6 +49,7 @@ _ALL_MIGRATION_NAMES = (
     "0003_resource_progress.sql",
     "0004_pending_file_operations.sql",
     "0005_activity_event_request_id.sql",
+    "0006_idempotency_receipts.sql",
 )
 
 
@@ -96,6 +98,7 @@ def test_upgrading_an_existing_0001_database_preserves_ids_and_data() -> None:
         "0003_resource_progress.sql",
         "0004_pending_file_operations.sql",
         "0005_activity_event_request_id.sql",
+        "0006_idempotency_receipts.sql",
     )
 
     resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()

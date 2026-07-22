@@ -18,6 +18,7 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteContextPackRepository,
     SqliteDiscoveryRunRepository,
     SqliteEdgeRepository,
+    SqliteIdempotencyReceiptRepository,
     SqliteNodeRepository,
     SqliteResourceRepository,
 )
@@ -31,6 +32,7 @@ class SqliteResearchUnitOfWork:
         self.edges = SqliteEdgeRepository(connection)
         self.discovery_runs = SqliteDiscoveryRunRepository(connection)
         self.activity_events = SqliteActivityEventRepository(connection)
+        self.idempotency_receipts = SqliteIdempotencyReceiptRepository(connection)
         self.context_packs = SqliteContextPackRepository(connection)
         self._savepoint_count = 0
 

@@ -7,6 +7,7 @@ no domain object accidentally leaks a server-only detail (e.g. a managed storage
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 from pydantic import BaseModel
@@ -20,6 +21,138 @@ from personal_graph_os.domain.resource import Resource
 from personal_graph_os.domain.schema import Workspace
 from personal_graph_os.domain.search import SearchResult
 from personal_graph_os.domain.views import ContextPack
+
+# Kept in sync with `gateway.MAX_SERIALIZED_FIELD_BYTES`: a read must honor the same bound a
+# write enforces, so a row created before this bound existed (or written directly via REST)
+# cannot make an MCP read return unbounded content (ST06-F04).
+_MAX_SERIALIZED_FIELD_BYTES = 64 * 1024
+_TRUNCATION_MARKER = "…[truncated]"
+# A defensive recursion cap for a pre-existing/legacy `field_values` shape: real callers are
+# already bounded shallow by the write-side validator, so this only guards a maliciously or
+# accidentally deep nested structure written before that bound existed.
+_MAX_JSON_DEPTH = 20
+
+
+def _json_dumps(value: object) -> str:
+    """The single canonical JSON rendering used both to measure and to bound content, so a
+    byte count computed here always matches what actually goes over the wire. `ensure_ascii`
+    is off so multibyte characters count as their real UTF-8 width rather than inflating into
+    `\\uXXXX` escapes; quotes and backslash/control-character escaping are still applied,
+    which is exactly the overhead ST06-F04's exact-bound contract must include (a bound on
+    raw string bytes alone undercounts the true serialized size)."""
+    return json.dumps(value, default=str, ensure_ascii=False, separators=(",", ":"))
+
+
+def _serialized_bytes(value: object) -> int:
+    return len(_json_dumps(value).encode("utf-8"))
+
+
+def _bounded_text(value: str, *, maximum_bytes: int = _MAX_SERIALIZED_FIELD_BYTES) -> str:
+    """Truncate `value` so its *serialized* JSON form -- quotes and escaping included, not
+    merely the raw string's UTF-8 byte length -- never exceeds `maximum_bytes`.
+
+    A prior version bounded only the raw encoded string, so quote/escape overhead (or, with
+    `ensure_ascii=True`, `\\uXXXX`-expanded multibyte characters) could still push the
+    serialized output past the exact 64 KiB contract even though the raw content fit
+    (ST06-F04: independent flat/nested/collection probes measured 515-198 bytes over budget).
+    Binary search is over character count, never a byte offset, so a multibyte UTF-8
+    character can never be split.
+    """
+    if _serialized_bytes(value) <= maximum_bytes:
+        return value
+    low, high = 0, len(value)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if _serialized_bytes(value[:mid] + _TRUNCATION_MARKER) <= maximum_bytes:
+            low = mid
+        else:
+            high = mid - 1
+    result = value[:low] + _TRUNCATION_MARKER
+    while result and _serialized_bytes(result) > maximum_bytes:
+        result = result[:-1]
+    return result
+
+
+def _bounded_json_value(value: object, *, remaining_budget: list[int], depth: int = 0) -> object:
+    """Recursively bound a JSON-like value against a single shared byte budget (ST06-F04):
+    the previous `_bounded_field_values` only truncated direct string values, so nested
+    objects/arrays and many individually-small values could still add up to an unbounded
+    total. Every string is charged the *serialized* byte length it actually contributes
+    (quotes/escaping included via `_serialized_bytes`, not a raw-byte undercount); once
+    exhausted, trailing dict keys/list items are dropped entirely (a deterministic,
+    always-valid-JSON omission, never a malformed partial value) instead of emitting ever
+    more over-budget content.
+    """
+    if depth > _MAX_JSON_DEPTH:
+        remaining_budget[0] -= _serialized_bytes(_TRUNCATION_MARKER)
+        return _TRUNCATION_MARKER
+    if isinstance(value, str):
+        bounded = _bounded_text(value, maximum_bytes=max(remaining_budget[0], 0))
+        remaining_budget[0] -= _serialized_bytes(bounded)
+        return bounded
+    if isinstance(value, dict):
+        result: dict[str, object] = {}
+        for key, item in value.items():
+            if remaining_budget[0] <= 0:
+                break
+            # Charge the key plus its `":"`/`","` JSON punctuation before the value, so the
+            # budget reflects the real marginal cost of adding one more entry, not just the
+            # value content.
+            remaining_budget[0] -= _serialized_bytes(key) + 2
+            if remaining_budget[0] <= 0:
+                break
+            result[key] = _bounded_json_value(
+                item, remaining_budget=remaining_budget, depth=depth + 1
+            )
+        return result
+    if isinstance(value, list):
+        bounded_list: list[object] = []
+        for item in value:
+            if remaining_budget[0] <= 0:
+                break
+            remaining_budget[0] -= 1  # the `","` separator
+            bounded_list.append(
+                _bounded_json_value(item, remaining_budget=remaining_budget, depth=depth + 1)
+            )
+        return bounded_list
+    remaining_budget[0] -= _serialized_bytes(value)
+    return value
+
+
+def _shrink_to_fit(container: dict[str, object] | list[object], maximum_bytes: int) -> object:
+    """Final safety net: the single-pass greedy budget above approximates the true combined
+    serialized size of a nested structure but is not an exact global optimizer. Drop trailing
+    entries (deterministically, in the same order already used for omission) until the
+    measured serialized form actually satisfies the exact contract, guaranteeing the bound
+    regardless of any approximation drift.
+    """
+    if isinstance(container, dict):
+        items = list(container.items())
+        while items and _serialized_bytes(dict(items)) > maximum_bytes:
+            items.pop()
+        return dict(items)
+    values = list(container)
+    while values and _serialized_bytes(values) > maximum_bytes:
+        values.pop()
+    return values
+
+
+def _bounded_field_values(field_values: dict[str, object]) -> dict[str, object]:
+    budget = [_MAX_SERIALIZED_FIELD_BYTES]
+    bounded = _bounded_json_value(field_values, remaining_budget=budget)
+    assert isinstance(bounded, dict)
+    shrunk = _shrink_to_fit(bounded, _MAX_SERIALIZED_FIELD_BYTES)
+    assert isinstance(shrunk, dict)
+    return shrunk
+
+
+def _bounded_text_collection(values: tuple[str, ...]) -> tuple[str, ...]:
+    budget = [_MAX_SERIALIZED_FIELD_BYTES]
+    bounded = _bounded_json_value(list(values), remaining_budget=budget)
+    assert isinstance(bounded, list)
+    shrunk = _shrink_to_fit(bounded, _MAX_SERIALIZED_FIELD_BYTES)
+    assert isinstance(shrunk, list)
+    return tuple(shrunk)
 
 
 class WorkspaceDTO(BaseModel):
@@ -59,9 +192,9 @@ class NodeDTO(BaseModel):
             workspace_id=node.workspace_id,
             node_type_id=node.node_type_id,
             title=node.title,
-            body=node.body,
+            body=_bounded_text(node.body),
             status_id=node.status_id,
-            field_values=dict(node.field_values),
+            field_values=_bounded_field_values(dict(node.field_values)),
             is_archived=node.is_archived,
             created_at=node.created_at,
             updated_at=node.updated_at,
@@ -85,7 +218,7 @@ class EdgeDTO(BaseModel):
             edge_type_id=edge.edge_type_id,
             source_node_id=edge.source_node_id,
             target_node_id=edge.target_node_id,
-            field_values=dict(edge.field_values),
+            field_values=_bounded_field_values(dict(edge.field_values)),
             created_at=edge.created_at,
         )
 
@@ -116,10 +249,12 @@ class ResourceDTO(BaseModel):
             canonical_identifier=resource.canonical_identifier,
             source_url=resource.source_url,
             lifecycle_status=resource.lifecycle_status.value,
-            next_action=resource.next_action,
+            next_action=(
+                _bounded_text(resource.next_action) if resource.next_action is not None else None
+            ),
             next_action_dismissed=resource.next_action_dismissed,
-            open_questions=resource.open_questions,
-            takeaways=resource.takeaways,
+            open_questions=_bounded_text_collection(resource.open_questions),
+            takeaways=_bounded_text_collection(resource.takeaways),
             progress_percent=resource.progress_percent,
             review_at=resource.review_at,
             last_activity_at=resource.last_activity_at,

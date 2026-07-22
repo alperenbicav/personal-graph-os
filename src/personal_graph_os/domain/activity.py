@@ -15,6 +15,7 @@ from personal_graph_os.domain.errors import InvariantViolationError
 from personal_graph_os.domain.identifiers import (
     ActivityEventId,
     DiscoveryRunId,
+    IdempotencyReceiptId,
     WorkspaceId,
     new_id,
 )
@@ -74,6 +75,38 @@ class ActivityEvent(BaseModel):
         stripped = value.strip()
         if not stripped:
             raise InvariantViolationError("ActivityEvent.request_id must not be empty when set")
+        return stripped
+
+
+class IdempotencyReceipt(BaseModel):
+    """The durable proof that one MCP `request_id` was already handled (decision #14,
+    `WORK.md`; ST06-F01 refactor).
+
+    Unlike `ActivityEvent`, a receipt is written for *every* attributed mutation call,
+    including a no-op/reuse outcome that intentionally records no event -- so a second call
+    with the same key still replays deterministically instead of re-running the no-op logic.
+    `operation` plus `payload_fingerprint` bind the key to the exact tool and canonicalized
+    arguments that produced `result_payload`, so a reused key with a different tool or a
+    changed payload is rejected as a conflict rather than replayed.
+    """
+
+    id: IdempotencyReceiptId = Field(default_factory=lambda: IdempotencyReceiptId(new_id()))
+    workspace_id: WorkspaceId
+    source: str
+    actor_name: str
+    request_id: str
+    operation: str
+    payload_fingerprint: str
+    result_payload: dict[str, object]
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @field_validator("source", "actor_name", "request_id", "operation", "payload_fingerprint")
+    @classmethod
+    def _validate_non_empty(cls, value: str, info: object) -> str:
+        field_name = getattr(info, "field_name", "IdempotencyReceipt field")
+        stripped = value.strip()
+        if not stripped:
+            raise InvariantViolationError(f"IdempotencyReceipt.{field_name} must not be empty")
         return stripped
 
 

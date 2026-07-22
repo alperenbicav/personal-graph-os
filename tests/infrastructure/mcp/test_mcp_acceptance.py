@@ -21,6 +21,8 @@ from mcp.client.streamable_http import streamablehttp_client
 from pydantic import AnyUrl
 
 from personal_graph_os.api.app import create_app
+from personal_graph_os.domain.graph import Node
+from personal_graph_os.domain.identifiers import NodeTypeId, WorkspaceId
 
 
 def _free_port() -> int:
@@ -127,6 +129,37 @@ def test_real_client_calls_get_workspace_tool(running_server: _RunningServer) ->
     assert result.structuredContent["name"] == "Personal"
 
 
+async def _call_get_node(server: _RunningServer, node_id: str) -> types.CallToolResult:
+    async with _session(server.url, server.token) as session:
+        return await session.call_tool("pgos_get_node", {"node_id": node_id})
+
+
+def test_real_client_get_node_bounds_a_pre_existing_oversized_row(
+    running_server: _RunningServer,
+) -> None:
+    """ST06-F04 re-review: a Node written outside the gateway (direct repository access here
+    stands in for a legacy row or one written via REST, neither of which runs the MCP write-
+    side bound) must still come back bounded through the real MCP protocol path, not just at
+    the DTO unit level."""
+    node_repository = running_server.app.state.node_repository
+    oversized_node = Node(
+        workspace_id=WorkspaceId(running_server.workspace_id),
+        node_type_id=NodeTypeId(running_server.node_type_id),
+        title="Legacy oversized row",
+        body="b" * 200_000,
+        field_values={f"field_{i}": ("v" * 500) for i in range(1_000)},
+    )
+    node_repository.save(oversized_node)
+
+    result = asyncio.run(_call_get_node(running_server, oversized_node.id))
+
+    assert result.isError is False
+    assert result.structuredContent is not None
+    assert len(result.structuredContent["body"].encode("utf-8")) <= 64 * 1024
+    field_values_bytes = len(json.dumps(result.structuredContent["field_values"]).encode("utf-8"))
+    assert field_values_bytes <= 64 * 1024 + 2_000
+
+
 async def _call_unknown_workspace(server: _RunningServer) -> types.CallToolResult:
     async with _session(server.url, server.token) as session:
         return await session.call_tool("pgos_get_workspace", {"workspace_id": "does-not-exist"})
@@ -186,7 +219,73 @@ def test_real_client_create_node_is_attributed_and_replay_safe(
     assert replay.isError is False
     assert replay.structuredContent is not None
     assert replay.structuredContent["replayed"] is True
-    assert replay.structuredContent["node_id"] == created_node_id
+    assert replay.structuredContent["node"]["id"] == created_node_id
+
+
+async def _call_create_node_replay_in_a_fresh_session(
+    server: _RunningServer,
+) -> tuple[types.CallToolResult, types.CallToolResult]:
+    arguments = {
+        "workspace_id": server.workspace_id,
+        "node_type_id": server.node_type_id,
+        "title": "Created via real MCP client",
+        "actor_name": "acceptance-test-agent",
+        "reason": "protocol acceptance",
+        "request_id": "acceptance-req-cross-session",
+    }
+    async with _session(server.url, server.token) as session:
+        first = await session.call_tool("pgos_create_node", arguments)
+    # A separate client session against the same running server: the receipt must be durable
+    # server/database state, never scoped to the session that created it (ST06-F01 re-review).
+    async with _session(server.url, server.token) as session:
+        replay = await session.call_tool("pgos_create_node", arguments)
+    return first, replay
+
+
+def test_real_client_create_node_replay_survives_a_new_session(
+    running_server: _RunningServer,
+) -> None:
+    first, replay = asyncio.run(_call_create_node_replay_in_a_fresh_session(running_server))
+
+    assert first.isError is False
+    assert first.structuredContent is not None
+    assert first.structuredContent["replayed"] is False
+
+    assert replay.isError is False
+    assert replay.structuredContent is not None
+    assert replay.structuredContent["replayed"] is True
+    assert replay.structuredContent["node"]["id"] == first.structuredContent["node"]["id"]
+
+
+async def _call_create_node_with_a_changed_reason(
+    server: _RunningServer,
+) -> types.CallToolResult:
+    async with _session(server.url, server.token) as session:
+        base_arguments = {
+            "workspace_id": server.workspace_id,
+            "node_type_id": server.node_type_id,
+            "title": "Created via real MCP client",
+            "actor_name": "acceptance-test-agent",
+            "request_id": "acceptance-req-changed-reason",
+        }
+        await session.call_tool(
+            "pgos_create_node", {**base_arguments, "reason": "protocol acceptance"}
+        )
+        return await session.call_tool(
+            "pgos_create_node",
+            {**base_arguments, "reason": "a different reason that should never replay"},
+        )
+
+
+def test_real_client_create_node_reused_request_id_with_a_different_reason_is_an_error(
+    running_server: _RunningServer,
+) -> None:
+    """ST06-F01 re-review: `reason` is part of the fingerprint, so a real client reusing a
+    request_id with only the reason changed must get a protocol-level error, not a silent
+    replay of the original result."""
+    result = asyncio.run(_call_create_node_with_a_changed_reason(running_server))
+
+    assert result.isError is True
 
 
 async def _call_preview_then_apply_import_twice(

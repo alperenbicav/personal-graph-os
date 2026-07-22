@@ -17,6 +17,7 @@ from personal_graph_os.domain.activity import (
     ActorKind,
     DiscoveredCandidate,
     DiscoveryRun,
+    IdempotencyReceipt,
     MutationAction,
 )
 from personal_graph_os.domain.canvas import Canvas, CanvasPlacement
@@ -31,6 +32,7 @@ from personal_graph_os.domain.identifiers import (
     DiscoveryRunId,
     EdgeId,
     FileReferenceId,
+    IdempotencyReceiptId,
     NodeId,
     ResourceId,
     SavedViewId,
@@ -940,6 +942,56 @@ class SqliteActivityEventRepository:
             is_undoable=bool(row["is_undoable"]),
             occurred_at=datetime.fromisoformat(row["occurred_at"]),
             request_id=row["request_id"],
+        )
+
+
+class SqliteIdempotencyReceiptRepository:
+    """The durable MCP replay/conflict boundary, separate from the `activity_events` audit
+    trail (ST06-F01 refactor)."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get_by_request(
+        self, workspace_id: WorkspaceId, source: str, actor_name: str, request_id: str
+    ) -> IdempotencyReceipt | None:
+        row = self._connection.execute(
+            "SELECT * FROM idempotency_receipts "
+            "WHERE workspace_id = ? AND source = ? AND actor_name = ? AND request_id = ?",
+            (workspace_id, source, actor_name, request_id),
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def save_without_commit(self, receipt: IdempotencyReceipt) -> None:
+        self._connection.execute(
+            "INSERT INTO idempotency_receipts "
+            "(id, workspace_id, source, actor_name, request_id, operation, "
+            " payload_fingerprint, result_payload_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                receipt.id,
+                receipt.workspace_id,
+                receipt.source,
+                receipt.actor_name,
+                receipt.request_id,
+                receipt.operation,
+                receipt.payload_fingerprint,
+                json.dumps(receipt.result_payload),
+                receipt.created_at.isoformat(),
+            ),
+        )
+
+    def _hydrate(self, row: sqlite3.Row) -> IdempotencyReceipt:
+        return IdempotencyReceipt(
+            id=IdempotencyReceiptId(row["id"]),
+            workspace_id=row["workspace_id"],
+            source=row["source"],
+            actor_name=row["actor_name"],
+            request_id=row["request_id"],
+            operation=row["operation"],
+            payload_fingerprint=row["payload_fingerprint"],
+            result_payload=json.loads(row["result_payload_json"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
         )
 
 

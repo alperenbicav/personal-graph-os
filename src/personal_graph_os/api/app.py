@@ -230,6 +230,14 @@ def create_app(
 
     @app.middleware("http")
     async def _serialize_requests(request: Request, call_next):
+        # `/mcp` is exempt here (ST06-F05): a Streamable HTTP session can sit open and idle
+        # between tool calls, and wrapping the whole request would hold this lock across that
+        # idle time plus protocol negotiation, blocking every REST request meanwhile. MCP
+        # instead locks only the narrow gateway/database call inside each tool/resource
+        # dispatch (`build_mcp_server`, same `db_lock`), so REST and MCP still serialize their
+        # actual database execution without serializing each other's non-DB time.
+        if request.url.path == "/mcp":
+            return await call_next(request)
         async with request.app.state.db_lock:
             return await call_next(request)
 
@@ -248,7 +256,9 @@ def create_app(
         context_pack_service=app.state.context_pack_service,
         unit_of_work_factory=lambda: SqliteResearchUnitOfWork(connection),
     )
-    mcp_asgi_app, mcp_session_manager, app.state.mcp_telemetry = create_mcp_asgi_app(agent_gateway)
+    mcp_asgi_app, mcp_session_manager, app.state.mcp_telemetry = create_mcp_asgi_app(
+        agent_gateway, db_lock=app.state.db_lock, connection=connection
+    )
 
     @asynccontextmanager
     async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:

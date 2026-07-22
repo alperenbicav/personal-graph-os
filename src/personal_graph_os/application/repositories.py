@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from personal_graph_os.domain.activity import ActivityEvent, DiscoveryRun
+from personal_graph_os.domain.activity import ActivityEvent, DiscoveryRun, IdempotencyReceipt
 from personal_graph_os.domain.canvas import Canvas, CanvasPlacement
 from personal_graph_os.domain.files import Attachment, FileReference
 from personal_graph_os.domain.graph import Edge, Node
@@ -129,6 +129,13 @@ class ActivityEventRepository(Protocol):
     ) -> ActivityEvent | None: ...
     def save(self, event: ActivityEvent) -> None: ...
     def save_without_commit(self, event: ActivityEvent) -> None: ...
+
+
+class IdempotencyReceiptRepository(Protocol):
+    def get_by_request(
+        self, workspace_id: WorkspaceId, source: str, actor_name: str, request_id: str
+    ) -> IdempotencyReceipt | None: ...
+    def save_without_commit(self, receipt: IdempotencyReceipt) -> None: ...
 
 
 class SearchIndexRepository(Protocol):

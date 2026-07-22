@@ -10,8 +10,13 @@ adapter-local.
 from __future__ import annotations
 
 import json
+import sqlite3
+import threading
 from collections.abc import Awaitable, Callable
+from typing import TypeVar
 
+import anyio
+import anyio.to_thread
 from mcp.server.lowlevel import Server
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
@@ -35,11 +40,15 @@ from personal_graph_os.domain.resource import ResourceKind, ResourceLifecycleSta
 from personal_graph_os.infrastructure.mcp.gateway import (
     MAX_CONTEXT_PACK_OBJECTS,
     MAX_CONTEXT_PACK_TOKEN_LIMIT,
+    MAX_EVIDENCE_POINTER_LENGTH,
+    MAX_EVIDENCE_POINTERS,
     MAX_IMPORT_CANDIDATES,
     MAX_IMPORT_EVIDENCE_POINTERS,
     MAX_IMPORT_TEXT_LENGTH,
     MAX_LIST_LIMIT,
     MAX_SEARCH_LIMIT,
+    MAX_SERIALIZED_FIELD_BYTES,
+    MAX_SOURCES_SEARCHED,
     AgentGatewayService,
     GatewayConflictError,
     GatewayNotFoundError,
@@ -209,7 +218,7 @@ _TOOLS = (
         properties={
             "node_id": {"type": "string"},
             "title": {"type": "string", "maxLength": 300},
-            "body": {"type": "string"},
+            "body": {"type": "string", "maxLength": MAX_SERIALIZED_FIELD_BYTES},
             "status_id": {"type": "string"},
             "field_values": {"type": "object"},
         },
@@ -240,9 +249,9 @@ _TOOLS = (
         properties={
             "workspace_id": {"type": "string"},
             "title": {"type": "string", "maxLength": 300},
-            "raw_source": {"type": "string"},
+            "raw_source": {"type": "string", "maxLength": MAX_IMPORT_TEXT_LENGTH},
             "kind": {"type": "string", "enum": [kind.value for kind in ResourceKind]},
-            "body": {"type": "string"},
+            "body": {"type": "string", "maxLength": MAX_SERIALIZED_FIELD_BYTES},
         },
         required=("workspace_id", "title", "raw_source"),
     ),
@@ -257,11 +266,19 @@ _TOOLS = (
                 "type": "string",
                 "enum": [status.value for status in ResourceLifecycleStatus],
             },
-            "next_action": {"type": "string"},
+            "next_action": {"type": "string", "maxLength": 300},
             "clear_next_action": {"type": "boolean", "default": False},
             "next_action_dismissed": {"type": "boolean"},
-            "open_questions": {"type": "array", "items": {"type": "string"}},
-            "takeaways": {"type": "array", "items": {"type": "string"}},
+            "open_questions": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": MAX_IMPORT_TEXT_LENGTH},
+                "maxItems": 50,
+            },
+            "takeaways": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": MAX_IMPORT_TEXT_LENGTH},
+                "maxItems": 50,
+            },
             "progress_percent": {"type": "integer", "minimum": 0, "maximum": 100},
             "clear_progress_percent": {"type": "boolean", "default": False},
         },
@@ -298,7 +315,7 @@ _DISCOVERY_CANDIDATE_SCHEMA: dict[str, object] = {
         "description": {"type": "string", "maxLength": MAX_IMPORT_TEXT_LENGTH},
         "evidence": {
             "type": "array",
-            "items": {"type": "string"},
+            "items": {"type": "string", "maxLength": MAX_IMPORT_TEXT_LENGTH},
             "maxItems": MAX_IMPORT_EVIDENCE_POINTERS,
         },
     },
@@ -309,7 +326,11 @@ _DISCOVERY_CANDIDATE_SCHEMA: dict[str, object] = {
 _DISCOVERY_IMPORT_PROPERTIES: dict[str, object] = {
     "workspace_id": {"type": "string"},
     "instruction": {"type": "string", "maxLength": MAX_IMPORT_TEXT_LENGTH},
-    "sources_searched": {"type": "array", "items": {"type": "string"}},
+    "sources_searched": {
+        "type": "array",
+        "items": {"type": "string", "maxLength": MAX_IMPORT_TEXT_LENGTH},
+        "maxItems": MAX_SOURCES_SEARCHED,
+    },
     "filters_interpreted": {"type": "object"},
     "candidates": {
         "type": "array",
@@ -361,8 +382,8 @@ _CONTEXT_PACK_SELECTION_PROPERTIES: dict[str, object] = {
     },
     "evidence_pointers": {
         "type": "array",
-        "items": {"type": "string"},
-        "maxItems": MAX_CONTEXT_PACK_OBJECTS,
+        "items": {"type": "string", "maxLength": MAX_EVIDENCE_POINTER_LENGTH},
+        "maxItems": MAX_EVIDENCE_POINTERS,
     },
     "inclusion_reasons": {
         "type": "object",
@@ -826,12 +847,96 @@ _HANDLERS: dict[str, _ToolHandler] = {
 }
 
 
+_T = TypeVar("_T")
+
+
+def _drain_stale_interrupt(connection: sqlite3.Connection) -> None:
+    """Absorb a `connection.interrupt()` flag that armed after the operation it targeted had
+    already finished (a benign race in `_run_gateway_call`): SQLite only raises on the next
+    statement that actually observes the flag, so without this a stale flag could otherwise
+    abort a completely unrelated later request with a spurious `OperationalError`."""
+    try:
+        connection.execute("SELECT 1")
+    except sqlite3.OperationalError:
+        pass
+
+
+async def _run_gateway_call(
+    lock: anyio.Lock,
+    connection: sqlite3.Connection | None,
+    fn: Callable[[], _T],
+) -> _T:
+    """Run one synchronous gateway call under `lock`, interruptible by client cancellation
+    (ST06-F06).
+
+    `fn` runs on a worker thread so the awaiting MCP task can actually receive
+    `CancelledError` while it is still executing (a bare synchronous call on the event loop
+    cannot be interrupted mid-mutation). If cancelled, `connection.interrupt()` forces
+    SQLite's in-flight statement to abort with `OperationalError`, which unwinds the open
+    `ResearchUnitOfWork` transaction (rollback -- no partial Node/Resource/Event/Receipt state)
+    before this function re-raises the cancellation. `connection.interrupt()` only affects a
+    statement actually executing inside SQLite at that instant; it does nothing while `fn` is
+    running ordinary Python between statements, so the worker can still be alive well after
+    the interrupt call returns.
+
+    `lock` is therefore held for the worker's *entire* lifetime unconditionally -- there is no
+    timeout on waiting for `done`, because releasing the lock (or letting anything else touch
+    `connection`) before the worker has actually finished would let an abandoned worker commit
+    or otherwise mutate through the shared connection concurrently with a later request
+    (ST06-F06: a synchronized probe proved a 5-second bound let exactly this happen). A worker
+    thread that never returns leaks a thread and keeps the lock held rather than silently
+    permitting that unsafe concurrent use -- an intentional bounded-safety trade-off, since
+    `fn` always eventually returns or raises under every real gateway/database call. The lock
+    is always released via `async with`, so a cancelled call never leaves the connection or
+    the lock in an inconsistent state once the worker has genuinely finished, and the next
+    REST/MCP request then proceeds normally. `connection=None` (e.g. a bare unit test server
+    with no real database) skips this machinery and runs `fn` directly under `lock`.
+    """
+    if connection is None:
+        async with lock:
+            return fn()
+
+    done = threading.Event()
+
+    def guarded() -> _T:
+        try:
+            return fn()
+        finally:
+            done.set()
+
+    async with lock:
+        try:
+            return await anyio.to_thread.run_sync(guarded, abandon_on_cancel=True)
+        except anyio.get_cancelled_exc_class():
+            connection.interrupt()
+            with anyio.CancelScope(shield=True):
+                await anyio.to_thread.run_sync(done.wait, abandon_on_cancel=True)
+                await anyio.to_thread.run_sync(
+                    _drain_stale_interrupt, connection, abandon_on_cancel=True
+                )
+            raise
+
+
 def build_mcp_server(
-    gateway: AgentGatewayService, telemetry: OperationCounters | None = None
+    gateway: AgentGatewayService,
+    telemetry: OperationCounters | None = None,
+    *,
+    db_lock: anyio.Lock | None = None,
+    connection: sqlite3.Connection | None = None,
 ) -> Server:
-    """Build the low-level MCP `Server`, wired to `gateway` and nothing else."""
+    """Build the low-level MCP `Server`, wired to `gateway` and nothing else.
+
+    `db_lock` (ST06-F05) is the same shared-connection execution lock REST endpoints use,
+    acquired only around the one line that actually touches the gateway/database inside
+    `call_tool`/`read_resource` -- never around protocol negotiation, session lifecycle, or an
+    idle stream, so REST and MCP serialize only their database work, not each other's
+    non-DB time. `None` (e.g. a bare unit test server) means unlocked, single-caller use.
+    `connection` (ST06-F06) enables real cancellation of an in-progress mutation; see
+    `_run_gateway_call`.
+    """
     server: Server = Server(SERVER_NAME)
     counters = telemetry if telemetry is not None else OperationCounters()
+    lock = db_lock if db_lock is not None else anyio.Lock()
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
@@ -844,7 +949,9 @@ def build_mcp_server(
             if handler is None:
                 raise ValueError(f"Unknown tool: {name}")
             try:
-                return handler(gateway, arguments)
+                return await _run_gateway_call(
+                    lock, connection, lambda: handler(gateway, arguments)
+                )
             except (GatewayNotFoundError, GatewayValidationError, GatewayConflictError) as error:
                 raise ValueError(str(error)) from error
 
@@ -872,7 +979,9 @@ def build_mcp_server(
                 raise ValueError(f"Unknown resource: {uri_text}")
             context_pack_id = ContextPackId(uri_text[len(_CONTEXT_PACK_URI_PREFIX) :])
             try:
-                materialization = gateway.materialize_context_pack(context_pack_id)
+                materialization = await _run_gateway_call(
+                    lock, connection, lambda: gateway.materialize_context_pack(context_pack_id)
+                )
             except GatewayNotFoundError as error:
                 raise ValueError(str(error)) from error
             return [
@@ -899,6 +1008,9 @@ class _StreamableHTTPASGIApp:
 
 def create_mcp_asgi_app(
     gateway: AgentGatewayService,
+    *,
+    db_lock: anyio.Lock | None = None,
+    connection: sqlite3.Connection | None = None,
 ) -> tuple[
     Callable[[Scope, Receive, Send], Awaitable[None]],
     StreamableHTTPSessionManager,
@@ -910,10 +1022,14 @@ def create_mcp_asgi_app(
 
     The caller (`api/app.py`) is responsible for wrapping the returned app with the bearer
     auth middleware and running the session manager's lifespan for the process lifetime;
-    this module has no FastAPI/auth knowledge.
+    this module has no FastAPI/auth knowledge. `db_lock` (ST06-F05) should be the same lock
+    REST uses, so REST and MCP database work never interleaves unsafely on the shared
+    connection, without the MCP session itself sitting inside that lock while idle.
+    `connection` (ST06-F06) should be that same shared connection, enabling real client
+    cancellation of an in-progress mutation; see `_run_gateway_call`.
     """
     telemetry = OperationCounters()
-    server = build_mcp_server(gateway, telemetry)
+    server = build_mcp_server(gateway, telemetry, db_lock=db_lock, connection=connection)
     session_manager = StreamableHTTPSessionManager(app=server, stateless=True)
     return _StreamableHTTPASGIApp(session_manager), session_manager, telemetry
 

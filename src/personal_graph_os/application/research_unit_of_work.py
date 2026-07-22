@@ -27,6 +27,7 @@ from personal_graph_os.application.repositories import (
     ContextPackRepository,
     DiscoveryRunRepository,
     EdgeRepository,
+    IdempotencyReceiptRepository,
     NodeRepository,
     ResourceRepository,
 )
@@ -50,6 +51,9 @@ class ResearchUnitOfWork(Protocol):
 
     @property
     def activity_events(self) -> ActivityEventRepository: ...
+
+    @property
+    def idempotency_receipts(self) -> IdempotencyReceiptRepository: ...
 
     @property
     def context_packs(self) -> ContextPackRepository: ...

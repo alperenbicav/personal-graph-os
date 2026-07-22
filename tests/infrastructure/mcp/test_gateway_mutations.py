@@ -21,6 +21,7 @@ from personal_graph_os.application.services import (
     new_workspace,
 )
 from personal_graph_os.application.workflow_chain import WorkflowChainService, WorkflowChainStep
+from personal_graph_os.domain.activity import IdempotencyReceipt
 from personal_graph_os.domain.errors import UnknownSchemaReferenceError
 from personal_graph_os.domain.identifiers import ContextPackId, NodeId, NodeTypeId
 from personal_graph_os.domain.resource import ResourceKind, ResourceLifecycleStatus
@@ -28,6 +29,7 @@ from personal_graph_os.domain.schema import EdgeType, NodeType
 from personal_graph_os.infrastructure.local_file_store import LocalManagedFileStore
 from personal_graph_os.infrastructure.mcp.gateway import (
     AgentGatewayService,
+    GatewayConflictError,
     GatewayNotFoundError,
     GatewayValidationError,
 )
@@ -45,18 +47,11 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
 from personal_graph_os.infrastructure.sqlite.research_unit_of_work import SqliteResearchUnitOfWork
 
 
-def _fixture(sqlite_connection: sqlite3.Connection, tmp_path: Path):
-    task_type = NodeType(name="Task")
-    resource_type = NodeType(name="Resource", system_key="resource")
-    edge_type = EdgeType(name="relates_to")
-    workspace = ensure_semantic_schema(
-        new_workspace("Personal").model_copy(
-            update={"node_types": (task_type, resource_type), "edge_types": (edge_type,)}
-        )
-    )
+def _build_gateway(sqlite_connection: sqlite3.Connection, tmp_path: Path):
+    """Construct a fresh `AgentGatewayService` and its repositories bound to
+    `sqlite_connection`, with no in-memory state carried over from any prior instance --
+    equivalent to a process restart against the same database (ST06-F01 restart regression)."""
     workspace_repository = SqliteWorkspaceRepository(sqlite_connection)
-    workspace_repository.save(workspace)
-
     node_repository = SqliteNodeRepository(sqlite_connection)
     edge_repository = SqliteEdgeRepository(sqlite_connection)
     resource_repository = SqliteResourceRepository(sqlite_connection)
@@ -124,6 +119,25 @@ def _fixture(sqlite_connection: sqlite3.Connection, tmp_path: Path):
         "edge_repository": edge_repository,
         "resource_repository": resource_repository,
         "context_pack_repository": context_pack_repository,
+        "unit_of_work_factory": lambda: SqliteResearchUnitOfWork(sqlite_connection),
+    }
+
+
+def _fixture(sqlite_connection: sqlite3.Connection, tmp_path: Path):
+    task_type = NodeType(name="Task")
+    resource_type = NodeType(name="Resource", system_key="resource")
+    edge_type = EdgeType(name="relates_to")
+    workspace = ensure_semantic_schema(
+        new_workspace("Personal").model_copy(
+            update={"node_types": (task_type, resource_type), "edge_types": (edge_type,)}
+        )
+    )
+    workspace_repository = SqliteWorkspaceRepository(sqlite_connection)
+    workspace_repository.save(workspace)
+
+    built = _build_gateway(sqlite_connection, tmp_path)
+    return {
+        **built,
         "workspace_id": workspace.id,
         "task_type": task_type,
         "resource_type": resource_type,
@@ -157,7 +171,7 @@ def test_create_node_replay_by_request_id_does_not_create_a_second_node(
 
     assert first["replayed"] is False
     assert replay["replayed"] is True
-    assert replay["node_id"] == first["node"]["id"]
+    assert replay["node"]["id"] == first["node"]["id"]
     all_nodes = ctx["node_repository"].list_by_workspace(ctx["workspace_id"])
     assert len(all_nodes) == 1
 
@@ -216,7 +230,7 @@ def test_update_node_replay_returns_the_same_result_without_reapplying(
     )
     replay = gateway.update_node(
         node_id,
-        title="A different title that should never apply",
+        title="Updated",
         body=None,
         status_id=None,
         field_values=None,
@@ -227,9 +241,200 @@ def test_update_node_replay_returns_the_same_result_without_reapplying(
 
     assert first["node"]["title"] == "Updated"
     assert replay["replayed"] is True
+    assert replay["node"]["id"] == first["node"]["id"]
     stored = ctx["node_repository"].get(node_id)
     assert stored is not None
     assert stored.title == "Updated"
+
+
+def test_update_node_reused_request_id_with_a_different_payload_is_a_conflict(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    """ST06-F01: a reused `request_id` with a changed payload must never silently replay the
+    original result -- it is a bounded conflict, and the second (different) title never
+    applies."""
+    ctx = _fixture(sqlite_connection, tmp_path)
+    gateway: AgentGatewayService = ctx["gateway"]
+    created = gateway.create_node(
+        ctx["workspace_id"],
+        ctx["task_type"].id,
+        "Original",
+        actor_name="agent-1",
+        reason="r",
+        request_id="req-create",
+    )
+    node_id = NodeId(created["node"]["id"])
+
+    gateway.update_node(
+        node_id,
+        title="Updated",
+        body=None,
+        status_id=None,
+        field_values=None,
+        actor_name="agent-1",
+        reason="fix title",
+        request_id="req-update",
+    )
+
+    with pytest.raises(GatewayConflictError):
+        gateway.update_node(
+            node_id,
+            title="A different title that should never apply",
+            body=None,
+            status_id=None,
+            field_values=None,
+            actor_name="agent-1",
+            reason="fix title",
+            request_id="req-update",
+        )
+
+    stored = ctx["node_repository"].get(node_id)
+    assert stored is not None
+    assert stored.title == "Updated"
+
+
+def test_reused_request_id_across_different_tools_is_a_conflict(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    """ST06-F01: the same `request_id`/actor claimed by one tool must never replay as a
+    different tool's result (the original bug mislabeled a Node id as a Context Pack id)."""
+    ctx = _fixture(sqlite_connection, tmp_path)
+    gateway: AgentGatewayService = ctx["gateway"]
+
+    gateway.create_node(
+        ctx["workspace_id"],
+        ctx["task_type"].id,
+        "First",
+        actor_name="agent-1",
+        reason="r",
+        request_id="shared-key",
+    )
+
+    with pytest.raises(GatewayConflictError):
+        gateway.create_context_pack(
+            ctx["workspace_id"],
+            "pack",
+            node_ids=(),
+            inclusion_reasons={},
+            actor_name="agent-1",
+            reason="r",
+            request_id="shared-key",
+        )
+
+
+def test_create_node_reused_request_id_with_only_a_different_reason_is_a_conflict(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    """ST06-F01 re-review: `reason` determines the persisted `ActivityEvent.reason`, so a
+    reused key with every other argument identical but a changed `reason` must never silently
+    replay -- it is a bounded conflict, same as a changed business payload."""
+    ctx = _fixture(sqlite_connection, tmp_path)
+    gateway: AgentGatewayService = ctx["gateway"]
+
+    gateway.create_node(
+        ctx["workspace_id"],
+        ctx["task_type"].id,
+        "Attention Is All You Need",
+        actor_name="agent-1",
+        reason="capture a paper",
+        request_id="req-1",
+    )
+
+    with pytest.raises(GatewayConflictError):
+        gateway.create_node(
+            ctx["workspace_id"],
+            ctx["task_type"].id,
+            "Attention Is All You Need",
+            actor_name="agent-1",
+            reason="a different reason that should never silently replay",
+            request_id="req-1",
+        )
+
+    all_nodes = ctx["node_repository"].list_by_workspace(ctx["workspace_id"])
+    assert len(all_nodes) == 1
+
+
+def test_receipt_survives_a_fresh_gateway_instance_against_the_same_connection(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    """ST06-F01 re-review: a receipt is durable state, not an in-memory cache -- a brand new
+    `AgentGatewayService` built against the same connection (simulating a process restart)
+    must still replay an exact match and still reject a changed payload."""
+    ctx = _fixture(sqlite_connection, tmp_path)
+    gateway: AgentGatewayService = ctx["gateway"]
+
+    first = gateway.create_node(
+        ctx["workspace_id"],
+        ctx["task_type"].id,
+        "Persisted across restart",
+        actor_name="agent-1",
+        reason="r",
+        request_id="req-restart",
+    )
+
+    restarted = _build_gateway(sqlite_connection, tmp_path)
+    restarted_gateway: AgentGatewayService = restarted["gateway"]
+
+    replay = restarted_gateway.create_node(
+        ctx["workspace_id"],
+        ctx["task_type"].id,
+        "Persisted across restart",
+        actor_name="agent-1",
+        reason="r",
+        request_id="req-restart",
+    )
+    assert replay["replayed"] is True
+    assert replay["node"]["id"] == first["node"]["id"]
+
+    with pytest.raises(GatewayConflictError):
+        restarted_gateway.create_node(
+            ctx["workspace_id"],
+            ctx["task_type"].id,
+            "A different title",
+            actor_name="agent-1",
+            reason="r",
+            request_id="req-restart",
+        )
+
+    all_nodes = ctx["node_repository"].list_by_workspace(ctx["workspace_id"])
+    assert len(all_nodes) == 1
+
+
+def test_create_node_loses_a_concurrent_claim_on_the_same_key_without_double_executing(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    """ST06-F01 re-review: two concurrent callers can both pass the "no receipt yet" lookup
+    before either persists one. Simulate the loser of that race by pre-claiming the key with a
+    receipt for a different fingerprint (as the winner's completed call would have produced);
+    the loser must get a bounded conflict and never execute its own mutation."""
+    ctx = _fixture(sqlite_connection, tmp_path)
+    gateway: AgentGatewayService = ctx["gateway"]
+
+    with ctx["unit_of_work_factory"]() as unit_of_work:
+        unit_of_work.idempotency_receipts.save_without_commit(
+            IdempotencyReceipt(
+                workspace_id=ctx["workspace_id"],
+                source="mcp",
+                actor_name="agent-1",
+                request_id="req-race",
+                operation="create_node",
+                payload_fingerprint="winner-claimed-this-fingerprint",
+                result_payload={"node": {"id": "winner-node-id"}},
+            )
+        )
+
+    with pytest.raises(GatewayConflictError):
+        gateway.create_node(
+            ctx["workspace_id"],
+            ctx["task_type"].id,
+            "Loses the race",
+            actor_name="agent-1",
+            reason="r",
+            request_id="req-race",
+        )
+
+    all_nodes = ctx["node_repository"].list_by_workspace(ctx["workspace_id"])
+    assert all_nodes == ()
 
 
 def test_archive_node_then_get_raises_not_found_after_deletion_is_not_required(
@@ -412,7 +617,7 @@ def test_update_resource_replay_does_not_reapply(
     )
     replay = gateway.update_resource(
         created["resource"]["id"],
-        lifecycle_status=ResourceLifecycleStatus.ARCHIVED,
+        lifecycle_status=ResourceLifecycleStatus.READING,
         next_action=None,
         clear_next_action=False,
         next_action_dismissed=None,
@@ -426,7 +631,58 @@ def test_update_resource_replay_does_not_reapply(
     )
 
     assert replay["replayed"] is True
-    assert replay["resource_id"] == created["resource"]["id"]
+    assert replay["resource"]["id"] == created["resource"]["id"]
+    stored = gateway.get_resource(created["resource"]["id"])
+    assert stored.lifecycle_status == "reading"
+
+
+def test_update_resource_reused_request_id_with_a_different_payload_is_a_conflict(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    ctx = _fixture(sqlite_connection, tmp_path)
+    gateway: AgentGatewayService = ctx["gateway"]
+    created = gateway.create_or_reuse_resource(
+        ctx["workspace_id"],
+        "A paper",
+        "https://example.com/paper",
+        kind=ResourceKind.PAPER,
+        body="",
+        actor_name="agent-1",
+        reason="import",
+        request_id="req-1",
+    )
+
+    gateway.update_resource(
+        created["resource"]["id"],
+        lifecycle_status=ResourceLifecycleStatus.READING,
+        next_action=None,
+        clear_next_action=False,
+        next_action_dismissed=None,
+        open_questions=None,
+        takeaways=None,
+        progress_percent=None,
+        clear_progress_percent=False,
+        actor_name="agent-1",
+        reason="start reading",
+        request_id="req-update",
+    )
+
+    with pytest.raises(GatewayConflictError):
+        gateway.update_resource(
+            created["resource"]["id"],
+            lifecycle_status=ResourceLifecycleStatus.ARCHIVED,
+            next_action=None,
+            clear_next_action=False,
+            next_action_dismissed=None,
+            open_questions=None,
+            takeaways=None,
+            progress_percent=None,
+            clear_progress_percent=False,
+            actor_name="agent-1",
+            reason="start reading",
+            request_id="req-update",
+        )
+
     stored = gateway.get_resource(created["resource"]["id"])
     assert stored.lifecycle_status == "reading"
 
@@ -470,7 +726,7 @@ def test_advance_workflow_creates_a_new_node_and_edge_and_is_idempotent(
 
     assert first["replayed"] is False
     assert replay["replayed"] is True
-    assert replay["edge_id"] == first["edge"]["id"]
+    assert replay["edge"]["id"] == first["edge"]["id"]
     all_edges = ctx["edge_repository"].list_by_workspace(ctx["workspace_id"])
     assert len(all_edges) == 1
 
@@ -636,7 +892,7 @@ def test_create_context_pack_replay_by_request_id_does_not_create_a_second_pack(
 
     assert first["replayed"] is False
     assert replay["replayed"] is True
-    assert replay["context_pack_id"] == first["context_pack"]["id"]
+    assert replay["context_pack"]["id"] == first["context_pack"]["id"]
     all_packs = ctx["context_pack_repository"].list_by_workspace(ctx["workspace_id"])
     assert len(all_packs) == 1
 

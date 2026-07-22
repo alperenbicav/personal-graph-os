@@ -159,7 +159,9 @@ def test_list_nodes_is_bounded_and_deterministically_ordered(
     unlimited = ctx["gateway"].list_nodes(ctx["workspace_id"], limit=100)
 
     assert len(limited) == 2
-    assert [node.title for node in unlimited] == ["Alpha", "Beta", "Gamma"]
+    # Newest first (ST06-F07).
+    assert [node.title for node in unlimited] == ["Gamma", "Beta", "Alpha"]
+    assert [node.title for node in limited] == ["Gamma", "Beta"]
 
 
 def test_list_nodes_rejects_limit_above_maximum(

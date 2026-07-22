@@ -44,7 +44,11 @@ async def record_operation(
     ok = True
     try:
         return await call()
-    except Exception:
+    except BaseException:
+        # `asyncio.CancelledError` is a `BaseException`, not an `Exception` (ST06-F06): a
+        # bare `except Exception` here would miss it, leaving `ok=True` for an operation that
+        # never completed. Every non-success outcome, cancellation included, is counted and
+        # logged as such; the exception is always re-raised, never swallowed.
         ok = False
         raise
     finally:
