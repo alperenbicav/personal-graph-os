@@ -27,13 +27,14 @@ import type {
   Workspace,
   WorkspaceResearchSettings,
 } from '../types'
+import { getToken, reportUnauthorized } from './session'
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
-
-// The token is a local secret copied from the backend's console output into a
-// git-ignored `.env.local` (see `.env.local.example`); it must never be hardcoded here
-// or otherwise land in source or a committed build.
-const API_TOKEN = import.meta.env.VITE_API_TOKEN
+// Empty string resolves every request against the current page's own origin — the
+// same-origin production posture ST-08.1 serves the UI under (`/app/` plus the API at
+// root). `import.meta.env.DEV` gates the `VITE_API_BASE_URL` override to the Vite dev
+// server only, so a leftover local `.env.local` can never bake a dev host into a
+// production build (`vite build` sets `DEV` to `false` regardless of that file's contents).
+const BASE_URL = import.meta.env.DEV ? (import.meta.env.VITE_API_BASE_URL ?? '') : ''
 
 export class ApiError extends Error {
   status: number
@@ -45,19 +46,28 @@ export class ApiError extends Error {
   }
 }
 
+function authHeadersFromSession(): HeadersInit {
+  const token = getToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+async function throwIfUnauthorizedOrNotOk(response: Response): Promise<void> {
+  if (response.ok) return
+  if (response.status === 401) reportUnauthorized()
+  const body = await response.json().catch(() => ({ detail: response.statusText }))
+  throw new ApiError(response.status, body.detail ?? response.statusText)
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE_URL}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      ...(API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}),
+      ...authHeadersFromSession(),
       ...init?.headers,
     },
   })
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({ detail: response.statusText }))
-    throw new ApiError(response.status, body.detail ?? response.statusText)
-  }
+  await throwIfUnauthorizedOrNotOk(response)
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
 }
@@ -69,12 +79,9 @@ export function getWorkspace(): Promise<Workspace> {
 export async function exportWorkspace(workspaceId: string): Promise<Blob> {
   const params = new URLSearchParams({ workspace_id: workspaceId })
   const response = await fetch(`${BASE_URL}/export?${params.toString()}`, {
-    headers: API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {},
+    headers: authHeadersFromSession(),
   })
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({ detail: response.statusText }))
-    throw new ApiError(response.status, body.detail ?? response.statusText)
-  }
+  await throwIfUnauthorizedOrNotOk(response)
   return response.blob()
 }
 
@@ -541,16 +548,6 @@ export function applyDiscovery(
   })
 }
 
-function authHeaders(): HeadersInit {
-  return API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}
-}
-
-async function throwIfNotOk(response: Response): Promise<void> {
-  if (response.ok) return
-  const body = await response.json().catch(() => ({ detail: response.statusText }))
-  throw new ApiError(response.status, body.detail ?? response.statusText)
-}
-
 export function listAttachments(nodeId: string): Promise<Attachment[]> {
   return request(`/nodes/${encodeURIComponent(nodeId)}/attachments`)
 }
@@ -562,10 +559,10 @@ export async function uploadAttachment(nodeId: string, file: File): Promise<Atta
   formData.append('file', file)
   const response = await fetch(`${BASE_URL}/nodes/${encodeURIComponent(nodeId)}/attachments`, {
     method: 'POST',
-    headers: authHeaders(),
+    headers: authHeadersFromSession(),
     body: formData,
   })
-  await throwIfNotOk(response)
+  await throwIfUnauthorizedOrNotOk(response)
   return (await response.json()) as Attachment
 }
 
@@ -574,9 +571,9 @@ export async function uploadAttachment(nodeId: string, file: File): Promise<Atta
 export async function downloadAttachment(attachmentId: string, fileName: string): Promise<void> {
   const response = await fetch(
     `${BASE_URL}/attachments/${encodeURIComponent(attachmentId)}/download`,
-    { headers: authHeaders() },
+    { headers: authHeadersFromSession() },
   )
-  await throwIfNotOk(response)
+  await throwIfUnauthorizedOrNotOk(response)
   const blob = await response.blob()
   const objectUrl = URL.createObjectURL(blob)
   try {

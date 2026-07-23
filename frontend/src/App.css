@@ -1292,3 +1292,34 @@ select.status-select {
   display: flex;
   flex-direction: column;
 }
+
+/* ---------- Unlock screen ---------- */
+
+.unlock-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.unlock-screen__panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 360px;
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.unlock-screen__panel input {
+  padding: 8px 10px;
+  font-size: 14px;
+}
+
+.unlock-screen__error {
+  color: var(--coral);
+  font-size: 13px;
+}

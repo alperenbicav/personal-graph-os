@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import * as api from './api/client'
+import { SESSION_STORAGE_KEY } from './api/session'
 import type { Canvas, CanvasPlacement, GraphEdge, GraphNode, Workspace } from './types'
 
 vi.mock('./api/client')
@@ -100,6 +101,7 @@ async function captureAndSelectNode(title: string) {
 }
 
 beforeEach(() => {
+  window.sessionStorage.setItem(SESSION_STORAGE_KEY, 'test-token')
   mockedApi.getWorkspace.mockResolvedValue(workspace)
   mockedApi.listEdges.mockResolvedValue([])
   mockedApi.listCanvases.mockResolvedValue([canvasA])
@@ -112,6 +114,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks()
+  window.sessionStorage.clear()
 })
 
 describe('status change and archive failure handling', () => {

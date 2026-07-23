@@ -13,6 +13,7 @@ dependencies = [
 
 [project.scripts]
 pgos-backup = "personal_graph_os.backup.cli:main"
+pgos-token = "personal_graph_os.api.credentials_cli:main"
 
 [dependency-groups]
 dev = [

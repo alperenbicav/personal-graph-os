@@ -12,7 +12,10 @@ import anyio
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.routing import Route
+from starlette.staticfiles import StaticFiles
+from starlette.types import Scope
 
 from personal_graph_os.api.auth import TOKEN_FILE_NAME, get_or_create_api_token, require_api_token
 from personal_graph_os.api.routers import (
@@ -119,22 +122,54 @@ DEFAULT_DATABASE_PATH = _REPO_ROOT / "workspace" / "graph.db"
 MANAGED_FILES_DIR_NAME = "managed-files"
 EXPORT_TEMP_DIR_NAME = ".export-tmp"
 
-_DEV_FRONTEND_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+DEFAULT_TRUSTED_HOSTS = ["127.0.0.1", "localhost"]
+DEFAULT_STATIC_DIR = _REPO_ROOT / "frontend" / "dist"
+DEV_FRONTEND_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+STATIC_MOUNT_PATH = "/app"
+_STATIC_ASSET_PREFIX = "assets/"
+
+
+class _AppStaticFiles(StaticFiles):
+    """Serves the built frontend under `STATIC_MOUNT_PATH`. Hashed files under `assets/`
+    are safe to cache forever; the HTML shell, manifest, and generated service worker must
+    always revalidate so a browser can never keep serving a stale entrypoint after a new
+    build lands (08.2's update-prompt flow depends on this).
+    """
+
+    async def get_response(self, path: str, scope: Scope):
+        response = await super().get_response(path, scope)
+        if response.status_code < 400:
+            if path.startswith(_STATIC_ASSET_PREFIX):
+                response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            else:
+                response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 def create_app(
     database_path: Path | str = DEFAULT_DATABASE_PATH,
     *,
     api_token: str | None = None,
+    trusted_hosts: list[str] | None = None,
+    cors_origins: list[str] | None = None,
+    static_dir: Path | str | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Personal Graph OS API")
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=_DEV_FRONTEND_ORIGINS,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # Both default to permissive/absent so `create_app(tmp_path)` keeps working for the
+    # existing test suite and any programmatic embedding without a frontend build; the real
+    # server (`api/__main__.py`) opts into an explicit host allowlist and never enables CORS
+    # for its production same-origin posture.
+    if trusted_hosts is not None:
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(trusted_hosts))
+
+    if cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(cors_origins),
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
     if database_path != ":memory:":
         Path(database_path).parent.mkdir(parents=True, exist_ok=True)
@@ -311,6 +346,20 @@ def create_app(
         async with request.app.state.db_lock:
             return await call_next(request)
 
+    @app.middleware("http")
+    async def _security_headers(request: Request, call_next):
+        # Every response, static or dynamic, gets a small fixed set of browser hardening
+        # headers. Non-static responses additionally get `no-store`: nothing under the
+        # bearer-authenticated API/MCP/export surface is safe for a shared or disk cache,
+        # unlike the public build assets `_AppStaticFiles` serves under `STATIC_MOUNT_PATH`.
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        if not request.url.path.startswith(f"{STATIC_MOUNT_PATH}/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
     agent_gateway = AgentGatewayService(
         workspace_repository,
         node_repository,
@@ -370,6 +419,16 @@ def create_app(
     app.include_router(files.router, dependencies=auth_dependency)
     app.include_router(activity.router, dependencies=auth_dependency)
     app.include_router(export.router, dependencies=auth_dependency)
+
+    if static_dir is not None:
+        # A distinct `/app` prefix, mounted after every API router: it cannot shadow `/mcp`
+        # or any REST path above, and needs no bearer auth of its own (the served shell is
+        # public; the runtime-authenticated session lives in the browser, not the build).
+        app.mount(
+            STATIC_MOUNT_PATH,
+            _AppStaticFiles(directory=static_dir, html=True),
+            name="app-static",
+        )
 
     def _not_found(_request: Request, exc: Exception) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})

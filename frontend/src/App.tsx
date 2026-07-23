@@ -16,6 +16,8 @@ import { SearchView } from './components/SearchView'
 import { TableView } from './components/TableView'
 import { TimelineView } from './components/TimelineView'
 import { TopBar } from './components/TopBar'
+import { UnlockScreen } from './components/UnlockScreen'
+import { onSessionUnauthorized, restoreSession } from './api/session'
 import {
   WorkflowChainPanel,
   type WorkflowChainAdvanceInput,
@@ -48,6 +50,7 @@ function randomSpawnPosition() {
 }
 
 function App() {
+  const [isUnlocked, setIsUnlocked] = useState(() => Boolean(restoreSession()))
   const [workspace, setWorkspace] = useState<Workspace | null>(null)
   const [nodes, setNodes] = useState<GraphNode[]>([])
   const [edges, setEdges] = useState<GraphEdge[]>([])
@@ -105,8 +108,14 @@ function App() {
   }, [recordPersisted])
 
   useEffect(() => {
+    onSessionUnauthorized(() => setIsUnlocked(false))
+  }, [])
+
+  useEffect(() => {
+    if (!isUnlocked) return
     let cancelled = false
     async function bootstrap() {
+      setLoadError(null)
       try {
         const workspaceResponse = await api.getWorkspace()
         if (cancelled) return
@@ -132,7 +141,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [isUnlocked])
 
   useEffect(() => {
     if (!activeCanvasId) return
@@ -541,12 +550,15 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [selectedNodeId, handleArchiveSelected])
 
+  if (!isUnlocked) {
+    return <UnlockScreen onUnlocked={() => setIsUnlocked(true)} />
+  }
+
   if (loadError) {
     return (
       <div className="app">
         <p className="inspector-empty">
-          Could not reach the Personal Graph OS API: {loadError}. Is the backend running on{' '}
-          <code>localhost:8000</code>?
+          Could not reach the Personal Graph OS API: {loadError}. Is the backend running?
         </p>
       </div>
     )
