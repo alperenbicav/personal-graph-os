@@ -166,6 +166,126 @@ def test_undo_a_stale_event_returns_409(client: TestClient) -> None:
     assert next(n for n in unchanged if n["id"] == node["id"])["title"] == "v3"
 
 
+def test_undo_an_update_with_an_oversized_omitted_after_state_returns_409_not_a_crash(
+    client: TestClient,
+) -> None:
+    """ST07-F05: small-before/large-after -- the recorded `after_state` is omitted for size,
+    so the event must be non-undoable and 409, never an uncaught validation crash."""
+    workspace_id = _workspace_id(client)
+    task_type_id = _task_type_id(client)
+    node = client.post(
+        "/nodes",
+        json={"workspace_id": workspace_id, "node_type_id": task_type_id, "title": "x"},
+    ).json()
+    large_body = "x" * (300 * 1024)
+
+    client.patch(f"/nodes/{node['id']}", json={"body": large_body})
+    oversized_after_event = _latest_event_for(client, workspace_id, node["id"], "updated")
+    assert oversized_after_event["is_undoable"] is False
+
+    response = client.post(
+        f"/activity-events/{oversized_after_event['id']}/undo?workspace_id={workspace_id}",
+        json={"reason": "attempt anyway"},
+    )
+
+    assert response.status_code == 409
+    unchanged = client.get("/nodes", params={"workspace_id": workspace_id}).json()
+    assert next(n for n in unchanged if n["id"] == node["id"])["body"] == large_body
+
+
+def test_undo_an_update_with_an_oversized_omitted_before_state_returns_409_not_a_crash(
+    client: TestClient,
+) -> None:
+    """ST07-F05: large-before/small-after -- the recorded `before_state` is omitted for size,
+    so restoring it via `Node.model_validate()` must never even be attempted."""
+    workspace_id = _workspace_id(client)
+    task_type_id = _task_type_id(client)
+    node = client.post(
+        "/nodes",
+        json={"workspace_id": workspace_id, "node_type_id": task_type_id, "title": "x"},
+    ).json()
+    large_body = "x" * (300 * 1024)
+    client.patch(f"/nodes/{node['id']}", json={"body": large_body})
+
+    client.patch(f"/nodes/{node['id']}", json={"body": "small again"})
+    oversized_before_event = _latest_event_for(client, workspace_id, node["id"], "updated")
+    assert oversized_before_event["is_undoable"] is False
+
+    response = client.post(
+        f"/activity-events/{oversized_before_event['id']}/undo?workspace_id={workspace_id}",
+        json={"reason": "attempt anyway"},
+    )
+
+    assert response.status_code == 409
+    unchanged = client.get("/nodes", params={"workspace_id": workspace_id}).json()
+    assert next(n for n in unchanged if n["id"] == node["id"])["body"] == "small again"
+
+
+def test_undo_a_node_update_repairs_the_search_index_projection(client: TestClient) -> None:
+    """ST07-F04: undo must not leave search advertising the reversed mutation's text."""
+    workspace_id = _workspace_id(client)
+    task_type_id = _task_type_id(client)
+    node = client.post(
+        "/nodes",
+        json={"workspace_id": workspace_id, "node_type_id": task_type_id, "title": "x"},
+    ).json()
+    client.patch(f"/nodes/{node['id']}", json={"title": "AlphaOldUnique"})
+    client.patch(f"/nodes/{node['id']}", json={"title": "BetaNewUnique"})
+    update_event = _latest_event_for(client, workspace_id, node["id"], "updated")
+
+    response = client.post(
+        f"/activity-events/{update_event['id']}/undo?workspace_id={workspace_id}",
+        json={"reason": "revert the rename"},
+    )
+
+    assert response.status_code == 200
+    restored_hits = client.get(
+        "/search", params={"workspace_id": workspace_id, "q": "AlphaOldUnique"}
+    ).json()
+    assert any(hit["node"]["id"] == node["id"] for hit in restored_hits)
+    stale_hits = client.get(
+        "/search", params={"workspace_id": workspace_id, "q": "BetaNewUnique"}
+    ).json()
+    assert not any(hit["node"]["id"] == node["id"] for hit in stale_hits)
+
+
+def test_undo_rejects_a_restore_whose_status_no_longer_exists_in_the_current_schema(
+    client: TestClient,
+) -> None:
+    """ST07-F04: a schema change since the event must fail the undo atomically with a typed
+    409 conflict, never a partial write or an uncaught validation crash."""
+    workspace_id = _workspace_id(client)
+    workspace = client.get("/workspace").json()
+    task_type = next(nt for nt in workspace["node_types"] if nt["name"] == "Task")
+    todo_status_id = next(s["id"] for s in task_type["status_definitions"] if s["name"] == "todo")
+    in_progress_status_id = next(
+        s["id"] for s in task_type["status_definitions"] if s["name"] == "in_progress"
+    )
+    node = client.post(
+        "/nodes",
+        json={"workspace_id": workspace_id, "node_type_id": task_type["id"], "title": "x"},
+    ).json()
+    client.patch(f"/nodes/{node['id']}", json={"status_id": todo_status_id})
+    client.patch(f"/nodes/{node['id']}", json={"status_id": in_progress_status_id})
+    update_event = _latest_event_for(client, workspace_id, node["id"], "updated")
+
+    remove_response = client.delete(
+        f"/node-types/{task_type['id']}/statuses/{todo_status_id}",
+        params={"workspace_id": workspace_id},
+    )
+    assert remove_response.status_code == 204
+
+    response = client.post(
+        f"/activity-events/{update_event['id']}/undo?workspace_id={workspace_id}",
+        json={"reason": "revert status"},
+    )
+
+    assert response.status_code == 409
+    unchanged = client.get("/nodes", params={"workspace_id": workspace_id}).json()
+    restored_node = next(n for n in unchanged if n["id"] == node["id"])
+    assert restored_node["status_id"] == in_progress_status_id
+
+
 def test_undo_a_non_undoable_event_returns_409(client: TestClient) -> None:
     workspace_id = _workspace_id(client)
     created = client.post(

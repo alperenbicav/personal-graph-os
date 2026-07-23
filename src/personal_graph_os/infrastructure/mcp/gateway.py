@@ -15,6 +15,7 @@ import sqlite3
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from personal_graph_os.application.activity_recording import MutationContext, record_activity_event
 from personal_graph_os.application.activity_service import (
     ActivityEventNotFoundError,
     ActivityService,
@@ -37,12 +38,7 @@ from personal_graph_os.application.research_unit_of_work import ResearchUnitOfWo
 from personal_graph_os.application.search_service import SearchService
 from personal_graph_os.application.services import EdgeService, NodeService, ResourceService
 from personal_graph_os.application.workflow_chain import WorkflowChainService, WorkflowChainStep
-from personal_graph_os.domain.activity import (
-    ActivityEvent,
-    ActorKind,
-    IdempotencyReceipt,
-    MutationAction,
-)
+from personal_graph_os.domain.activity import IdempotencyReceipt, MutationAction
 from personal_graph_os.domain.identifiers import (
     ActivityEventId,
     ContextPackId,
@@ -398,20 +394,24 @@ class AgentGatewayService:
         entity_type: str,
         entity_id: str,
         action: MutationAction,
+        before_state: dict[str, Any] | None = None,
+        after_state: dict[str, Any] | None = None,
     ) -> None:
-        event = ActivityEvent(
-            workspace_id=workspace_id,
-            actor_kind=ActorKind.AGENT,
-            actor_name=actor_name,
-            source=_MCP_SOURCE,
-            entity_type=entity_type,
-            entity_id=entity_id,
-            action=action,
-            reason=reason,
-            request_id=request_id,
-        )
+        """Route every MCP mutation through the same bounded attribution/snapshot/
+        undoability contract REST uses (ST07-F03): a bare event with no snapshot could never
+        be explained by Activity detail nor reversed by human REST undo."""
+        context = MutationContext.mcp(actor_name=actor_name, reason=reason, request_id=request_id)
         try:
-            unit_of_work.activity_events.save_without_commit(event)
+            record_activity_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                context=context,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                action=action,
+                before_state=before_state,
+                after_state=after_state,
+            )
         except sqlite3.IntegrityError as error:
             raise GatewayConflictError(
                 f"request_id {request_id!r} was already used by actor {actor_name!r} "
@@ -454,6 +454,7 @@ class AgentGatewayService:
                 entity_type="node",
                 entity_id=node.id,
                 action=MutationAction.CREATED,
+                after_state=node.model_dump(mode="json"),
             )
             result_payload: dict[str, Any] = {
                 "node": NodeDTO.from_domain(node).model_dump(mode="json")
@@ -533,6 +534,8 @@ class AgentGatewayService:
                 entity_type="node",
                 entity_id=node.id,
                 action=MutationAction.UPDATED,
+                before_state=existing.model_dump(mode="json"),
+                after_state=node.model_dump(mode="json"),
             )
             result_payload: dict[str, Any] = {
                 "node": NodeDTO.from_domain(node).model_dump(mode="json")
@@ -579,6 +582,8 @@ class AgentGatewayService:
                 entity_type="node",
                 entity_id=node.id,
                 action=MutationAction.ARCHIVED,
+                before_state=existing.model_dump(mode="json"),
+                after_state=node.model_dump(mode="json"),
             )
             result_payload: dict[str, Any] = {
                 "node": NodeDTO.from_domain(node).model_dump(mode="json")
@@ -635,6 +640,7 @@ class AgentGatewayService:
                 entity_type="edge",
                 entity_id=edge.id,
                 action=MutationAction.CREATED,
+                after_state=edge.model_dump(mode="json"),
             )
             result_payload: dict[str, Any] = {
                 "edge": EdgeDTO.from_domain(edge).model_dump(mode="json")
@@ -701,6 +707,7 @@ class AgentGatewayService:
                     entity_type="resource",
                     entity_id=resource.id,
                     action=MutationAction.CREATED,
+                    after_state=resource.model_dump(mode="json"),
                 )
             result_payload: dict[str, Any] = {
                 "resource": ResourceDTO.from_domain(resource).model_dump(mode="json"),
@@ -803,6 +810,8 @@ class AgentGatewayService:
                     entity_type="resource",
                     entity_id=resource.id,
                     action=MutationAction.UPDATED,
+                    before_state=existing.model_dump(mode="json"),
+                    after_state=resource.model_dump(mode="json"),
                 )
             result_payload: dict[str, Any] = {
                 "resource": ResourceDTO.from_domain(resource).model_dump(mode="json"),
@@ -854,6 +863,8 @@ class AgentGatewayService:
                     entity_type="resource",
                     entity_id=resource.id,
                     action=MutationAction.ARCHIVED,
+                    before_state=existing.model_dump(mode="json"),
+                    after_state=resource.model_dump(mode="json"),
                 )
             result_payload: dict[str, Any] = {
                 "resource": ResourceDTO.from_domain(resource).model_dump(mode="json"),
@@ -915,15 +926,24 @@ class AgentGatewayService:
                 title=title,
                 existing_target_node_id=existing_target_node_id,
             )
+            # Matches REST's `WorkflowChainService.advance` exactly: one logical event for
+            # this compound (node + edge) write, entity_type "workflow_chain_step" so it
+            # never falls into the plain-edge undo allowlist -- undoing only the edge would
+            # leave a freshly created target node orphaned (ST07-F03).
             self._record_event(
                 unit_of_work,
                 workspace_id=workspace_id,
                 actor_name=actor_name,
                 reason=reason,
                 request_id=request_id,
-                entity_type="edge",
+                entity_type="workflow_chain_step",
                 entity_id=edge.id,
                 action=MutationAction.CREATED,
+                after_state={
+                    "step": step.value,
+                    "target_node": target_node.model_dump(mode="json"),
+                    "edge": edge.model_dump(mode="json"),
+                },
             )
             result_payload: dict[str, Any] = {
                 "target_node": NodeDTO.from_domain(target_node).model_dump(mode="json"),
@@ -1196,6 +1216,7 @@ class AgentGatewayService:
                 entity_type="context_pack",
                 entity_id=context_pack.id,
                 action=MutationAction.CREATED,
+                after_state=context_pack.model_dump(mode="json"),
             )
             result_payload: dict[str, Any] = {
                 "context_pack": ContextPackDTO.from_domain(context_pack).model_dump(mode="json")
@@ -1271,6 +1292,7 @@ class AgentGatewayService:
                 entity_type="context_pack",
                 entity_id=deleted.id,
                 action=MutationAction.DELETED,
+                before_state=deleted.model_dump(mode="json"),
             )
             result_payload: dict[str, Any] = {"context_pack_id": deleted.id}
             self._save_receipt(

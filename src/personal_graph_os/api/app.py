@@ -36,6 +36,7 @@ from personal_graph_os.api.routers import (
 from personal_graph_os.application.activity_service import (
     ActivityEventNotFoundError,
     ActivityService,
+    InvalidActivityCursorError,
 )
 from personal_graph_os.application.bootstrap import (
     backfill_search_index,
@@ -258,6 +259,8 @@ def create_app(
         saved_view_repository,
         research_settings_repository,
         lambda: SqliteResearchUnitOfWork(connection),
+        node_service=app.state.node_service,
+        resource_service=app.state.resource_service,
     )
 
     def _list_activity_events_page(workspace_id, limit, cursor):
@@ -383,6 +386,7 @@ def create_app(
     app.add_exception_handler(UploadTooLargeError, _too_large)
     app.add_exception_handler(AttachmentContentCorruptedError, _conflict)
     app.add_exception_handler(UndoConflictError, _conflict)
+    app.add_exception_handler(InvalidActivityCursorError, _unprocessable)
 
     for not_found_error_type in (
         WorkspaceNotFoundError,

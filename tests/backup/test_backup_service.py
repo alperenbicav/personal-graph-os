@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from personal_graph_os.api.app import create_app
 from personal_graph_os.backup.service import (
+    MAX_MANIFEST_ENTRIES,
     BackupIntegrityError,
     BackupVersionError,
     PendingFileOperationsError,
@@ -196,6 +197,253 @@ def test_verify_rejects_a_path_traversal_entry(tmp_path: Path) -> None:
 
     with pytest.raises(BackupIntegrityError):
         verify_backup(malicious_path)
+
+
+def test_create_backup_excludes_an_attachment_uploaded_after_the_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ST07-F01: an upload racing between the DB snapshot and attachment enumeration must
+    never produce a self-inconsistent archive -- enumerating from the snapshot itself means
+    a late upload is cleanly excluded (a consistent earlier point in time), not half-included."""
+    from personal_graph_os.backup import service as backup_service
+
+    workspace_dir = tmp_path / "workspace"
+    app, client, workspace_id, task_type_id = _build_workspace(workspace_dir)
+    node = _create_node_with_attachment(client, workspace_id, task_type_id)
+
+    original_snapshot_database = backup_service._snapshot_database
+    late_node_id: list[str] = []
+
+    def racing_snapshot_database(source_connection: object, target_path: object) -> None:
+        original_snapshot_database(source_connection, target_path)  # type: ignore[arg-type]
+        late_node = client.post(
+            "/nodes",
+            json={"workspace_id": workspace_id, "node_type_id": task_type_id, "title": "late"},
+        ).json()
+        client.post(
+            f"/nodes/{late_node['id']}/attachments",
+            files={"file": ("late.txt", b"uploaded after the snapshot", "text/plain")},
+        )
+        late_node_id.append(late_node["id"])
+
+    monkeypatch.setattr(backup_service, "_snapshot_database", racing_snapshot_database)
+
+    backup_path = create_backup(workspace_dir, tmp_path / "backups")
+    manifest = verify_backup(backup_path)
+    assert manifest["format_version"] == "1"
+
+    destination = tmp_path / "restored"
+    restore_backup(backup_path, destination)
+    app.state.connection.close()
+    restarted_app = create_app(destination / "graph.db")
+    restarted_client = TestClient(restarted_app)
+    restarted_client.headers.update({"Authorization": f"Bearer {restarted_app.state.api_token}"})
+
+    restored_nodes = restarted_client.get(f"/nodes?workspace_id={workspace_id}").json()
+    restored_ids = {n["id"] for n in restored_nodes}
+    assert node["id"] in restored_ids
+    assert late_node_id[0] not in restored_ids
+    restarted_app.state.connection.close()
+
+
+def test_create_backup_fails_closed_when_an_attachment_is_deleted_after_the_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ST07-F01: a delete racing between the DB snapshot (which still has the row) and the
+    later byte-read must abort the whole backup rather than publish an archive the database
+    claims has an attachment the archive does not."""
+    from personal_graph_os.backup import service as backup_service
+
+    workspace_dir = tmp_path / "workspace"
+    app, client, workspace_id, task_type_id = _build_workspace(workspace_dir)
+    node = _create_node_with_attachment(client, workspace_id, task_type_id)
+    attachment = client.get(f"/nodes/{node['id']}/attachments").json()[0]
+
+    original_snapshot_database = backup_service._snapshot_database
+
+    def racing_snapshot_database(source_connection: object, target_path: object) -> None:
+        original_snapshot_database(source_connection, target_path)  # type: ignore[arg-type]
+        deleted = client.delete(f"/attachments/{attachment['id']}")
+        assert deleted.status_code == 204
+
+    monkeypatch.setattr(backup_service, "_snapshot_database", racing_snapshot_database)
+
+    output_dir = tmp_path / "backups"
+    with pytest.raises(Exception, match="does not exist"):
+        create_backup(workspace_dir, output_dir)
+
+    assert not output_dir.exists() or list(output_dir.iterdir()) == []
+
+
+def _build_gateway_for_app(app: FastAPI):
+    from personal_graph_os.infrastructure.mcp.gateway import AgentGatewayService
+    from personal_graph_os.infrastructure.sqlite.research_unit_of_work import (
+        SqliteResearchUnitOfWork,
+    )
+
+    return AgentGatewayService(
+        app.state.workspace_repository,
+        app.state.node_repository,
+        app.state.edge_repository,
+        app.state.resource_repository,
+        app.state.search_service,
+        app.state.file_service,
+        node_service=app.state.node_service,
+        edge_service=app.state.edge_service,
+        resource_service=app.state.resource_service,
+        workflow_chain_service=app.state.workflow_chain_service,
+        discovery_service=app.state.discovery_service,
+        context_pack_service=app.state.context_pack_service,
+        activity_service=app.state.activity_service,
+        unit_of_work_factory=lambda: SqliteResearchUnitOfWork(app.state.connection),
+    )
+
+
+def test_restore_preserves_idempotency_receipts_for_exact_mcp_replay(tmp_path: Path) -> None:
+    """ST07-F02: a receipt must survive backup/restore alongside the event it guards, so an
+    exact replay after recovery returns the original result instead of a spurious conflict."""
+    from personal_graph_os.domain.identifiers import NodeTypeId, WorkspaceId
+
+    workspace_dir = tmp_path / "workspace"
+    app, client, workspace_id, task_type_id = _build_workspace(workspace_dir)
+    gateway = _build_gateway_for_app(app)
+
+    original = gateway.create_node(
+        WorkspaceId(workspace_id),
+        NodeTypeId(task_type_id),
+        "Agent-captured task",
+        actor_name="agent-1",
+        reason="captured via chat",
+        request_id="req-durable-1",
+    )
+    app.state.connection.close()
+
+    backup_path = create_backup(workspace_dir, tmp_path / "backups")
+    destination = tmp_path / "restored"
+    restore_backup(backup_path, destination)
+
+    restarted_app = create_app(destination / "graph.db")
+    restarted_gateway = _build_gateway_for_app(restarted_app)
+
+    replay = restarted_gateway.create_node(
+        WorkspaceId(workspace_id),
+        NodeTypeId(task_type_id),
+        "Agent-captured task",
+        actor_name="agent-1",
+        reason="captured via chat",
+        request_id="req-durable-1",
+    )
+    assert replay["replayed"] is True
+    assert replay["node"]["id"] == original["node"]["id"]
+
+    from personal_graph_os.infrastructure.mcp.gateway import GatewayConflictError
+
+    with pytest.raises(GatewayConflictError):
+        restarted_gateway.create_node(
+            WorkspaceId(workspace_id),
+            NodeTypeId(task_type_id),
+            "A completely different title",
+            actor_name="agent-1",
+            reason="different reason",
+            request_id="req-durable-1",
+        )
+    restarted_app.state.connection.close()
+
+
+def test_verify_rejects_a_non_zip_file(tmp_path: Path) -> None:
+    not_a_zip = tmp_path / "not-a-backup.zip"
+    not_a_zip.write_bytes(b"this is definitely not a zip archive")
+
+    with pytest.raises(BackupIntegrityError):
+        verify_backup(not_a_zip)
+
+
+def test_verify_rejects_an_oversized_manifest(tmp_path: Path) -> None:
+    oversized_path = tmp_path / "oversized-manifest.zip"
+    huge_manifest = json.dumps(
+        {
+            "format_version": "1",
+            "schema_version": "1",
+            "entries": [{"path": "database.sqlite3", "size_bytes": 1, "sha256": "x" * 64}],
+            "padding": "x" * (11 * 1024 * 1024),
+        }
+    ).encode("utf-8")
+    with zipfile.ZipFile(oversized_path, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("database.sqlite3", b"x")
+        archive.writestr("manifest.json", huge_manifest)
+
+    with pytest.raises(BackupIntegrityError):
+        verify_backup(oversized_path)
+
+
+def test_verify_rejects_a_manifest_missing_required_fields(tmp_path: Path) -> None:
+    malicious_path = tmp_path / "missing-fields.zip"
+    manifest = {"format_version": "1", "schema_version": "1", "entries": [{"path": "x"}]}
+    with zipfile.ZipFile(malicious_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("x", b"data")
+        archive.writestr("manifest.json", json.dumps(manifest).encode("utf-8"))
+
+    with pytest.raises(BackupIntegrityError):
+        verify_backup(malicious_path)
+
+
+def test_verify_rejects_a_manifest_with_wrong_typed_fields(tmp_path: Path) -> None:
+    malicious_path = tmp_path / "wrong-typed.zip"
+    manifest = {
+        "format_version": "1",
+        "schema_version": "1",
+        "entries": [{"path": "x", "size_bytes": "not-a-number", "sha256": "x" * 64}],
+    }
+    with zipfile.ZipFile(malicious_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("x", b"data")
+        archive.writestr("manifest.json", json.dumps(manifest).encode("utf-8"))
+
+    with pytest.raises(BackupIntegrityError):
+        verify_backup(malicious_path)
+
+
+def test_verify_rejects_an_excessive_entry_count(tmp_path: Path) -> None:
+    malicious_path = tmp_path / "too-many-entries.zip"
+    entries = [
+        {"path": f"e{i}", "size_bytes": 1, "sha256": "x" * 64}
+        for i in range(MAX_MANIFEST_ENTRIES + 1)
+    ]
+    manifest = {"format_version": "1", "schema_version": "1", "entries": entries}
+    with zipfile.ZipFile(malicious_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", json.dumps(manifest).encode("utf-8"))
+
+    with pytest.raises(BackupIntegrityError):
+        verify_backup(malicious_path)
+
+
+def test_verify_rejects_an_aggregate_expansion_beyond_the_total_byte_cap(tmp_path: Path) -> None:
+    from personal_graph_os.backup.service import MAX_TOTAL_UNCOMPRESSED_BYTES
+
+    malicious_path = tmp_path / "aggregate-expansion.zip"
+    manifest = {
+        "format_version": "1",
+        "schema_version": "1",
+        "entries": [
+            {"path": "a", "size_bytes": MAX_TOTAL_UNCOMPRESSED_BYTES, "sha256": "a" * 64},
+            {"path": "b", "size_bytes": 1, "sha256": "b" * 64},
+        ],
+    }
+    with zipfile.ZipFile(malicious_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", json.dumps(manifest).encode("utf-8"))
+
+    with pytest.raises(BackupIntegrityError):
+        verify_backup(malicious_path)
+
+
+def test_cli_verify_fails_closed_on_a_non_zip_file_instead_of_a_traceback(tmp_path: Path) -> None:
+    from personal_graph_os.backup.cli import main
+
+    not_a_zip = tmp_path / "garbage.zip"
+    not_a_zip.write_bytes(b"garbage")
+
+    exit_code = main(["verify", str(not_a_zip)])
+
+    assert exit_code == 1
 
 
 def test_restore_refuses_a_non_empty_destination(tmp_path: Path) -> None:

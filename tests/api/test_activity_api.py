@@ -79,6 +79,53 @@ def test_list_activity_events_cursor_reaches_remaining_page(
     assert second_page["next_cursor"] is None
 
 
+def test_list_activity_events_never_includes_snapshot_fields(
+    app: FastAPI, client: TestClient
+) -> None:
+    """ST07-F06: a list page must stay a bounded summary even when events carry large
+    snapshots -- only `GET /activity-events/{id}` returns before/after state."""
+    workspace_id = _workspace_id(client)
+    repository = app.state.activity_event_repository
+    large_state: dict[str, object] = {"body": "x" * (200 * 1024)}
+    event = ActivityEvent(
+        workspace_id=WorkspaceId(workspace_id),
+        actor_kind=ActorKind.HUMAN,
+        actor_name="human/local-user/rest",
+        source="rest",
+        entity_type="node",
+        entity_id="node-large",
+        action=MutationAction.UPDATED,
+        before_state=large_state,
+        after_state=large_state,
+    )
+    repository.save(event)
+
+    response = client.get(f"/activity-events?workspace_id={workspace_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    matching = [e for e in body["events"] if e["entity_id"] == "node-large"]
+    assert len(matching) == 1
+    assert "before_state" not in matching[0]
+    assert "after_state" not in matching[0]
+    assert len(response.content) < 100_000
+
+    detail = client.get(f"/activity-events/{event.id}?workspace_id={workspace_id}").json()
+    assert detail["before_state"] == large_state
+    assert detail["after_state"] == large_state
+
+
+def test_list_activity_events_rejects_a_malformed_cursor_with_a_4xx_not_a_500(
+    client: TestClient,
+) -> None:
+    workspace_id = _workspace_id(client)
+
+    response = client.get(f"/activity-events?workspace_id={workspace_id}&cursor=not-a-real-cursor")
+
+    assert response.status_code < 500
+    assert response.status_code == 422
+
+
 def test_get_activity_event_returns_full_detail(app: FastAPI, client: TestClient) -> None:
     workspace_id = _workspace_id(client)
     [event] = _seed_events(app, workspace_id, 1)

@@ -4,6 +4,7 @@ import sqlite3
 
 import pytest
 
+from personal_graph_os.application import services as services_module
 from personal_graph_os.application.semantic_schema import ensure_semantic_schema
 from personal_graph_os.application.services import (
     ResourceNodeTypeMissingError,
@@ -16,6 +17,7 @@ from personal_graph_os.domain.errors import InvariantViolationError
 from personal_graph_os.domain.identifiers import ResourceId, WorkspaceId, new_id
 from personal_graph_os.domain.resource import ResourceKind, ResourceLifecycleStatus
 from personal_graph_os.infrastructure.sqlite.repositories import (
+    SqliteActivityEventRepository,
     SqliteResourceRepository,
     SqliteWorkspaceRepository,
 )
@@ -103,6 +105,103 @@ def test_create_or_reuse_enriches_a_missing_source_url_on_reuse(
     )
     assert was_created is False
     assert reused.source_url == "https://github.com/octocat/hello-world"
+
+
+def _persist_resource_with_no_source_url(
+    sqlite_connection: sqlite3.Connection,
+    service: ResourceService,
+    workspace_id: WorkspaceId,
+    raw_source: str,
+) -> ResourceId:
+    """Simulate a pre-existing resource whose `source_url` was never recorded (e.g. imported
+    before URL tracking existed), independent of whether `create_or_reuse` itself can still
+    produce one today."""
+    created, _ = service.create_or_reuse(workspace_id, "A paper", raw_source)
+    resource_repository = SqliteResourceRepository(sqlite_connection)
+    resource_repository.save(created.model_copy(update={"source_url": None}))
+    return created.id
+
+
+def test_create_or_reuse_enrichment_records_exactly_one_atomic_activity_event(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    """ST07-F08: enriching a previously empty `source_url` on reuse is a real mutation and
+    must be audited atomically, unlike a genuine no-op reuse."""
+    service, workspace_id = _resource_service(sqlite_connection)
+    activity_events = SqliteActivityEventRepository(sqlite_connection)
+    resource_id = _persist_resource_with_no_source_url(
+        sqlite_connection, service, workspace_id, "arxiv:2401.00001"
+    )
+    events_before = activity_events.list_by_workspace(workspace_id, limit=100)
+
+    reused, was_created = service.create_or_reuse(
+        workspace_id, "A paper", "https://arxiv.org/abs/2401.00001"
+    )
+
+    assert was_created is False
+    assert reused.id == resource_id
+    assert reused.source_url == "https://arxiv.org/abs/2401.00001"
+    events_after = activity_events.list_by_workspace(workspace_id, limit=100)
+    new_events = [event for event in events_after if event not in events_before]
+    assert len(new_events) == 1
+    assert new_events[0].entity_type == "resource"
+    assert new_events[0].before_state is not None
+    assert new_events[0].before_state["source_url"] is None
+    assert new_events[0].after_state is not None
+    assert new_events[0].after_state["source_url"] == "https://arxiv.org/abs/2401.00001"
+
+
+def test_create_or_reuse_genuine_no_op_reuse_never_invents_an_activity_event(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    service, workspace_id = _resource_service(sqlite_connection)
+    activity_events = SqliteActivityEventRepository(sqlite_connection)
+    created, _ = service.create_or_reuse(
+        workspace_id, "A paper", "https://arxiv.org/abs/2401.00001"
+    )
+    assert created.source_url is not None
+    events_before = activity_events.list_by_workspace(workspace_id, limit=100)
+
+    _reused, was_created = service.create_or_reuse(
+        workspace_id, "Different title", "https://arxiv.org/abs/2401.00001v2"
+    )
+
+    assert was_created is False
+    events_after = activity_events.list_by_workspace(workspace_id, limit=100)
+    assert events_after == events_before
+
+
+def test_create_or_reuse_enrichment_rolls_back_atomically_on_event_write_failure(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    """An event-write failure during enrichment must leave the resource exactly as it was
+    (ST07-F08): no partially-applied `source_url`, no orphaned event."""
+    service, workspace_id = _resource_service(sqlite_connection)
+    resource_repository = SqliteResourceRepository(sqlite_connection)
+    activity_events = SqliteActivityEventRepository(sqlite_connection)
+    resource_id = _persist_resource_with_no_source_url(
+        sqlite_connection, service, workspace_id, "arxiv:2401.00002"
+    )
+    events_before = activity_events.list_by_workspace(workspace_id, limit=100)
+
+    def _failing_record_activity_event(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("simulated event-write failure")
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(
+            services_module, "record_activity_event", _failing_record_activity_event
+        )
+        with pytest.raises(RuntimeError, match="simulated event-write failure"):
+            service.create_or_reuse(workspace_id, "A paper", "https://arxiv.org/abs/2401.00002")
+    finally:
+        monkeypatch.undo()
+
+    reloaded = resource_repository.get(resource_id)
+    assert reloaded is not None
+    assert reloaded.source_url is None
+    events_after = activity_events.list_by_workspace(workspace_id, limit=100)
+    assert events_after == events_before
 
 
 def test_create_or_reuse_rejects_unknown_workspace(sqlite_connection: sqlite3.Connection) -> None:

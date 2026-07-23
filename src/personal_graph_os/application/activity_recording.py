@@ -20,10 +20,14 @@ from personal_graph_os.domain.identifiers import WorkspaceId
 # an opaque, unbounded-shape entity snapshot cannot grow a stored audit row without limit.
 MAX_EVENT_SNAPSHOT_BYTES = 256 * 1024
 
+OMITTED_SNAPSHOT_MARKER_KEY = "_snapshot_omitted_oversized"
+
 REST_SOURCE = "rest"
 # Bearer capability is not identity (decision #5, `WORK.md`): every REST mutation is attributed
 # to this fixed local-human actor, never to whatever bearer token happened to authenticate it.
 REST_ACTOR_NAME = "human/local-user/rest"
+
+MCP_SOURCE = "mcp"
 
 # Undoable per the ST-07.3 allowlist: Node/Resource create/update/archive/restore; Edge/
 # Placement create; Placement/SavedView/research-settings update. Everything else (schema,
@@ -59,6 +63,18 @@ class MutationContext:
             reason=reason,
         )
 
+    @classmethod
+    def mcp(cls, *, actor_name: str, reason: str, request_id: str) -> MutationContext:
+        """An MCP-attributed mutation (ST07-F03): every successful MCP mutation must go
+        through the same bounded snapshot/undoability contract as REST, not a bare event."""
+        return cls(
+            actor_kind=ActorKind.AGENT,
+            actor_name=actor_name,
+            source=MCP_SOURCE,
+            reason=reason,
+            request_id=request_id,
+        )
+
 
 def _bounded_snapshot(state: dict[str, object] | None) -> dict[str, object] | None:
     if state is None:
@@ -69,10 +85,28 @@ def _bounded_snapshot(state: dict[str, object] | None) -> dict[str, object] | No
     # An oversized snapshot is bounded, never dropped or silently truncated mid-value: the
     # event still proves a mutation happened, but the snapshot itself is marked unusable for
     # a safe compensating undo (ST-07.3 requires an exact before-state match).
-    return {"_snapshot_omitted_oversized": True}
+    return {OMITTED_SNAPSHOT_MARKER_KEY: True}
 
 
-def _is_undoable(entity_type: str, action: MutationAction) -> bool:
+def is_snapshot_omitted(snapshot: dict[str, object] | None) -> bool:
+    """`True` when `snapshot` is the oversized-omission marker rather than real recorded
+    state -- an event carrying one can never support a safe compensating undo (ST07-F05)."""
+    return isinstance(snapshot, dict) and snapshot.get(OMITTED_SNAPSHOT_MARKER_KEY) is True
+
+
+def _is_undoable(
+    entity_type: str,
+    action: MutationAction,
+    *,
+    before_state: dict[str, object] | None,
+    after_state: dict[str, object] | None,
+) -> bool:
+    if is_snapshot_omitted(before_state) or is_snapshot_omitted(after_state):
+        # Undo always needs a real `after_state` to detect staleness, and a restore-inverse
+        # additionally needs a real `before_state` to reverse into; an omitted snapshot can
+        # satisfy neither, regardless of what the entity/action allowlist would otherwise
+        # permit (ST07-F05).
+        return False
     if entity_type in ("node", "resource"):
         return action in _UNDOABLE_NODE_RESOURCE_ACTIONS
     if entity_type in ("edge", "placement") and action is MutationAction.CREATED:
@@ -93,6 +127,8 @@ def record_activity_event(
     before_state: dict[str, object] | None = None,
     after_state: dict[str, object] | None = None,
 ) -> None:
+    bounded_before = _bounded_snapshot(before_state)
+    bounded_after = _bounded_snapshot(after_state)
     event = ActivityEvent(
         workspace_id=workspace_id,
         actor_kind=context.actor_kind,
@@ -103,9 +139,11 @@ def record_activity_event(
         action=action,
         session_id=context.session_id,
         reason=context.reason,
-        before_state=_bounded_snapshot(before_state),
-        after_state=_bounded_snapshot(after_state),
-        is_undoable=_is_undoable(entity_type, action),
+        before_state=bounded_before,
+        after_state=bounded_after,
+        is_undoable=_is_undoable(
+            entity_type, action, before_state=bounded_before, after_state=bounded_after
+        ),
         request_id=context.request_id,
     )
     unit_of_work.activity_events.save_without_commit(event)

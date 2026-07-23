@@ -294,10 +294,49 @@ class UndoActivityEventRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=1000)
 
 
+class ActivityEventSummary(BaseModel):
+    """One list-row summary -- never the before/after snapshot (ST07-F06): a page of up to
+    100 events, each potentially carrying two 256 KiB snapshots, would otherwise approach
+    50 MiB. `GET /activity-events/{id}` remains the only way to fetch a snapshot."""
+
+    id: str
+    workspace_id: str
+    actor_kind: str
+    actor_name: str
+    source: str
+    entity_type: str
+    entity_id: str
+    action: str
+    reason: str | None
+    is_undoable: bool
+    occurred_at: datetime
+    reverses_event_id: str | None
+
+    @classmethod
+    def from_domain(cls, event: ActivityEvent) -> ActivityEventSummary:
+        return cls(
+            id=event.id,
+            workspace_id=event.workspace_id,
+            actor_kind=event.actor_kind.value,
+            actor_name=event.actor_name,
+            source=event.source,
+            entity_type=event.entity_type,
+            entity_id=event.entity_id,
+            action=event.action.value,
+            reason=event.reason,
+            is_undoable=event.is_undoable,
+            occurred_at=event.occurred_at,
+            reverses_event_id=event.reverses_event_id,
+        )
+
+
 class ActivityEventPageResponse(BaseModel):
-    events: list[ActivityEvent]
+    events: list[ActivityEventSummary]
     next_cursor: str | None
 
     @classmethod
     def from_page(cls, page: ActivityEventPage) -> ActivityEventPageResponse:
-        return cls(events=list(page.events), next_cursor=page.next_cursor)
+        return cls(
+            events=[ActivityEventSummary.from_domain(event) for event in page.events],
+            next_cursor=page.next_cursor,
+        )

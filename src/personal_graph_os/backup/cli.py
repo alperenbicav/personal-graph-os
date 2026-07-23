@@ -51,6 +51,13 @@ def main(argv: list[str] | None = None) -> int:
     except BackupError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
+    except Exception as error:  # last-resort fail-closed CLI boundary (ST07-F07)
+        # `backup.service` translates every archive-format failure it recognizes into a
+        # `BackupError`; this is a defensive backstop against anything it does not, so a
+        # malformed/adversarial input always produces a clean error and exit code 1, never a
+        # raw traceback.
+        print(f"error: {error}", file=sys.stderr)
+        return 1
     return 0
 
 

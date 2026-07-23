@@ -20,6 +20,11 @@ class ActivityEventNotFoundError(Exception):
         self.event_id = event_id
 
 
+class InvalidActivityCursorError(ValueError):
+    """Raised when a caller-supplied cursor is malformed (ST07-F06): mapped to a stable 4xx
+    validation response, never an uncaught 500."""
+
+
 class ActivityEventPage:
     """A bounded page of events plus the cursor to fetch the next older page."""
 
@@ -42,7 +47,7 @@ def _encode_cursor(occurred_at: str, event_id: str) -> str:
 def _decode_cursor(cursor: str) -> tuple[str, str]:
     occurred_at, _, event_id = cursor.partition("|")
     if not occurred_at or not event_id:
-        raise ValueError("Malformed activity cursor")
+        raise InvalidActivityCursorError(f"malformed activity cursor: {cursor!r}")
     return occurred_at, event_id
 
 

@@ -723,6 +723,10 @@ function App() {
                   ? api.listActivityEvents(workspace.id, 50, cursor)
                   : Promise.resolve({ events: [], next_cursor: null })
               }
+              onLoadDetail={(eventId) => {
+                if (!workspace) return Promise.reject(new Error('No active workspace'))
+                return api.getActivityEvent(workspace.id, eventId)
+              }}
               onUndo={async (eventId, reason) => {
                 if (!workspace) return
                 await api.undoActivityEvent(workspace.id, eventId, reason)

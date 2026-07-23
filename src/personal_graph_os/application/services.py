@@ -49,7 +49,10 @@ from personal_graph_os.domain.identifiers import (
 )
 from personal_graph_os.domain.research_settings import WorkspaceResearchSettings
 from personal_graph_os.domain.resource import Resource, ResourceKind, ResourceLifecycleStatus
-from personal_graph_os.domain.resource_identity import canonicalize_resource_identity
+from personal_graph_os.domain.resource_identity import (
+    ResourceIdentity,
+    canonicalize_resource_identity,
+)
 from personal_graph_os.domain.schema import (
     EdgeType,
     FieldDefinition,
@@ -376,6 +379,24 @@ class NodeService:
             created_at=node.created_at,
             updated_at=datetime.now(UTC),
         )
+
+    def restore_within(self, unit_of_work: ResearchUnitOfWork, target: Node) -> Node:
+        """Write back an exact historical `Node` state (used only by undo's compensating
+        restore, ST07-F04) after re-validating it against the *current* workspace schema --
+        unlike `update_within`, which merges new fields, this reproduces a specific past
+        snapshot, so the only thing left to check is that today's schema still accepts it.
+        Raises `UnknownSchemaReferenceError` if the node type no longer exists or the
+        snapshot no longer satisfies current field/status definitions."""
+        workspace = self._require_workspace(target.workspace_id)
+        node_type = workspace.node_type_by_id(target.node_type_id)
+        if node_type is None:
+            raise UnknownSchemaReferenceError(
+                f"workspace {target.workspace_id} no longer has node type {target.node_type_id}"
+            )
+        target.validate_against(node_type)
+        _validate_object_references(unit_of_work.nodes, target, node_type)
+        unit_of_work.nodes.save_without_commit(target)
+        return target
 
 
 class EdgeService:
@@ -1239,12 +1260,12 @@ class ResourceService:
         """
         workspace = self._require_workspace(workspace_id)
         node_type = self._require_resource_node_type(workspace)
+        identity = canonicalize_resource_identity(raw_source)
+        enriched: Resource | None = None
         with self._unit_of_work_factory() as unit_of_work:
             resource, was_created, node = self._write_resource(
-                unit_of_work, workspace, node_type, title, raw_source, kind=kind, body=body
+                unit_of_work, workspace, node_type, title, identity, kind=kind, body=body
             )
-            # A reuse never invents a mutation event (ST-07.2, decision #6/#8 `WORK.md`),
-            # matching this path's existing "reuse is not a mutation" convention.
             if was_created:
                 record_activity_event(
                     unit_of_work,
@@ -1255,13 +1276,33 @@ class ResourceService:
                     action=MutationAction.CREATED,
                     after_state=resource.model_dump(mode="json"),
                 )
+            else:
+                # Enrichment is a real mutation (it can set a previously-empty `source_url`),
+                # so -- unlike a pure reuse no-op -- it commits atomically with exactly one
+                # `ActivityEvent`, inside the same unit of work as the reuse lookup (ST07-F08).
+                enriched = self._enrich_source_url_within(
+                    unit_of_work, resource, identity.normalized_source_url
+                )
+                if enriched is not None:
+                    record_activity_event(
+                        unit_of_work,
+                        workspace_id=workspace_id,
+                        context=MutationContext.rest(),
+                        entity_type="resource",
+                        entity_id=resource.id,
+                        action=MutationAction.UPDATED,
+                        before_state=resource.model_dump(mode="json"),
+                        after_state=enriched.model_dump(mode="json"),
+                    )
         if was_created:
             assert node is not None
             self.index_created_resource(resource, node)
             return resource, True
 
-        identity = canonicalize_resource_identity(raw_source)
-        return self._maybe_enrich_source_url(resource, identity.normalized_source_url), False
+        if enriched is not None:
+            self.index_updated_resource(enriched)
+            return enriched, False
+        return resource, False
 
     def create_or_reuse_within(
         self,
@@ -1286,8 +1327,9 @@ class ResourceService:
         """
         workspace = self._require_workspace(workspace_id)
         node_type = self._require_resource_node_type(workspace)
+        identity = canonicalize_resource_identity(raw_source)
         return self._write_resource(
-            unit_of_work, workspace, node_type, title, raw_source, kind=kind, body=body
+            unit_of_work, workspace, node_type, title, identity, kind=kind, body=body
         )
 
     def index_created_resource(self, resource: Resource, node: Node) -> None:
@@ -1308,12 +1350,11 @@ class ResourceService:
         workspace: Workspace,
         node_type: NodeType,
         title: str,
-        raw_source: str,
+        identity: ResourceIdentity,
         *,
         kind: ResourceKind | None,
         body: str,
     ) -> tuple[Resource, bool, Node | None]:
-        identity = canonicalize_resource_identity(raw_source)
         existing = self._resources.get_by_canonical_identifier(
             workspace.id, identity.canonical_identifier
         )
@@ -1334,14 +1375,19 @@ class ResourceService:
         unit_of_work.resources.save_without_commit(resource)
         return resource, True, node
 
-    def _maybe_enrich_source_url(
-        self, existing: Resource, normalized_source_url: str | None
-    ) -> Resource:
+    def _enrich_source_url_within(
+        self,
+        unit_of_work: ResearchUnitOfWork,
+        existing: Resource,
+        normalized_source_url: str | None,
+    ) -> Resource | None:
+        """Set a previously-empty `source_url` on a reused resource, atomically with the
+        caller's `ActivityEvent` write (ST07-F08). Returns `None` when there is nothing to
+        enrich, so the caller can skip recording an event for a genuine no-op reuse."""
         if existing.source_url is not None or normalized_source_url is None:
-            return existing
+            return None
         enriched = existing.model_copy(update={"source_url": normalized_source_url})
-        self._resources.save(enriched)
-        self._index_resource_text(enriched)
+        unit_of_work.resources.save_without_commit(enriched)
         return enriched
 
     def get(self, resource_id: ResourceId) -> Resource:
@@ -1521,6 +1567,15 @@ class ResourceService:
         return self.update_within(
             unit_of_work, resource_id, lifecycle_status=ResourceLifecycleStatus.ARCHIVED
         )
+
+    def restore_within(self, unit_of_work: ResearchUnitOfWork, target: Resource) -> Resource:
+        """Write back an exact historical `Resource` state (used only by undo's compensating
+        restore, ST07-F04), after confirming the workspace still carries a resource-role node
+        type -- the schema-changed-since-event conflict this aggregate can actually have."""
+        workspace = self._require_workspace(target.workspace_id)
+        self._require_resource_node_type(workspace)
+        unit_of_work.resources.save_without_commit(target)
+        return target
 
 
 class SavedViewService:

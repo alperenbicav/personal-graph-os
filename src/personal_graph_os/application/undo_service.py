@@ -12,9 +12,12 @@ soft-archive/removal for a create.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
 
-from personal_graph_os.application.activity_recording import REST_ACTOR_NAME, REST_SOURCE
+from personal_graph_os.application.activity_recording import (
+    REST_ACTOR_NAME,
+    REST_SOURCE,
+    is_snapshot_omitted,
+)
 from personal_graph_os.application.repositories import (
     ActivityEventRepository,
     CanvasPlacementRepository,
@@ -25,8 +28,10 @@ from personal_graph_os.application.repositories import (
     SavedViewRepository,
 )
 from personal_graph_os.application.research_unit_of_work import ResearchUnitOfWork
+from personal_graph_os.application.services import NodeService, ResourceService
 from personal_graph_os.domain.activity import ActivityEvent, ActorKind, MutationAction
 from personal_graph_os.domain.canvas import CanvasPlacement
+from personal_graph_os.domain.errors import DomainError
 from personal_graph_os.domain.graph import Node
 from personal_graph_os.domain.identifiers import (
     ActivityEventId,
@@ -38,7 +43,7 @@ from personal_graph_os.domain.identifiers import (
     WorkspaceId,
 )
 from personal_graph_os.domain.research_settings import WorkspaceResearchSettings
-from personal_graph_os.domain.resource import Resource, ResourceLifecycleStatus
+from personal_graph_os.domain.resource import Resource
 from personal_graph_os.domain.views import SavedView
 
 MAX_UNDO_REASON_LENGTH = 1000
@@ -84,6 +89,9 @@ class UndoService:
         saved_views: SavedViewRepository,
         research_settings: ResearchSettingsRepository,
         unit_of_work_factory: Callable[[], ResearchUnitOfWork],
+        *,
+        node_service: NodeService,
+        resource_service: ResourceService,
     ) -> None:
         self._activity_events = activity_events
         self._nodes = nodes
@@ -93,6 +101,12 @@ class UndoService:
         self._saved_views = saved_views
         self._research_settings = research_settings
         self._unit_of_work_factory = unit_of_work_factory
+        # Undo reverses through the same invariant-preserving application commands as every
+        # other write (ST07-F04): re-running current-schema validation and, after commit,
+        # repairing the search-index projection so it never keeps advertising a mutation that
+        # undo just reversed.
+        self._node_service = node_service
+        self._resource_service = resource_service
 
     def _current_state(self, entity_type: str, entity_id: str) -> dict[str, object] | None:
         if entity_type == _NODE:
@@ -127,9 +141,10 @@ class UndoService:
             raise UndoConflictError(f"activity event {event_id} is not undoable")
         if self._activity_events.get_by_reverses(event_id) is not None:
             raise UndoConflictError(f"activity event {event_id} was already reversed")
-        if isinstance(event.after_state, dict) and event.after_state.get(
-            "_snapshot_omitted_oversized"
-        ):
+        if is_snapshot_omitted(event.before_state) or is_snapshot_omitted(event.after_state):
+            # Defense in depth (ST07-F05): `record_activity_event` already marks such an event
+            # non-undoable, but this rejects an omission marker before it could ever reach
+            # `Node.model_validate()`/`Resource.model_validate()` as if it were real state.
             raise UndoConflictError(
                 f"activity event {event_id} cannot be undone: its recorded snapshot was too "
                 "large to store safely"
@@ -142,56 +157,69 @@ class UndoService:
                 "since it was recorded"
             )
 
-        with self._unit_of_work_factory() as unit_of_work:
-            if event.action is MutationAction.CREATED:
-                self._apply_create_inverse(unit_of_work, event.entity_type, event.entity_id)
-                compensating_action = (
-                    MutationAction.DELETED
-                    if event.entity_type in _REMOVE_ON_CREATE
-                    else MutationAction.ARCHIVED
-                )
-            else:
-                self._apply_restore_inverse(
-                    unit_of_work, event.entity_type, event.entity_id, event.before_state
-                )
-                compensating_action = MutationAction.UPDATED
+        try:
+            with self._unit_of_work_factory() as unit_of_work:
+                if event.action is MutationAction.CREATED:
+                    self._apply_create_inverse(unit_of_work, event.entity_type, event.entity_id)
+                    compensating_action = (
+                        MutationAction.DELETED
+                        if event.entity_type in _REMOVE_ON_CREATE
+                        else MutationAction.ARCHIVED
+                    )
+                else:
+                    self._apply_restore_inverse(
+                        unit_of_work, event.entity_type, event.entity_id, event.before_state
+                    )
+                    compensating_action = MutationAction.UPDATED
 
-            compensating_event = ActivityEvent(
-                workspace_id=workspace_id,
-                actor_kind=ActorKind.HUMAN,
-                actor_name=REST_ACTOR_NAME,
-                source=REST_SOURCE,
-                entity_type=event.entity_type,
-                entity_id=event.entity_id,
-                action=compensating_action,
-                reason=bounded_reason,
-                is_undoable=False,
-                reverses_event_id=event.id,
-            )
-            unit_of_work.activity_events.save_without_commit(compensating_event)
+                compensating_event = ActivityEvent(
+                    workspace_id=workspace_id,
+                    actor_kind=ActorKind.HUMAN,
+                    actor_name=REST_ACTOR_NAME,
+                    source=REST_SOURCE,
+                    entity_type=event.entity_type,
+                    entity_id=event.entity_id,
+                    action=compensating_action,
+                    reason=bounded_reason,
+                    is_undoable=False,
+                    reverses_event_id=event.id,
+                )
+                unit_of_work.activity_events.save_without_commit(compensating_event)
+        except DomainError as error:
+            # The recorded snapshot no longer satisfies the *current* workspace schema (e.g. a
+            # field/status/node type was removed or changed since the event) -- a typed,
+            # atomic conflict rather than a partially applied write or an uncaught error
+            # (ST07-F04). The unit of work above has already rolled back on this exception.
+            raise UndoConflictError(
+                f"activity event {event_id} cannot be undone: recorded state is no longer "
+                f"valid against the current schema ({error})"
+            ) from error
+
+        self._reindex_after_undo(event.entity_type, event.entity_id)
         return compensating_event
+
+    def _reindex_after_undo(self, entity_type: str, entity_id: str) -> None:
+        """Repair the search-index projection after a committed undo touches a Node/Resource
+        (ST07-F04): every other Node/Resource write in this codebase reindexes after its own
+        commit, and undo is not an exception -- otherwise search keeps surfacing text from a
+        mutation that was just reversed."""
+        if entity_type == _NODE:
+            node = self._nodes.get(NodeId(entity_id))
+            if node is not None:
+                self._node_service.index_captured_node(node)
+        elif entity_type == _RESOURCE:
+            resource = self._resources.get(ResourceId(entity_id))
+            if resource is not None:
+                self._resource_service.index_updated_resource(resource)
 
     def _apply_create_inverse(
         self, unit_of_work: ResearchUnitOfWork, entity_type: str, entity_id: str
     ) -> None:
         if entity_type == _NODE:
-            node = unit_of_work.nodes.get(NodeId(entity_id))
-            assert node is not None
-            archived = node.model_copy(
-                update={"is_archived": True, "updated_at": datetime.now(UTC)}
-            )
-            unit_of_work.nodes.save_without_commit(archived)
+            self._node_service.archive_within(unit_of_work, NodeId(entity_id))
             return
         if entity_type == _RESOURCE:
-            resource = unit_of_work.resources.get(ResourceId(entity_id))
-            assert resource is not None
-            archived = resource.model_copy(
-                update={
-                    "lifecycle_status": ResourceLifecycleStatus.ARCHIVED,
-                    "last_activity_at": datetime.now(UTC),
-                }
-            )
-            unit_of_work.resources.save_without_commit(archived)
+            self._resource_service.archive_within(unit_of_work, ResourceId(entity_id))
             return
         if entity_type == _EDGE:
             unit_of_work.edges.delete_without_commit(EdgeId(entity_id))
@@ -213,10 +241,12 @@ class UndoService:
                 f"activity event for {entity_type} {entity_id} has no recorded before-state"
             )
         if entity_type == _NODE:
-            unit_of_work.nodes.save_without_commit(Node.model_validate(before_state))
+            self._node_service.restore_within(unit_of_work, Node.model_validate(before_state))
             return
         if entity_type == _RESOURCE:
-            unit_of_work.resources.save_without_commit(Resource.model_validate(before_state))
+            self._resource_service.restore_within(
+                unit_of_work, Resource.model_validate(before_state)
+            )
             return
         if entity_type == _PLACEMENT:
             unit_of_work.placements.save_without_commit(

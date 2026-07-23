@@ -285,7 +285,7 @@ export interface FileReference {
   is_missing: boolean
 }
 
-export interface ActivityEvent {
+export interface ActivityEventSummary {
   id: string
   workspace_id: string
   actor_kind: 'human' | 'agent'
@@ -294,17 +294,20 @@ export interface ActivityEvent {
   entity_type: string
   entity_id: string
   action: 'created' | 'updated' | 'archived' | 'restored' | 'deleted'
-  session_id: string | null
   reason: string | null
-  before_state: Record<string, unknown> | null
-  after_state: Record<string, unknown> | null
   is_undoable: boolean
   occurred_at: string
-  request_id: string | null
   reverses_event_id: string | null
 }
 
+export interface ActivityEvent extends ActivityEventSummary {
+  session_id: string | null
+  before_state: Record<string, unknown> | null
+  after_state: Record<string, unknown> | null
+  request_id: string | null
+}
+
 export interface ActivityEventPage {
-  events: ActivityEvent[]
+  events: ActivityEventSummary[]
   next_cursor: string | null
 }

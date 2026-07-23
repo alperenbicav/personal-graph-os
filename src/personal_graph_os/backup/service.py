@@ -1,10 +1,12 @@
 """Standard-library backup create/verify/restore for a whole workspace directory.
 
 A backup covers exactly two things: the canonical SQLite database (schema, all rows) and
-every managed attachment's verified bytes. It excludes the rebuildable full-text search
-index, MCP idempotency receipts, and the pending-file-operation journal -- all internal or
-rebuildable, matching the same exclusion rationale as portable export (`export_service.py`)
--- and it always excludes the bearer token file, so a backup is never itself a credential.
+every managed attachment's verified bytes. It excludes the rebuildable full-text search index
+and the pending-file-operation journal -- both internal/rebuildable -- and it always excludes
+the bearer token file, so a backup is never itself a credential. Unlike portable export, it
+*keeps* MCP idempotency receipts (ST07-F02): a receipt and the `ActivityEvent` it guards share
+one unique request key, and dropping only the receipt while keeping the event would silently
+break ST-06's exact-replay/conflict guarantee for any request made before the backup.
 
 `create_backup` refuses to run while any managed-file operation is still pending
 reconciliation (ST05-F01's journal): a pending entry means an upload or delete is mid-flight
@@ -14,6 +16,16 @@ API, which takes a lock only long enough to safely copy pages across concurrentl
 writer -- this is the "shared SQLite write barrier" the plan calls for, provided by SQLite
 itself rather than a custom scheme, and it works safely even from a separate process (WAL
 mode allows one writer alongside readers, and `.backup()` is exactly such a reader).
+
+Attachments are enumerated *from that same snapshot*, never from the live database (ST07-F01):
+`FileService.upload_attachment` always finalizes an attachment's bytes on disk before
+committing its row, so any attachment the snapshot's database contains already had its bytes
+written before the snapshot was taken. Enumerating from a separate, still-live connection
+instead could observe a newly committed row the snapshot itself does not contain (or vice
+versa), publishing a self-consistent-looking archive whose database and attachment list
+actually disagree. A concurrent delete completing between the snapshot and the later byte-read
+still fails the whole backup closed (`AttachmentContentMissingError`), rather than silently
+publishing a broken one.
 
 `restore_backup` never touches its destination until every check has passed: it verifies the
 archive, extracts into a sibling staging directory, replays migrations and a foreign-key
@@ -38,6 +50,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
+from personal_graph_os.domain.errors import (
+    AttachmentContentCorruptedError,
+    AttachmentContentMissingError,
+)
 from personal_graph_os.infrastructure.local_file_store import LocalManagedFileStore
 from personal_graph_os.infrastructure.sqlite.connection import open_connection
 from personal_graph_os.infrastructure.sqlite.migrations.runner import run_migrations
@@ -61,8 +77,18 @@ _MANIFEST_ENTRY_NAME = "manifest.json"
 _MAX_ATTACHMENT_NAME_LENGTH = 200
 _READ_CHUNK_BYTES = 65536
 
-# Rebuildable/internal tables excluded from the snapshot -- see module docstring.
-_EXCLUDED_TABLES = ("search_documents", "idempotency_receipts", "pending_file_operations")
+# Format-level caps enforced before any extraction/hashing work (ST07-F07): a corrupt or
+# malicious archive can declare an arbitrarily large manifest, entry count, or aggregate
+# uncompressed size, so every one of those is checked up front rather than discovered by
+# exhausting memory/disk mid-verify.
+MAX_MANIFEST_BYTES = 10 * 1024 * 1024
+MAX_MANIFEST_ENTRIES = 100_000
+MAX_TOTAL_UNCOMPRESSED_BYTES = 50 * 1024 * 1024 * 1024
+
+# Rebuildable/internal tables excluded from the snapshot -- see module docstring. Idempotency
+# receipts are deliberately NOT here (ST07-F02): they must survive alongside the activity
+# events that reference them.
+_EXCLUDED_TABLES = ("search_documents", "pending_file_operations")
 
 
 class BackupError(Exception):
@@ -155,19 +181,7 @@ def create_backup(workspace_dir: Path, output_dir: Path) -> Path:
                 "the app so it can finish reconciling them, then retry the backup"
             )
 
-        workspace_repository = SqliteWorkspaceRepository(source_connection)
-        node_repository = SqliteNodeRepository(source_connection)
-        attachment_repository = SqliteAttachmentRepository(source_connection)
         managed_store = LocalManagedFileStore(workspace_dir / MANAGED_FILES_DIR_NAME)
-
-        attachments = []
-        for workspace in sorted(workspace_repository.list_all(), key=lambda w: w.id):
-            for node in sorted(
-                node_repository.list_by_workspace(workspace.id, include_archived=True),
-                key=lambda n: n.id,
-            ):
-                attachments.extend(attachment_repository.list_by_node(node.id))
-        attachments.sort(key=lambda a: a.id)
 
         output_dir.mkdir(parents=True, exist_ok=True)
         generated_at = datetime.now(UTC)
@@ -177,6 +191,27 @@ def create_backup(workspace_dir: Path, output_dir: Path) -> Path:
         temp_path = Path(temp_path_str)
         try:
             _snapshot_database(source_connection, snapshot_path)
+
+            # Enumerate attachments from the snapshot itself, never from the still-live
+            # connection (ST07-F01): only this guarantees the attachment list and the
+            # database entry describe the exact same point in time. See the module
+            # docstring for why reading bytes afterward from live disk is still safe.
+            snapshot_read_connection = open_connection(snapshot_path)
+            try:
+                workspace_repository = SqliteWorkspaceRepository(snapshot_read_connection)
+                node_repository = SqliteNodeRepository(snapshot_read_connection)
+                attachment_repository = SqliteAttachmentRepository(snapshot_read_connection)
+                attachments = []
+                for workspace in sorted(workspace_repository.list_all(), key=lambda w: w.id):
+                    for node in sorted(
+                        node_repository.list_by_workspace(workspace.id, include_archived=True),
+                        key=lambda n: n.id,
+                    ):
+                        attachments.extend(attachment_repository.list_by_node(node.id))
+                attachments.sort(key=lambda a: a.id)
+            finally:
+                snapshot_read_connection.close()
+
             manifest_entries: list[_ManifestEntry] = []
             with zipfile.ZipFile(temp_path, "w", zipfile.ZIP_DEFLATED) as archive:
                 size, digest = _hash_file(snapshot_path)
@@ -242,70 +277,125 @@ def _is_symlink_entry(info: zipfile.ZipInfo) -> bool:
     return stat.S_ISLNK(unix_mode) if unix_mode else False
 
 
+def _validate_manifest_shape(manifest: object) -> dict[str, object]:
+    """Validate every manifest field/type before any of it is trusted (ST07-F07): a malformed
+    or adversarial manifest must fail closed as `BackupIntegrityError`/`BackupVersionError`,
+    never a raw `KeyError`/`TypeError` from later code that assumes a well-formed shape."""
+    if not isinstance(manifest, dict):
+        raise BackupIntegrityError("manifest.json is not a JSON object")
+
+    format_version = manifest.get("format_version")
+    schema_version = manifest.get("schema_version")
+    if not isinstance(format_version, str) or not isinstance(schema_version, str):
+        raise BackupIntegrityError("manifest.json format_version/schema_version must be strings")
+    if format_version != BACKUP_FORMAT_VERSION:
+        raise BackupVersionError(f"unsupported backup format version {format_version!r}")
+    if schema_version != BACKUP_SCHEMA_VERSION:
+        raise BackupVersionError(f"unsupported backup schema version {schema_version!r}")
+
+    entries = manifest.get("entries")
+    if not isinstance(entries, list) or not entries:
+        raise BackupIntegrityError("backup manifest declares no entries")
+    if len(entries) > MAX_MANIFEST_ENTRIES:
+        raise BackupIntegrityError(
+            f"backup manifest declares more than {MAX_MANIFEST_ENTRIES} entries"
+        )
+
+    total_declared_bytes = 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise BackupIntegrityError("backup manifest entry is not a JSON object")
+        path, size_bytes, sha256_hex = (
+            entry.get("path"),
+            entry.get("size_bytes"),
+            entry.get("sha256"),
+        )
+        if not isinstance(path, str) or not path:
+            raise BackupIntegrityError("backup manifest entry has an invalid path")
+        if not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes < 0:
+            raise BackupIntegrityError(f"{path!r} has an invalid manifest size_bytes")
+        if not isinstance(sha256_hex, str) or len(sha256_hex) != 64:
+            raise BackupIntegrityError(f"{path!r} has an invalid manifest sha256")
+        total_declared_bytes += size_bytes
+        if total_declared_bytes > MAX_TOTAL_UNCOMPRESSED_BYTES:
+            raise BackupIntegrityError(
+                f"backup manifest declares more than {MAX_TOTAL_UNCOMPRESSED_BYTES} total bytes"
+            )
+
+    return manifest
+
+
 def verify_backup(backup_path: Path) -> dict[str, object]:
     """Validate a backup archive against its own manifest; return the parsed manifest.
 
-    Rejects a duplicate, traversal, symlink, or unsafely named entry; an unknown/newer
-    format or schema version; any mismatch between the manifest's declared entries and the
-    archive's actual entries; and any entry whose actual size or SHA-256 does not match what
-    the manifest declares (including an entry that expands past its declared size, guarding
-    against a maliciously oversized member).
+    Rejects a duplicate, traversal, symlink, or unsafely named entry; an oversized or
+    malformed manifest (missing/wrong-typed fields, too many entries, too many aggregate
+    declared bytes); an unknown/newer format or schema version; any mismatch between the
+    manifest's declared entries and the archive's actual entries; and any entry whose actual
+    size or SHA-256 does not match what the manifest declares (including an entry that
+    expands past its declared size). A corrupt/non-ZIP archive or unparseable manifest JSON
+    is translated into `BackupIntegrityError` rather than a raw `BadZipFile`/`JSONDecodeError`.
     """
-    with zipfile.ZipFile(backup_path) as archive:
-        names = archive.namelist()
-        if len(names) != len(set(names)):
-            raise BackupIntegrityError("backup archive contains duplicate entry names")
-        if _MANIFEST_ENTRY_NAME not in names:
-            raise BackupIntegrityError("backup archive is missing manifest.json")
+    try:
+        with zipfile.ZipFile(backup_path) as archive:
+            names = archive.namelist()
+            if len(names) != len(set(names)):
+                raise BackupIntegrityError("backup archive contains duplicate entry names")
+            if _MANIFEST_ENTRY_NAME not in names:
+                raise BackupIntegrityError("backup archive is missing manifest.json")
 
-        for info in archive.infolist():
-            _reject_unsafe_entry_name(info.filename)
-            if _is_symlink_entry(info):
-                raise BackupIntegrityError(f"backup entry {info.filename!r} is a symlink")
+            for info in archive.infolist():
+                _reject_unsafe_entry_name(info.filename)
+                if _is_symlink_entry(info):
+                    raise BackupIntegrityError(f"backup entry {info.filename!r} is a symlink")
 
-        manifest = json.loads(archive.read(_MANIFEST_ENTRY_NAME))
-        if manifest.get("format_version") != BACKUP_FORMAT_VERSION:
-            raise BackupVersionError(
-                f"unsupported backup format version {manifest.get('format_version')!r}"
-            )
-        if manifest.get("schema_version") != BACKUP_SCHEMA_VERSION:
-            raise BackupVersionError(
-                f"unsupported backup schema version {manifest.get('schema_version')!r}"
-            )
-
-        entries = manifest.get("entries")
-        if not isinstance(entries, list) or not entries:
-            raise BackupIntegrityError("backup manifest declares no entries")
-        declared_paths = {entry["path"] for entry in entries}
-        if len(declared_paths) != len(entries):
-            raise BackupIntegrityError("backup manifest declares duplicate paths")
-        actual_paths = set(names) - {_MANIFEST_ENTRY_NAME}
-        if declared_paths != actual_paths:
-            raise BackupIntegrityError(
-                "backup archive entries do not match the manifest (count/expansion mismatch)"
-            )
-
-        for entry in entries:
-            path, declared_size, declared_hash = (
-                entry["path"],
-                entry["size_bytes"],
-                entry["sha256"],
-            )
-            info = archive.getinfo(path)
-            if info.file_size != declared_size:
+            manifest_info = archive.getinfo(_MANIFEST_ENTRY_NAME)
+            if manifest_info.file_size > MAX_MANIFEST_BYTES:
                 raise BackupIntegrityError(
-                    f"{path} declared size does not match the manifest (expansion mismatch)"
+                    f"manifest.json exceeds the {MAX_MANIFEST_BYTES}-byte limit"
                 )
-            digest = hashlib.sha256()
-            read_bytes = 0
-            with archive.open(path) as stream:
-                while chunk := stream.read(_READ_CHUNK_BYTES):
-                    read_bytes += len(chunk)
-                    if read_bytes > declared_size:
-                        raise BackupIntegrityError(f"{path} expanded past its declared size")
-                    digest.update(chunk)
-            if read_bytes != declared_size or digest.hexdigest() != declared_hash:
-                raise BackupIntegrityError(f"{path} content does not match the manifest checksum")
+            try:
+                raw_manifest = json.loads(archive.read(_MANIFEST_ENTRY_NAME))
+            except json.JSONDecodeError as error:
+                raise BackupIntegrityError(f"manifest.json is not valid JSON: {error}") from error
+            manifest = _validate_manifest_shape(raw_manifest)
+            entries = manifest["entries"]
+            assert isinstance(entries, list)
+
+            declared_paths = {entry["path"] for entry in entries}
+            if len(declared_paths) != len(entries):
+                raise BackupIntegrityError("backup manifest declares duplicate paths")
+            actual_paths = set(names) - {_MANIFEST_ENTRY_NAME}
+            if declared_paths != actual_paths:
+                raise BackupIntegrityError(
+                    "backup archive entries do not match the manifest (count/expansion mismatch)"
+                )
+
+            for entry in entries:
+                path, declared_size, declared_hash = (
+                    entry["path"],
+                    entry["size_bytes"],
+                    entry["sha256"],
+                )
+                info = archive.getinfo(path)
+                if info.file_size != declared_size:
+                    raise BackupIntegrityError(
+                        f"{path} declared size does not match the manifest (expansion mismatch)"
+                    )
+                digest = hashlib.sha256()
+                read_bytes = 0
+                with archive.open(path) as stream:
+                    while chunk := stream.read(_READ_CHUNK_BYTES):
+                        read_bytes += len(chunk)
+                        if read_bytes > declared_size:
+                            raise BackupIntegrityError(f"{path} expanded past its declared size")
+                        digest.update(chunk)
+                if read_bytes != declared_size or digest.hexdigest() != declared_hash:
+                    raise BackupIntegrityError(
+                        f"{path} content does not match the manifest checksum"
+                    )
+    except zipfile.BadZipFile as error:
+        raise BackupIntegrityError(f"not a valid backup archive: {error}") from error
 
     return manifest
 
@@ -331,12 +421,24 @@ def _validate_staged_database(database_path: Path, managed_dir: Path) -> None:
         for workspace in workspace_repository.list_all():
             for node in node_repository.list_by_workspace(workspace.id, include_archived=True):
                 for attachment in attachment_repository.list_by_node(node.id):
-                    opened = store.open_verified(
-                        attachment.storage_relative_path,
-                        expected_size_bytes=attachment.size_bytes,
-                        expected_checksum_sha256=attachment.checksum_sha256,
-                    )
-                    opened.close()
+                    try:
+                        opened = store.open_verified(
+                            attachment.storage_relative_path,
+                            expected_size_bytes=attachment.size_bytes,
+                            expected_checksum_sha256=attachment.checksum_sha256,
+                        )
+                        opened.close()
+                    except (
+                        AttachmentContentMissingError,
+                        AttachmentContentCorruptedError,
+                    ) as error:
+                        # The archive verified internally, but its database and attachment
+                        # entries still disagree with each other (ST07-F01 defense in depth) --
+                        # a typed restore failure, never an uncaught domain error.
+                        raise RestoreValidationError(
+                            f"attachment {attachment.id} for node {node.id} does not match the "
+                            f"restored database: {error}"
+                        ) from error
     finally:
         connection.close()
 

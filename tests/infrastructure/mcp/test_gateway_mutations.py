@@ -21,6 +21,7 @@ from personal_graph_os.application.services import (
     ResourceService,
     new_workspace,
 )
+from personal_graph_os.application.undo_service import UndoConflictError, UndoService
 from personal_graph_os.application.workflow_chain import WorkflowChainService, WorkflowChainStep
 from personal_graph_os.domain.activity import IdempotencyReceipt
 from personal_graph_os.domain.errors import UnknownSchemaReferenceError
@@ -37,16 +38,50 @@ from personal_graph_os.infrastructure.mcp.gateway import (
 from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteActivityEventRepository,
     SqliteAttachmentRepository,
+    SqliteCanvasPlacementRepository,
     SqliteContextPackRepository,
     SqliteEdgeRepository,
     SqliteFileReferenceRepository,
     SqliteNodeRepository,
     SqlitePendingFileOperationRepository,
+    SqliteResearchSettingsRepository,
     SqliteResourceRepository,
+    SqliteSavedViewRepository,
     SqliteSearchIndexRepository,
     SqliteWorkspaceRepository,
 )
 from personal_graph_os.infrastructure.sqlite.research_unit_of_work import SqliteResearchUnitOfWork
+
+
+def _undo_service(sqlite_connection: sqlite3.Connection) -> UndoService:
+    workspace_repository = SqliteWorkspaceRepository(sqlite_connection)
+    node_repository = SqliteNodeRepository(sqlite_connection)
+    resource_repository = SqliteResourceRepository(sqlite_connection)
+    search_index_repository = SqliteSearchIndexRepository(sqlite_connection)
+    node_service = NodeService(
+        workspace_repository,
+        node_repository,
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
+        search_index=search_index_repository,
+    )
+    resource_service = ResourceService(
+        workspace_repository,
+        resource_repository,
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
+        search_index=search_index_repository,
+    )
+    return UndoService(
+        SqliteActivityEventRepository(sqlite_connection),
+        node_repository,
+        resource_repository,
+        SqliteEdgeRepository(sqlite_connection),
+        SqliteCanvasPlacementRepository(sqlite_connection),
+        SqliteSavedViewRepository(sqlite_connection),
+        SqliteResearchSettingsRepository(sqlite_connection),
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
+        node_service=node_service,
+        resource_service=resource_service,
+    )
 
 
 def _build_gateway(sqlite_connection: sqlite3.Connection, tmp_path: Path):
@@ -742,6 +777,181 @@ def test_advance_workflow_creates_a_new_node_and_edge_and_is_idempotent(
     assert replay["edge"]["id"] == first["edge"]["id"]
     all_edges = ctx["edge_repository"].list_by_workspace(ctx["workspace_id"])
     assert len(all_edges) == 1
+
+
+def test_create_node_over_mcp_records_full_attribution_snapshot_and_is_undoable(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    """ST07-F03: an MCP mutation must carry the same bounded before/after snapshot and
+    undoability as REST, not a bare event with null snapshots."""
+    ctx = _fixture(sqlite_connection, tmp_path)
+    gateway: AgentGatewayService = ctx["gateway"]
+    activity_events = SqliteActivityEventRepository(sqlite_connection)
+
+    result = gateway.create_node(
+        ctx["workspace_id"],
+        ctx["task_type"].id,
+        "Agent-captured task",
+        actor_name="agent-1",
+        reason="captured via chat",
+        request_id="req-create-1",
+    )
+
+    event = activity_events.get_by_request(ctx["workspace_id"], "mcp", "agent-1", "req-create-1")
+    assert event is not None
+    assert event.before_state is None
+    assert event.after_state is not None
+    assert event.after_state["id"] == result["node"]["id"]
+    assert event.after_state["title"] == "Agent-captured task"
+    assert event.is_undoable is True
+
+    detail = gateway.get_activity_event(ctx["workspace_id"], event.id)
+    assert detail.is_undoable is True
+    assert detail.after_state is not None
+    assert detail.after_state["title"] == "Agent-captured task"
+
+
+def test_update_node_over_mcp_records_before_after_and_can_be_undone_by_human_rest(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    ctx = _fixture(sqlite_connection, tmp_path)
+    gateway: AgentGatewayService = ctx["gateway"]
+    activity_events = SqliteActivityEventRepository(sqlite_connection)
+    created = gateway.create_node(
+        ctx["workspace_id"],
+        ctx["task_type"].id,
+        "Original title",
+        actor_name="agent-1",
+        reason="r",
+        request_id="req-create-2",
+    )
+    node_id = NodeId(created["node"]["id"])
+
+    gateway.update_node(
+        node_id,
+        title="Agent-updated title",
+        body=None,
+        status_id=None,
+        field_values=None,
+        actor_name="agent-1",
+        reason="agent fixed the title",
+        request_id="req-update-1",
+    )
+
+    event = activity_events.get_by_request(ctx["workspace_id"], "mcp", "agent-1", "req-update-1")
+    assert event is not None
+    assert event.before_state is not None
+    assert event.before_state["title"] == "Original title"
+    assert event.after_state is not None
+    assert event.after_state["title"] == "Agent-updated title"
+    assert event.is_undoable is True
+
+    # Human REST undo authority can reverse an allowlisted MCP mutation (ST07-F03).
+    undo_service = _undo_service(sqlite_connection)
+    compensating = undo_service.undo(ctx["workspace_id"], event.id, reason="revert agent edit")
+    assert compensating.reverses_event_id == event.id
+    restored = ctx["node_repository"].get(node_id)
+    assert restored is not None
+    assert restored.title == "Original title"
+
+
+def test_undo_of_an_mcp_event_rejects_when_state_has_gone_stale(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    ctx = _fixture(sqlite_connection, tmp_path)
+    gateway: AgentGatewayService = ctx["gateway"]
+    activity_events = SqliteActivityEventRepository(sqlite_connection)
+    created = gateway.create_node(
+        ctx["workspace_id"],
+        ctx["task_type"].id,
+        "First title",
+        actor_name="agent-1",
+        reason="r",
+        request_id="req-create-3",
+    )
+    node_id = NodeId(created["node"]["id"])
+    create_event = activity_events.get_by_request(
+        ctx["workspace_id"], "mcp", "agent-1", "req-create-3"
+    )
+    assert create_event is not None
+
+    gateway.update_node(
+        node_id,
+        title="Second title",
+        body=None,
+        status_id=None,
+        field_values=None,
+        actor_name="agent-1",
+        reason="r2",
+        request_id="req-update-2",
+    )
+
+    undo_service = _undo_service(sqlite_connection)
+    with pytest.raises(UndoConflictError, match="stale"):
+        undo_service.undo(ctx["workspace_id"], create_event.id, reason="too late")
+
+
+def test_create_or_reuse_resource_over_mcp_records_a_snapshot_and_is_undoable(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    ctx = _fixture(sqlite_connection, tmp_path)
+    gateway: AgentGatewayService = ctx["gateway"]
+    activity_events = SqliteActivityEventRepository(sqlite_connection)
+
+    result = gateway.create_or_reuse_resource(
+        ctx["workspace_id"],
+        "A paper",
+        "https://arxiv.org/abs/2401.00099",
+        kind=None,
+        body="",
+        actor_name="agent-1",
+        reason="discovered via search",
+        request_id="req-resource-1",
+    )
+
+    event = activity_events.get_by_request(ctx["workspace_id"], "mcp", "agent-1", "req-resource-1")
+    assert event is not None
+    assert event.after_state is not None
+    assert event.after_state["id"] == result["resource"]["id"]
+    assert event.is_undoable is True
+
+
+def test_advance_workflow_over_mcp_is_recorded_as_a_non_undoable_compound_step(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    """The compound (node + edge) workflow-advance write must never be filed as a plain
+    undoable edge create -- undoing only the edge would orphan the freshly created node."""
+    ctx = _fixture(sqlite_connection, tmp_path)
+    gateway: AgentGatewayService = ctx["gateway"]
+    activity_events = SqliteActivityEventRepository(sqlite_connection)
+    workspace = ctx["workspace"]
+    resource_node_type = next(nt for nt in workspace.node_types if nt.system_key == "resource")
+    source = gateway.create_node(
+        ctx["workspace_id"],
+        resource_node_type.id,
+        "Source resource",
+        actor_name="agent-1",
+        reason="r",
+        request_id="req-source-2",
+    )
+
+    gateway.advance_workflow(
+        ctx["workspace_id"],
+        NodeId(source["node"]["id"]),
+        WorkflowChainStep.RESOURCE_TO_TAKEAWAY,
+        title="A takeaway",
+        existing_target_node_id=None,
+        actor_name="agent-1",
+        reason="capture takeaway",
+        request_id="req-advance-2",
+    )
+
+    event = activity_events.get_by_request(ctx["workspace_id"], "mcp", "agent-1", "req-advance-2")
+    assert event is not None
+    assert event.entity_type == "workflow_chain_step"
+    assert event.is_undoable is False
+    assert event.after_state is not None
+    assert event.after_state["step"] == WorkflowChainStep.RESOURCE_TO_TAKEAWAY.value
 
 
 def test_mutation_validation_error_rolls_back_without_writing_an_event(
