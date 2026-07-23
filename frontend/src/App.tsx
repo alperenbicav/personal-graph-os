@@ -17,6 +17,7 @@ import { TableView } from './components/TableView'
 import { TimelineView } from './components/TimelineView'
 import { TopBar } from './components/TopBar'
 import { UnlockScreen } from './components/UnlockScreen'
+import { UpdatePrompt } from './components/UpdatePrompt'
 import { onSessionUnauthorized, restoreSession } from './api/session'
 import {
   WorkflowChainPanel,
@@ -566,6 +567,7 @@ function App() {
 
   return (
     <div className="app">
+      <UpdatePrompt />
       <TopBar
         captureNodeTypes={captureNodeTypes}
         onCapture={handleCapture}
