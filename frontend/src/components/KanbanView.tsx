@@ -19,7 +19,11 @@ export function KanbanView({
   const columnKeys = Object.keys(columns).sort()
 
   if (columnKeys.length === 0) {
-    return <p className="view-empty">Nothing here yet.</p>
+    return (
+      <p className="view-empty" role="status">
+        Nothing here yet.
+      </p>
+    )
   }
 
   return (

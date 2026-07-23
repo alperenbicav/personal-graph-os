@@ -88,7 +88,11 @@ export function TopBar({
       <button type="button" onClick={handleExport} disabled={isExporting}>
         {isExporting ? 'Exporting…' : 'Download export'}
       </button>
-      {exportError && <span className="view-error">{exportError}</span>}
+      {exportError && (
+        <span className="view-error" role="alert">
+          {exportError}
+        </span>
+      )}
     </header>
   )
 }

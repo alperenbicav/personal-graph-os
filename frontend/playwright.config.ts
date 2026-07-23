@@ -9,6 +9,10 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 // `npm run build` first, then `npm run test:e2e`.
 export default defineConfig({
   testDir: './e2e',
+  // ST09-F03: `e2e/*.test.mjs` are plain Vitest unit specs for pure harness logic (e.g.
+  // `percentile.test.mjs`), not Playwright acceptance tests; scope Playwright to only its
+  // own `*.spec.ts` files so the two runners never try to collect each other's tests.
+  testMatch: '**/*.spec.ts',
   fullyParallel: false,
   workers: 1,
   retries: 0,

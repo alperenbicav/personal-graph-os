@@ -29,7 +29,15 @@ describe('UpdatePrompt', () => {
     needRefresh = true
     render(<UpdatePrompt />)
 
-    expect(screen.getByText(/new version is available/i)).toBeInTheDocument()
+    // ST09-F05: `frontend/e2e/accessibility.spec.ts` now covers this state with a real
+    // second-service-worker-version axe scan (a rebuild with a different inert
+    // `%VITE_BUILD_MARKER%` produces byte-different precached output, exactly like a real
+    // production upgrade). This focused jsdom test stays as fast, isolated coverage of the
+    // component's own semantics/behavior, not a substitute for that real-browser scan.
+    const status = screen.getByRole('status')
+    expect(status).toHaveTextContent(/new version is available/i)
+    expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /dismiss/i })).toBeInTheDocument()
     expect(updateServiceWorker).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: /reload/i }))

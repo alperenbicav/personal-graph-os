@@ -66,7 +66,11 @@ function StringListEditor({ label, values, onCommit }: StringListEditorProps) {
           Add
         </button>
       </div>
-      {error && <span className="field-error">{error}</span>}
+      {error && (
+        <span className="field-error" role="alert">
+          {error}
+        </span>
+      )}
     </div>
   )
 }
@@ -204,7 +208,11 @@ export function ResearchDetailPanel({ resource, onUpdate }: ResearchDetailPanelP
         onCommit={(values) => onUpdate({ open_questions: values })}
       />
 
-      {error && <span className="field-error">{error}</span>}
+      {error && (
+        <span className="field-error" role="alert">
+          {error}
+        </span>
+      )}
     </div>
   )
 }

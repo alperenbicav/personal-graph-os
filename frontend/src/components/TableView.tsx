@@ -17,11 +17,18 @@ export function TableView({
   onSelectNode,
 }: TableViewProps) {
   if (rows.length === 0) {
-    return <p className="view-empty">Nothing here yet.</p>
+    return (
+      <p className="view-empty" role="status">
+        Nothing here yet.
+      </p>
+    )
   }
 
   return (
-    <div className="list-view" role="table" aria-label="Table view">
+    // Not `role="table"`: these are plain selectable rows (no exposed rows/cells/headers),
+    // and ARIA's `table` role requires `row`/`cell` children — `group` matches what's
+    // actually here without a false table-navigation promise to screen reader users.
+    <div className="list-view" role="group" aria-label="Table view">
       {rows.map((row) => (
         <NodeRow
           key={row.node.id}

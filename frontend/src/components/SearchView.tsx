@@ -61,7 +61,11 @@ export function SearchView({ onSearch, selectedNodeId, onSelectNode }: SearchVie
         </button>
       </div>
 
-      {hasSearched && results.length === 0 && <p className="view-empty">No matches.</p>}
+      {hasSearched && results.length === 0 && (
+        <p className="view-empty" role="status">
+          No matches.
+        </p>
+      )}
 
       <div className="list-view">
         {results.map((result) => (

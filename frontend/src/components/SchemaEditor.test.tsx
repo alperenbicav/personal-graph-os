@@ -52,6 +52,17 @@ function setup(overrides: { workspace?: Workspace } = {}) {
 }
 
 describe('SchemaEditor', () => {
+  it('sets modal semantics, moves focus inside, and closes on Escape', () => {
+    const { onClose } = setup()
+
+    const dialog = screen.getByRole('dialog', { name: /edit schema/i })
+    expect(dialog).toHaveAttribute('aria-modal', 'true')
+    expect(dialog).toContainElement(document.activeElement as HTMLElement)
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
   it('creates a node type and refreshes the workspace', async () => {
     const createdNodeType = { ...workspace.node_types[0], id: 'nt-idea', name: 'Idea' }
     const refreshedWorkspace = { ...workspace, node_types: [...workspace.node_types, createdNodeType] }

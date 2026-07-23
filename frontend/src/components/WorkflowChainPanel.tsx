@@ -93,7 +93,11 @@ export function WorkflowChainPanel({
         </div>
       )}
 
-      {error && <span className="field-error">{error}</span>}
+      {error && (
+        <span className="field-error" role="alert">
+          {error}
+        </span>
+      )}
     </div>
   )
 }

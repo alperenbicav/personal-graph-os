@@ -17,7 +17,11 @@ export function TimelineView({
   onSelectNode,
 }: TimelineViewProps) {
   if (rows.length === 0) {
-    return <p className="view-empty">Nothing here yet.</p>
+    return (
+      <p className="view-empty" role="status">
+        Nothing here yet.
+      </p>
+    )
   }
 
   return (

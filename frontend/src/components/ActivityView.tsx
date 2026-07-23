@@ -165,9 +165,15 @@ export function ActivityView({ onLoadPage, onLoadDetail, onUndo }: ActivityViewP
         </select>
       </div>
 
-      {loadError && <p className="view-error">{loadError}</p>}
+      {loadError && (
+        <p className="view-error" role="alert">
+          {loadError}
+        </p>
+      )}
       {!loadError && visibleEvents.length === 0 && !isLoading && (
-        <p className="view-empty">No activity recorded yet.</p>
+        <p className="view-empty" role="status">
+          No activity recorded yet.
+        </p>
       )}
 
       <div className="list-view">
@@ -207,7 +213,11 @@ export function ActivityView({ onLoadPage, onLoadDetail, onUndo }: ActivityViewP
                       return <p>Loading detail…</p>
                     }
                     if (detail.status === 'error') {
-                      return <p className="view-error">{detail.message}</p>
+                      return (
+                        <p className="view-error" role="alert">
+                          {detail.message}
+                        </p>
+                      )
                     }
                     return (
                       <pre>
@@ -257,11 +267,13 @@ export function ActivityView({ onLoadPage, onLoadDetail, onUndo }: ActivityViewP
                       </button>
                     </div>
                   )}
-                  {rowUndoState.status === 'submitting' && <p>Undoing…</p>}
-                  {rowUndoState.status === 'done' && <p>Undone.</p>}
+                  {rowUndoState.status === 'submitting' && <p role="status">Undoing…</p>}
+                  {rowUndoState.status === 'done' && <p role="status">Undone.</p>}
                   {rowUndoState.status === 'error' && (
                     <div>
-                      <p className="view-error">{rowUndoState.message}</p>
+                      <p className="view-error" role="alert">
+                        {rowUndoState.message}
+                      </p>
                       <button type="button" onClick={() => beginUndo(event.id)}>
                         Retry
                       </button>

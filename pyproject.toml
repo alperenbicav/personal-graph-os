@@ -48,3 +48,7 @@ typeCheckingMode = "basic"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not slow'"
+markers = [
+    "slow: opt-in acceptance test excluded from the default run; select explicitly with -m slow (see scripts/system_pilot.py)",
+]

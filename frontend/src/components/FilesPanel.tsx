@@ -204,7 +204,7 @@ export function FilesPanel({ nodeId }: FilesPanelProps) {
     return (
       <div className="files-panel">
         <span className="field-label">Files</span>
-        <p className="field-error">{loadError}</p>
+        <p className="field-error" role="alert">{loadError}</p>
         <button type="button" onClick={retryLoad}>
           Retry
         </button>
@@ -215,7 +215,11 @@ export function FilesPanel({ nodeId }: FilesPanelProps) {
   return (
     <div className="files-panel">
       <span className="field-label">Attachments</span>
-      {actionError && <p className="field-error">{actionError}</p>}
+      {actionError && (
+        <p className="field-error" role="alert">
+          {actionError}
+        </p>
+      )}
 
       {attachments.length === 0 && <p className="files-panel-status">No attachments yet.</p>}
       <ul className="files-panel-list">

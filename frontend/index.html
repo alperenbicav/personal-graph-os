@@ -7,6 +7,15 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon-180x180.png" />
     <meta name="theme-color" content="#0d0b14" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Inert build-differentiation marker (ST09-F05): read by no runtime code, only
+         present so two builds with a different `VITE_BUILD_MARKER` produce byte-different
+         precached output — the real seam `e2e/accessibility.spec.ts` uses to force a
+         genuine second service-worker version deterministically, instead of faking the
+         update-prompt state. `vite.config.ts` defaults `VITE_BUILD_MARKER` to the literal
+         string `default` whenever the environment does not set it, so Vite's HTML env
+         interpolation below always has a defined value and an ordinary build is
+         warning-free with no unresolved placeholder. -->
+    <meta name="pgos-build-marker" content="%VITE_BUILD_MARKER%" />
     <title>Personal Graph OS</title>
   </head>
   <body>

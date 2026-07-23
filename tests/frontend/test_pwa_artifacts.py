@@ -26,6 +26,12 @@ def test_service_worker_never_routes_api_mcp_export_or_attachment_traffic() -> N
         assert forbidden not in service_worker_source
 
 
+def test_index_html_resolves_build_marker_to_canonical_default_with_no_stale_placeholder() -> None:
+    index_html = (_FRONTEND_DIST / "index.html").read_text(encoding="utf-8")
+    assert "%VITE_" not in index_html
+    assert 'content="default"' in index_html
+
+
 def test_manifest_declares_standalone_app_shell_and_required_icon_sizes() -> None:
     manifest = json.loads((_FRONTEND_DIST / "manifest.webmanifest").read_text(encoding="utf-8"))
 

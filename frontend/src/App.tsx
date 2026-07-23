@@ -12,6 +12,7 @@ import { NavTabs, type AppView } from './components/NavTabs'
 import { PlaceExistingNodeControl } from './components/PlaceExistingNodeControl'
 import { ResearchDetailPanel } from './components/ResearchDetailPanel'
 import { ResearchView } from './components/ResearchView'
+import { SavedViewsPanel } from './components/SavedViewsPanel'
 import { SearchView } from './components/SearchView'
 import { TableView } from './components/TableView'
 import { TimelineView } from './components/TimelineView'
@@ -665,8 +666,9 @@ function App() {
           </div>
         )}
 
-        {activeView === 'table' && (
+        {activeView === 'table' && workspace && (
           <div className="view-frame">
+            <SavedViewsPanel workspaceId={workspace.id} viewKind="table" />
             <TableView
               rows={tableRows}
               nodeTypeById={nodeTypeById}
