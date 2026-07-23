@@ -391,6 +391,21 @@ function App() {
     [selectedNodeId, workspace, activeView, refreshActiveViewData],
   )
 
+  const handleChangeBody = useCallback(
+    async (body: string): Promise<boolean> => {
+      if (!selectedNodeId) return false
+      try {
+        const updated = await api.updateNode(selectedNodeId, { body })
+        setNodes((current) => current.map((node) => (node.id === updated.id ? updated : node)))
+        return true
+      } catch (error) {
+        setActionError(`Could not save the description: ${messageFor(error)}`)
+        return false
+      }
+    },
+    [selectedNodeId],
+  )
+
   const handleChangeField = useCallback(
     async (fieldDefinitionId: string, value: unknown): Promise<boolean> => {
       if (!selectedNodeId) return false
@@ -595,7 +610,19 @@ function App() {
 
       <NavTabs activeView={activeView} onSelectView={setActiveView} />
 
-      <div className={activeView === 'canvas' ? 'workbench' : 'workbench workbench-no-rail'}>
+      {/* Discovery and Activity have no node-selection mechanism of their own, so the
+          Inspector/Research/Workflow panel would otherwise keep showing whatever was last
+          selected on a different tab — a stale, unrelated side panel with no connection to
+          what's actually on screen. */}
+      <div
+        className={
+          activeView === 'canvas'
+            ? 'workbench'
+            : activeView === 'discovery' || activeView === 'activity'
+              ? 'workbench workbench-full'
+              : 'workbench workbench-no-rail'
+        }
+      >
         {activeView === 'canvas' && (
           <CanvasRail
             canvases={canvases}
@@ -750,31 +777,34 @@ function App() {
           </div>
         )}
 
-        <div className="inspector-column">
-          <Inspector
-            node={selectedNode}
-            nodeType={selectedNodeType}
-            relations={relations}
-            referenceableNodes={referenceableNodes}
-            onChangeStatus={handleChangeStatus}
-            onChangeField={handleChangeField}
-            onArchive={handleArchiveSelected}
-          />
-          {selectedResource && (
-            <ResearchDetailPanel
-              key={selectedResource.id}
-              resource={selectedResource}
-              onUpdate={handleUpdateResource}
+        {activeView !== 'discovery' && activeView !== 'activity' && (
+          <div className="inspector-column">
+            <Inspector
+              node={selectedNode}
+              nodeType={selectedNodeType}
+              relations={relations}
+              referenceableNodes={referenceableNodes}
+              onChangeStatus={handleChangeStatus}
+              onChangeBody={handleChangeBody}
+              onChangeField={handleChangeField}
+              onArchive={handleArchiveSelected}
             />
-          )}
-          {nextWorkflowStep && (
-            <WorkflowChainPanel
-              nodeSystemKey={selectedNodeType?.system_key}
-              existingTargetCandidates={workflowChainCandidates}
-              onAdvance={(input) => handleAdvanceWorkflow(nextWorkflowStep.step, input)}
-            />
-          )}
-        </div>
+            {selectedResource && (
+              <ResearchDetailPanel
+                key={selectedResource.id}
+                resource={selectedResource}
+                onUpdate={handleUpdateResource}
+              />
+            )}
+            {nextWorkflowStep && (
+              <WorkflowChainPanel
+                nodeSystemKey={selectedNodeType?.system_key}
+                existingTargetCandidates={workflowChainCandidates}
+                onAdvance={(input) => handleAdvanceWorkflow(nextWorkflowStep.step, input)}
+              />
+            )}
+          </div>
+        )}
       </div>
 
       {pendingConnection && (

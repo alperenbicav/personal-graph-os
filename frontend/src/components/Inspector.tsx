@@ -18,6 +18,7 @@ interface InspectorProps {
   relations: RelationRow[]
   referenceableNodes: ReferenceableNode[]
   onChangeStatus: (statusId: string) => void
+  onChangeBody: (body: string) => Promise<boolean>
   onChangeField: (fieldDefinitionId: string, value: unknown) => Promise<boolean>
   onArchive: () => void
 }
@@ -186,12 +187,48 @@ function FieldControl({ field, value, referenceableNodes, onCommit }: FieldContr
   )
 }
 
+interface DescriptionFieldProps {
+  nodeId: string
+  body: string
+  onCommit: (value: string) => Promise<boolean>
+}
+
+/** Every node has a free-text `body` (the domain's built-in description field, independent
+ * of any schema-driven `FieldDefinition`) — this makes it editable rather than only shown
+ * when already non-empty, since there was previously no way to set it from the UI at all. */
+function DescriptionField({ nodeId, body, onCommit }: DescriptionFieldProps) {
+  const [draft, setDraft] = useState(body)
+
+  async function handleBlur() {
+    if (draft === body) return
+    if (!(await onCommit(draft))) setDraft(body)
+  }
+
+  return (
+    <div className="field">
+      <label className="field-label" htmlFor={`insp-description-${nodeId}`}>
+        Description
+      </label>
+      <textarea
+        id={`insp-description-${nodeId}`}
+        className="field-control-textarea"
+        rows={4}
+        placeholder="Add a description…"
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={handleBlur}
+      />
+    </div>
+  )
+}
+
 export function Inspector({
   node,
   nodeType,
   relations,
   referenceableNodes,
   onChangeStatus,
+  onChangeBody,
   onChangeField,
   onArchive,
 }: InspectorProps) {
@@ -231,12 +268,7 @@ export function Inspector({
         </>
       )}
 
-      {node.body && (
-        <div className="field">
-          <span className="field-label">Description</span>
-          <div className="field-value">{node.body}</div>
-        </div>
-      )}
+      <DescriptionField nodeId={node.id} body={node.body} onCommit={onChangeBody} />
 
       {nodeType.field_definitions.map((field) => (
         <div className="field" key={field.id}>

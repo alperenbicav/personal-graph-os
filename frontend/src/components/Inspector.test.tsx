@@ -95,6 +95,7 @@ function renderInspector(overrides: Partial<Parameters<typeof Inspector>[0]> = {
       relations={[]}
       referenceableNodes={referenceableNodes}
       onChangeStatus={vi.fn()}
+      onChangeBody={vi.fn().mockResolvedValue(true)}
       onChangeField={vi.fn().mockResolvedValue(true)}
       onArchive={vi.fn()}
       {...overrides}
@@ -116,6 +117,7 @@ describe('Inspector', () => {
         relations={[]}
         referenceableNodes={[]}
         onChangeStatus={vi.fn()}
+        onChangeBody={vi.fn()}
         onChangeField={vi.fn()}
         onArchive={vi.fn()}
       />,
@@ -126,10 +128,31 @@ describe('Inspector', () => {
   it('renders the selected node title, status, description, and field values', () => {
     renderInspector()
     expect(screen.getByText('Write report')).toBeInTheDocument()
-    expect(screen.getByText('Cover Q3 results.')).toBeInTheDocument()
+    expect(screen.getByLabelText('Description')).toHaveValue('Cover Q3 results.')
     expect(screen.getByDisplayValue('high')).toBeInTheDocument()
     expect(screen.getByDisplayValue('3')).toBeInTheDocument()
     expect(screen.getByLabelText('Status')).toHaveValue('status-todo')
+  })
+
+  it('saves the description on blur when it changed, and reverts on a rejected save', async () => {
+    const onChangeBody = vi.fn().mockResolvedValue(true)
+    renderInspector({ onChangeBody })
+    const description = screen.getByLabelText('Description')
+
+    fireEvent.change(description, { target: { value: 'Updated description.' } })
+    fireEvent.blur(description)
+
+    await vi.waitFor(() => expect(onChangeBody).toHaveBeenCalledWith('Updated description.'))
+  })
+
+  it('does not call onChangeBody on blur when the description is unchanged', () => {
+    const onChangeBody = vi.fn()
+    renderInspector({ onChangeBody })
+    const description = screen.getByLabelText('Description')
+
+    fireEvent.blur(description)
+
+    expect(onChangeBody).not.toHaveBeenCalled()
   })
 
   it('calls onChangeStatus when the status select changes', () => {

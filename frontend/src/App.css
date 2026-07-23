@@ -790,7 +790,8 @@ select.status-select {
 }
 
 .field-control-input,
-.field-control-select {
+.field-control-select,
+.field-control-textarea {
   width: 100%;
   padding: 7px 9px;
   border: 1px solid var(--line);
@@ -799,6 +800,10 @@ select.status-select {
   color: var(--ink);
   font-size: 13px;
   font-family: inherit;
+}
+
+.field-control-textarea {
+  resize: vertical;
 }
 
 .field-control-checkbox {
@@ -932,10 +937,60 @@ select.status-select {
   border-color: var(--line);
 }
 
+.nav-tab-group {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.nav-tab-info {
+  border: none;
+  background: transparent;
+  color: var(--slate);
+  font-size: 12px;
+  line-height: 1;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.nav-tab-info:hover,
+.nav-tab-info[aria-expanded='true'] {
+  background: var(--line-soft);
+  color: var(--ink-soft);
+}
+
+.nav-tab-info-popover {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 10;
+  margin-top: 4px;
+  width: 240px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper-raised);
+  box-shadow: var(--shadow-1);
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
 /* ---------- Table/Kanban/Timeline/Search/Research views ---------- */
 
 .workbench-no-rail {
   grid-template-columns: minmax(0, 1fr) 268px;
+}
+
+/* ---------- Discovery/Activity views: no Inspector column at all ---------- */
+
+.workbench-full {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .view-frame {

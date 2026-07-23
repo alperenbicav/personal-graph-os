@@ -20,4 +20,29 @@ describe('NavTabs', () => {
       expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
     }
   })
+
+  it('toggles a tab\'s info popover open and closed', () => {
+    render(<NavTabs activeView="canvas" onSelectView={vi.fn()} />)
+    expect(screen.queryByRole('note')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'About Search' }))
+    expect(screen.getByRole('note')).toHaveTextContent(/full-text search/i)
+
+    fireEvent.click(screen.getByRole('button', { name: 'About Search' }))
+    expect(screen.queryByRole('note')).not.toBeInTheDocument()
+  })
+
+  it('shows only one info popover at a time and closes it when a tab is selected', () => {
+    const onSelectView = vi.fn()
+    render(<NavTabs activeView="canvas" onSelectView={onSelectView} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'About Search' }))
+    fireEvent.click(screen.getByRole('button', { name: 'About Research' }))
+    expect(screen.getAllByRole('note')).toHaveLength(1)
+    expect(screen.getByRole('note')).toHaveTextContent(/research resources/i)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Table' }))
+    expect(onSelectView).toHaveBeenCalledWith('table')
+    expect(screen.queryByRole('note')).not.toBeInTheDocument()
+  })
 })
