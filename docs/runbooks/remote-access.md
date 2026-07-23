@@ -20,8 +20,9 @@ exact syntax depends on your proxy and was not verified against a live deploymen
   unless you change `PGOS_TRUSTED_HOSTS`, and changing it to accept a public hostname is exactly
   what step 2 below configures — never bind the backend itself to a non-loopback address.
 - Copying the bearer token into a URL, query string, or the frontend build. The token is
-  entered once through the unlock screen and lives only in memory plus tab-scoped
-  `sessionStorage` (ST-08.1); nothing in this runbook changes that.
+  entered once through the unlock screen, held in memory only until verified, and then committed
+  to the current tab's `history.state` only after that verification succeeds (ST-08.1); nothing
+  in this runbook changes that.
 
 **Supported:** the proxy in front of the loopback backend, described below.
 
@@ -81,8 +82,11 @@ Configure the proxy to, for every request to the chosen hostname:
 3. Start/enable your proxy in front of it, pointing at the same port.
 4. Retrieve the token once: `uv run pgos-token show` (add `PGOS_DB_PATH=<same path as step 2>`
    if you used a non-default workspace). Enter it in the unlock screen at
-   `https://<hostname>/app/` from the remote device. It stays unlocked in that browser tab
-   until the tab closes or the token is rejected (e.g. after a rotation).
+   `https://<hostname>/app/` from the remote device. Once verified, that tab stays unlocked
+   across a reload of the same page — the token is committed to that tab's browsing-context
+   history, not to any Web Storage — until the token is rejected (e.g. after a rotation) or you
+   navigate away/close the tab. A new tab, even one opened from an already-unlocked tab, always
+   starts locked and requires the token again.
 
 ## 5. Rotation and revocation
 
