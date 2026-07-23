@@ -17,7 +17,7 @@ from personal_graph_os.application.repositories import (
 from personal_graph_os.application.semantic_schema import ensure_semantic_schema
 from personal_graph_os.application.services import new_workspace
 from personal_graph_os.domain.canvas import Canvas
-from personal_graph_os.domain.identifiers import WorkspaceId
+from personal_graph_os.domain.errors import UnknownSchemaReferenceError
 from personal_graph_os.domain.schema import Workspace
 from personal_graph_os.domain.search import (
     SearchEntityType,
@@ -63,7 +63,7 @@ def backfill_search_index(
     nodes: NodeRepository,
     resources: ResourceRepository,
     search_index: SearchIndexRepository,
-    workspace_id: WorkspaceId,
+    workspace: Workspace,
 ) -> None:
     """Index every existing node/resource so search covers data captured before ST-04.3.
 
@@ -71,14 +71,19 @@ def backfill_search_index(
     entity_id)`, so re-running this on every startup is idempotent and safe at the MVP's
     local, single-workspace scale rather than requiring a one-time migration flag.
     """
-    for node in nodes.list_by_workspace(workspace_id, include_archived=True):
+    for node in nodes.list_by_workspace(workspace.id, include_archived=True):
+        node_type = workspace.node_type_by_id(node.node_type_id)
+        if node_type is None:
+            raise UnknownSchemaReferenceError(
+                f"workspace {workspace.id} has no node type {node.node_type_id}"
+            )
         search_index.index_document(
             workspace_id=node.workspace_id,
             entity_type=SearchEntityType.NODE,
             entity_id=node.id,
-            text=build_node_search_text(node),
+            text=build_node_search_text(node, node_type),
         )
-    for resource in resources.list_by_workspace(workspace_id):
+    for resource in resources.list_by_workspace(workspace.id):
         search_index.index_document(
             workspace_id=resource.workspace_id,
             entity_type=SearchEntityType.RESOURCE,

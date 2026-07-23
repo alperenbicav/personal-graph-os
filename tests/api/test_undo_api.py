@@ -1,0 +1,328 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from personal_graph_os.api.app import create_app
+
+
+@pytest.fixture
+def app(tmp_path: Path) -> FastAPI:
+    return create_app(tmp_path / "test-workspace.db")
+
+
+@pytest.fixture
+def client(app: FastAPI) -> TestClient:
+    test_client = TestClient(app)
+    test_client.headers.update({"Authorization": f"Bearer {app.state.api_token}"})
+    return test_client
+
+
+def _workspace_id(client: TestClient) -> str:
+    return client.get("/workspace").json()["id"]
+
+
+def _task_type_id(client: TestClient) -> str:
+    workspace = client.get("/workspace").json()
+    return next(nt for nt in workspace["node_types"] if nt["name"] == "Task")["id"]
+
+
+def _latest_event_for(client: TestClient, workspace_id: str, entity_id: str, action: str) -> dict:
+    page = client.get(f"/activity-events?workspace_id={workspace_id}").json()
+    matches = [
+        event
+        for event in page["events"]
+        if event["entity_id"] == entity_id and event["action"] == action
+    ]
+    assert matches, f"no {action} event found for {entity_id}"
+    return matches[0]
+
+
+def test_undo_a_node_update_restores_the_previous_title(client: TestClient) -> None:
+    workspace_id = _workspace_id(client)
+    task_type_id = _task_type_id(client)
+    node = client.post(
+        "/nodes",
+        json={"workspace_id": workspace_id, "node_type_id": task_type_id, "title": "before"},
+    ).json()
+    client.patch(f"/nodes/{node['id']}", json={"title": "after"})
+    update_event = _latest_event_for(client, workspace_id, node["id"], "updated")
+
+    response = client.post(
+        f"/activity-events/{update_event['id']}/undo?workspace_id={workspace_id}",
+        json={"reason": "accidental edit"},
+    )
+
+    assert response.status_code == 200
+    compensating = response.json()
+    assert compensating["reverses_event_id"] == update_event["id"]
+    assert compensating["is_undoable"] is False
+    assert compensating["reason"] == "accidental edit"
+
+    restored = client.get("/nodes", params={"workspace_id": workspace_id}).json()
+    restored_node = next(n for n in restored if n["id"] == node["id"])
+    assert restored_node["title"] == "before"
+
+
+def test_undo_a_node_create_soft_archives_it(client: TestClient) -> None:
+    workspace_id = _workspace_id(client)
+    task_type_id = _task_type_id(client)
+    node = client.post(
+        "/nodes",
+        json={"workspace_id": workspace_id, "node_type_id": task_type_id, "title": "x"},
+    ).json()
+    create_event = _latest_event_for(client, workspace_id, node["id"], "created")
+
+    response = client.post(
+        f"/activity-events/{create_event['id']}/undo?workspace_id={workspace_id}",
+        json={"reason": "created by mistake"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["action"] == "archived"
+    listed = client.get(
+        "/nodes", params={"workspace_id": workspace_id, "include_archived": True}
+    ).json()
+    assert next(n for n in listed if n["id"] == node["id"])["is_archived"] is True
+
+
+def test_undo_an_edge_create_removes_it(client: TestClient) -> None:
+    workspace_id = _workspace_id(client)
+    task_type_id = _task_type_id(client)
+    workspace = client.get("/workspace").json()
+    edge_type_id = workspace["edge_types"][0]["id"]
+    node_a = client.post(
+        "/nodes", json={"workspace_id": workspace_id, "node_type_id": task_type_id, "title": "a"}
+    ).json()
+    node_b = client.post(
+        "/nodes", json={"workspace_id": workspace_id, "node_type_id": task_type_id, "title": "b"}
+    ).json()
+    edge = client.post(
+        "/edges",
+        json={
+            "workspace_id": workspace_id,
+            "edge_type_id": edge_type_id,
+            "source_node_id": node_a["id"],
+            "target_node_id": node_b["id"],
+        },
+    ).json()
+    create_event = _latest_event_for(client, workspace_id, edge["id"], "created")
+
+    response = client.post(
+        f"/activity-events/{create_event['id']}/undo?workspace_id={workspace_id}",
+        json={"reason": "wrong connection"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["action"] == "deleted"
+    remaining = client.get("/edges", params={"workspace_id": workspace_id}).json()
+    assert edge["id"] not in [e["id"] for e in remaining]
+
+
+def test_undo_twice_returns_409_already_reversed(client: TestClient) -> None:
+    workspace_id = _workspace_id(client)
+    task_type_id = _task_type_id(client)
+    node = client.post(
+        "/nodes",
+        json={"workspace_id": workspace_id, "node_type_id": task_type_id, "title": "before"},
+    ).json()
+    client.patch(f"/nodes/{node['id']}", json={"title": "after"})
+    update_event = _latest_event_for(client, workspace_id, node["id"], "updated")
+
+    first = client.post(
+        f"/activity-events/{update_event['id']}/undo?workspace_id={workspace_id}",
+        json={"reason": "first undo"},
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        f"/activity-events/{update_event['id']}/undo?workspace_id={workspace_id}",
+        json={"reason": "second undo"},
+    )
+    assert second.status_code == 409
+    assert second.json()["code"] == "already_reversed"
+
+
+def test_undo_a_stale_event_returns_409(client: TestClient) -> None:
+    workspace_id = _workspace_id(client)
+    task_type_id = _task_type_id(client)
+    node = client.post(
+        "/nodes",
+        json={"workspace_id": workspace_id, "node_type_id": task_type_id, "title": "v1"},
+    ).json()
+    client.patch(f"/nodes/{node['id']}", json={"title": "v2"})
+    first_update_event = _latest_event_for(client, workspace_id, node["id"], "updated")
+    client.patch(f"/nodes/{node['id']}", json={"title": "v3"})
+
+    response = client.post(
+        f"/activity-events/{first_update_event['id']}/undo?workspace_id={workspace_id}",
+        json={"reason": "stale attempt"},
+    )
+
+    assert response.status_code == 409
+    unchanged = client.get("/nodes", params={"workspace_id": workspace_id}).json()
+    assert next(n for n in unchanged if n["id"] == node["id"])["title"] == "v3"
+
+
+def test_undo_an_update_with_an_oversized_omitted_after_state_returns_409_not_a_crash(
+    client: TestClient,
+) -> None:
+    """ST07-F05: small-before/large-after -- the recorded `after_state` is omitted for size,
+    so the event must be non-undoable and 409, never an uncaught validation crash."""
+    workspace_id = _workspace_id(client)
+    task_type_id = _task_type_id(client)
+    node = client.post(
+        "/nodes",
+        json={"workspace_id": workspace_id, "node_type_id": task_type_id, "title": "x"},
+    ).json()
+    large_body = "x" * (300 * 1024)
+
+    client.patch(f"/nodes/{node['id']}", json={"body": large_body})
+    oversized_after_event = _latest_event_for(client, workspace_id, node["id"], "updated")
+    assert oversized_after_event["is_undoable"] is False
+    assert oversized_after_event["disabled_reason"] == "snapshot_omitted_oversized"
+    detail = client.get(
+        f"/activity-events/{oversized_after_event['id']}?workspace_id={workspace_id}"
+    ).json()
+    assert detail["disabled_reason"] == "snapshot_omitted_oversized"
+
+    response = client.post(
+        f"/activity-events/{oversized_after_event['id']}/undo?workspace_id={workspace_id}",
+        json={"reason": "attempt anyway"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "snapshot_omitted_oversized"
+    unchanged = client.get("/nodes", params={"workspace_id": workspace_id}).json()
+    assert next(n for n in unchanged if n["id"] == node["id"])["body"] == large_body
+
+
+def test_undo_an_update_with_an_oversized_omitted_before_state_returns_409_not_a_crash(
+    client: TestClient,
+) -> None:
+    """ST07-F05: large-before/small-after -- the recorded `before_state` is omitted for size,
+    so restoring it via `Node.model_validate()` must never even be attempted."""
+    workspace_id = _workspace_id(client)
+    task_type_id = _task_type_id(client)
+    node = client.post(
+        "/nodes",
+        json={"workspace_id": workspace_id, "node_type_id": task_type_id, "title": "x"},
+    ).json()
+    large_body = "x" * (300 * 1024)
+    client.patch(f"/nodes/{node['id']}", json={"body": large_body})
+
+    client.patch(f"/nodes/{node['id']}", json={"body": "small again"})
+    oversized_before_event = _latest_event_for(client, workspace_id, node["id"], "updated")
+    assert oversized_before_event["is_undoable"] is False
+    assert oversized_before_event["disabled_reason"] == "snapshot_omitted_oversized"
+
+    response = client.post(
+        f"/activity-events/{oversized_before_event['id']}/undo?workspace_id={workspace_id}",
+        json={"reason": "attempt anyway"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "snapshot_omitted_oversized"
+    unchanged = client.get("/nodes", params={"workspace_id": workspace_id}).json()
+    assert next(n for n in unchanged if n["id"] == node["id"])["body"] == "small again"
+
+
+def test_undo_a_node_update_repairs_the_search_index_projection(client: TestClient) -> None:
+    """ST07-F04: undo must not leave search advertising the reversed mutation's text."""
+    workspace_id = _workspace_id(client)
+    task_type_id = _task_type_id(client)
+    node = client.post(
+        "/nodes",
+        json={"workspace_id": workspace_id, "node_type_id": task_type_id, "title": "x"},
+    ).json()
+    client.patch(f"/nodes/{node['id']}", json={"title": "AlphaOldUnique"})
+    client.patch(f"/nodes/{node['id']}", json={"title": "BetaNewUnique"})
+    update_event = _latest_event_for(client, workspace_id, node["id"], "updated")
+
+    response = client.post(
+        f"/activity-events/{update_event['id']}/undo?workspace_id={workspace_id}",
+        json={"reason": "revert the rename"},
+    )
+
+    assert response.status_code == 200
+    restored_hits = client.get(
+        "/search", params={"workspace_id": workspace_id, "q": "AlphaOldUnique"}
+    ).json()
+    assert any(hit["node"]["id"] == node["id"] for hit in restored_hits)
+    stale_hits = client.get(
+        "/search", params={"workspace_id": workspace_id, "q": "BetaNewUnique"}
+    ).json()
+    assert not any(hit["node"]["id"] == node["id"] for hit in stale_hits)
+
+
+def test_undo_rejects_a_restore_whose_status_no_longer_exists_in_the_current_schema(
+    client: TestClient,
+) -> None:
+    """ST07-F04: a schema change since the event must fail the undo atomically with a typed
+    409 conflict, never a partial write or an uncaught validation crash."""
+    workspace_id = _workspace_id(client)
+    workspace = client.get("/workspace").json()
+    task_type = next(nt for nt in workspace["node_types"] if nt["name"] == "Task")
+    todo_status_id = next(s["id"] for s in task_type["status_definitions"] if s["name"] == "todo")
+    in_progress_status_id = next(
+        s["id"] for s in task_type["status_definitions"] if s["name"] == "in_progress"
+    )
+    node = client.post(
+        "/nodes",
+        json={"workspace_id": workspace_id, "node_type_id": task_type["id"], "title": "x"},
+    ).json()
+    client.patch(f"/nodes/{node['id']}", json={"status_id": todo_status_id})
+    client.patch(f"/nodes/{node['id']}", json={"status_id": in_progress_status_id})
+    update_event = _latest_event_for(client, workspace_id, node["id"], "updated")
+
+    remove_response = client.delete(
+        f"/node-types/{task_type['id']}/statuses/{todo_status_id}",
+        params={"workspace_id": workspace_id},
+    )
+    assert remove_response.status_code == 204
+
+    response = client.post(
+        f"/activity-events/{update_event['id']}/undo?workspace_id={workspace_id}",
+        json={"reason": "revert status"},
+    )
+
+    assert response.status_code == 409
+    unchanged = client.get("/nodes", params={"workspace_id": workspace_id}).json()
+    restored_node = next(n for n in unchanged if n["id"] == node["id"])
+    assert restored_node["status_id"] == in_progress_status_id
+
+
+def test_undo_a_non_undoable_event_returns_409(client: TestClient) -> None:
+    workspace_id = _workspace_id(client)
+    created = client.post(
+        "/node-types", json={"workspace_id": workspace_id, "name": "Widget"}
+    ).json()
+    create_event = _latest_event_for(client, workspace_id, created["id"], "created")
+
+    response = client.post(
+        f"/activity-events/{create_event['id']}/undo?workspace_id={workspace_id}",
+        json={"reason": "trying anyway"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "unsupported_action"
+
+
+def test_undo_rejects_an_empty_reason(client: TestClient) -> None:
+    workspace_id = _workspace_id(client)
+    task_type_id = _task_type_id(client)
+    node = client.post(
+        "/nodes",
+        json={"workspace_id": workspace_id, "node_type_id": task_type_id, "title": "x"},
+    ).json()
+    create_event = _latest_event_for(client, workspace_id, node["id"], "created")
+
+    response = client.post(
+        f"/activity-events/{create_event['id']}/undo?workspace_id={workspace_id}",
+        json={"reason": ""},
+    )
+
+    assert response.status_code == 422

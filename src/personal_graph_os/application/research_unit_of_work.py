@@ -10,6 +10,10 @@ written aggregate behind if a later step fails. A `ResearchUnitOfWork` is a narr
 exactly that: entered once per top-level operation, with `savepoint()` nesting a partial-failure
 boundary inside it so one invalid candidate in a batch does not roll back the candidates already
 applied.
+
+ST-06 reuses this same port for MCP mutations: an agent's write and its attributed
+`ActivityEvent` (`activity_events`) must commit or roll back together, so `AgentGatewayService`
+opens the identical unit of work rather than a second, parallel one.
 """
 
 from __future__ import annotations
@@ -19,10 +23,20 @@ from types import TracebackType
 from typing import Protocol
 
 from personal_graph_os.application.repositories import (
+    ActivityEventRepository,
+    AttachmentRepository,
+    CanvasPlacementRepository,
+    CanvasRepository,
+    ContextPackRepository,
     DiscoveryRunRepository,
     EdgeRepository,
+    FileReferenceRepository,
+    IdempotencyReceiptRepository,
     NodeRepository,
+    ResearchSettingsRepository,
     ResourceRepository,
+    SavedViewRepository,
+    WorkspaceRepository,
 )
 
 
@@ -30,6 +44,9 @@ class ResearchUnitOfWork(Protocol):
     # Read-only properties (not plain attributes): a Protocol attribute is invariant, which
     # would reject any concrete repository implementation that is merely structurally
     # compatible rather than the exact same class; a property is covariant instead.
+    @property
+    def workspaces(self) -> WorkspaceRepository: ...
+
     @property
     def nodes(self) -> NodeRepository: ...
 
@@ -40,7 +57,34 @@ class ResearchUnitOfWork(Protocol):
     def edges(self) -> EdgeRepository: ...
 
     @property
+    def canvases(self) -> CanvasRepository: ...
+
+    @property
+    def placements(self) -> CanvasPlacementRepository: ...
+
+    @property
+    def saved_views(self) -> SavedViewRepository: ...
+
+    @property
+    def research_settings(self) -> ResearchSettingsRepository: ...
+
+    @property
+    def attachments(self) -> AttachmentRepository: ...
+
+    @property
+    def file_references(self) -> FileReferenceRepository: ...
+
+    @property
     def discovery_runs(self) -> DiscoveryRunRepository: ...
+
+    @property
+    def activity_events(self) -> ActivityEventRepository: ...
+
+    @property
+    def idempotency_receipts(self) -> IdempotencyReceiptRepository: ...
+
+    @property
+    def context_packs(self) -> ContextPackRepository: ...
 
     def __enter__(self) -> ResearchUnitOfWork: ...
 

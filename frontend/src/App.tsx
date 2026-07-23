@@ -1,16 +1,47 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import * as api from './api/client'
+import { ActivityView } from './components/ActivityView'
 import { CanvasRail } from './components/CanvasRail'
 import { ConnectEdgeModal, type PendingConnection } from './components/ConnectEdgeModal'
+import { DiscoveryView } from './components/DiscoveryView'
 import { GraphCanvas } from './components/GraphCanvas'
 import { Inspector, type RelationRow } from './components/Inspector'
+import { KanbanView } from './components/KanbanView'
+import { NavTabs, type AppView } from './components/NavTabs'
 import { PlaceExistingNodeControl } from './components/PlaceExistingNodeControl'
+import { ResearchDetailPanel } from './components/ResearchDetailPanel'
+import { ResearchView } from './components/ResearchView'
+import { SavedViewsPanel } from './components/SavedViewsPanel'
+import { SearchView } from './components/SearchView'
+import { TableView } from './components/TableView'
+import { TimelineView } from './components/TimelineView'
 import { TopBar } from './components/TopBar'
+import { UnlockScreen } from './components/UnlockScreen'
+import { onSessionUnauthorized, restoreSession } from './api/session'
+import {
+  WorkflowChainPanel,
+  type WorkflowChainAdvanceInput,
+} from './components/WorkflowChainPanel'
 import { messageFor } from './lib/errors'
 import { neighborhoodWithinDepth } from './lib/neighborhood'
+import { NEXT_WORKFLOW_STEP } from './lib/workflowChain'
 import { SchemaEditor } from './components/SchemaEditor'
-import type { Canvas, CanvasPlacement, GraphEdge, GraphNode, StatusDefinition, Workspace } from './types'
+import type {
+  Canvas,
+  CanvasPlacement,
+  DiscoveryCandidateInput,
+  GraphEdge,
+  GraphNode,
+  ProjectionItem,
+  ResearchDashboard,
+  Resource,
+  StatusDefinition,
+  WorkflowChainStep,
+  Workspace,
+} from './types'
+
+const DISCOVERY_AGENT_IDENTITY = 'manual-import'
 
 const CAPTURE_TYPE_ORDER = ['Note', 'Task', 'Project', 'Resource']
 const MAX_FOCUS_DEPTH = 3
@@ -20,6 +51,7 @@ function randomSpawnPosition() {
 }
 
 function App() {
+  const [isUnlocked, setIsUnlocked] = useState(() => Boolean(restoreSession()))
   const [workspace, setWorkspace] = useState<Workspace | null>(null)
   const [nodes, setNodes] = useState<GraphNode[]>([])
   const [edges, setEdges] = useState<GraphEdge[]>([])
@@ -33,6 +65,13 @@ function App() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [isSchemaEditorOpen, setIsSchemaEditorOpen] = useState(false)
+
+  const [activeView, setActiveView] = useState<AppView>('canvas')
+  const [resources, setResources] = useState<Resource[]>([])
+  const [tableRows, setTableRows] = useState<ProjectionItem[]>([])
+  const [kanbanColumns, setKanbanColumns] = useState<Record<string, ProjectionItem[]>>({})
+  const [timelineRows, setTimelineRows] = useState<ProjectionItem[]>([])
+  const [researchDashboard, setResearchDashboard] = useState<ResearchDashboard | null>(null)
 
   // Per-placement move sequence: guards against an older, now-superseded save request
   // rolling back a position that a newer move already replaced (or is still in flight).
@@ -50,24 +89,51 @@ function App() {
     })
   }, [])
 
+  // Undo (ST-07.3) can change any entity type unpredictably, so rather than guessing which
+  // slice of state to patch, this re-fetches the same node/edge/resource/placement data the
+  // initial bootstrap loads, keeping every view consistent with canonical state afterward.
+  const reloadGraphData = useCallback(async (workspaceId: string, canvasId: string | null) => {
+    const [nodesResponse, edgesResponse, resourcesResponse] = await Promise.all([
+      api.listNodes(workspaceId),
+      api.listEdges(workspaceId),
+      api.listResources(workspaceId),
+    ])
+    setNodes(nodesResponse)
+    setEdges(edgesResponse)
+    setResources(resourcesResponse)
+    if (canvasId) {
+      const placementsResponse = await api.listPlacements(canvasId)
+      placementsResponse.forEach(recordPersisted)
+      setPlacements(placementsResponse)
+    }
+  }, [recordPersisted])
+
   useEffect(() => {
+    onSessionUnauthorized(() => setIsUnlocked(false))
+  }, [])
+
+  useEffect(() => {
+    if (!isUnlocked) return
     let cancelled = false
     async function bootstrap() {
+      setLoadError(null)
       try {
         const workspaceResponse = await api.getWorkspace()
         if (cancelled) return
         setWorkspace(workspaceResponse)
 
-        const [nodesResponse, edgesResponse, canvasesResponse] = await Promise.all([
+        const [nodesResponse, edgesResponse, canvasesResponse, resourcesResponse] = await Promise.all([
           api.listNodes(workspaceResponse.id),
           api.listEdges(workspaceResponse.id),
           api.listCanvases(workspaceResponse.id),
+          api.listResources(workspaceResponse.id),
         ])
         if (cancelled) return
         setNodes(nodesResponse)
         setEdges(edgesResponse)
         setCanvases(canvasesResponse)
         setActiveCanvasId(canvasesResponse[0]?.id ?? null)
+        setResources(resourcesResponse)
       } catch (error) {
         if (!cancelled) setLoadError(messageFor(error))
       }
@@ -76,7 +142,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [isUnlocked])
 
   useEffect(() => {
     if (!activeCanvasId) return
@@ -98,6 +164,38 @@ function App() {
       cancelled = true
     }
   }, [activeCanvasId, recordPersisted])
+
+  // The one refresh path every projection (table/Kanban/timeline/research) shares: re-fetch
+  // whichever view is currently active from the backend's `ProjectionService`/
+  // `ResearchDashboardService`, so an edit made anywhere is reflected the next time this runs
+  // rather than each view keeping its own stale copy.
+  const refreshActiveViewData = useCallback(
+    async (workspaceId: string, view: AppView) => {
+      try {
+        if (view === 'table') {
+          setTableRows(await api.evaluateTableView({ workspace_id: workspaceId }))
+        } else if (view === 'kanban') {
+          setKanbanColumns(
+            await api.evaluateKanbanView({ workspace_id: workspaceId, group_by: 'status_id' }),
+          )
+        } else if (view === 'timeline') {
+          setTimelineRows(
+            await api.evaluateTimelineView({ workspace_id: workspaceId, date_field: 'created_at' }),
+          )
+        } else if (view === 'research') {
+          setResearchDashboard(await api.getResearchDashboard(workspaceId))
+        }
+      } catch (error) {
+        setActionError(`Could not load this view: ${messageFor(error)}`)
+      }
+    },
+    [],
+  )
+
+  useEffect(() => {
+    if (!workspace) return
+    refreshActiveViewData(workspace.id, activeView)
+  }, [workspace, activeView, refreshActiveViewData])
 
   const nodeTypeById = useMemo(
     () => new Map(workspace?.node_types.map((nodeType) => [nodeType.id, nodeType]) ?? []),
@@ -161,6 +259,27 @@ function App() {
 
   const selectedNode = selectedNodeId ? (nodesById.get(selectedNodeId) ?? null) : null
   const selectedNodeType = selectedNode ? nodeTypeById.get(selectedNode.node_type_id) : undefined
+  const selectedResource = useMemo(
+    () => resources.find((resource) => resource.node_id === selectedNodeId) ?? null,
+    [resources, selectedNodeId],
+  )
+  const nextWorkflowStep = selectedNodeType?.system_key
+    ? NEXT_WORKFLOW_STEP[selectedNodeType.system_key]
+    : undefined
+
+  // Same-workspace, correct-semantic-type nodes the guided chain can connect the selected
+  // node to instead of creating a duplicate (ST04-F07).
+  const workflowChainCandidates = useMemo(() => {
+    if (!nextWorkflowStep) return []
+    const targetTypeIds = new Set(
+      (workspace?.node_types ?? [])
+        .filter((nodeType) => nodeType.system_key === nextWorkflowStep.targetSystemKey)
+        .map((nodeType) => nodeType.id),
+    )
+    return visibleNodes
+      .filter((node) => targetTypeIds.has(node.node_type_id))
+      .map((node) => ({ id: node.id, title: node.title }))
+  }, [nextWorkflowStep, workspace, visibleNodes])
 
   const relations = useMemo<RelationRow[]>(() => {
     if (!selectedNodeId) return []
@@ -260,15 +379,16 @@ function App() {
 
   const handleChangeStatus = useCallback(
     async (statusId: string) => {
-      if (!selectedNodeId) return
+      if (!selectedNodeId || !workspace) return
       try {
         const updated = await api.updateNode(selectedNodeId, { status_id: statusId })
         setNodes((current) => current.map((node) => (node.id === updated.id ? updated : node)))
+        refreshActiveViewData(workspace.id, activeView)
       } catch (error) {
         setActionError(`Could not update status: ${messageFor(error)}`)
       }
     },
-    [selectedNodeId],
+    [selectedNodeId, workspace, activeView, refreshActiveViewData],
   )
 
   const handleChangeField = useCallback(
@@ -286,6 +406,76 @@ function App() {
       }
     },
     [selectedNodeId],
+  )
+
+  const handleUpdateResource = useCallback(
+    async (patch: api.UpdateResourcePatch): Promise<boolean> => {
+      const resource = resources.find((r) => r.node_id === selectedNodeId)
+      if (!resource) return false
+      try {
+        const updated = await api.updateResource(resource.id, patch)
+        setResources((current) => current.map((r) => (r.id === updated.id ? updated : r)))
+        if (workspace) refreshActiveViewData(workspace.id, activeView)
+        return true
+      } catch (error) {
+        setActionError(`Could not save that research change: ${messageFor(error)}`)
+        return false
+      }
+    },
+    [resources, selectedNodeId, workspace, activeView, refreshActiveViewData],
+  )
+
+  const handleAdvanceWorkflow = useCallback(
+    async (step: WorkflowChainStep, input: WorkflowChainAdvanceInput) => {
+      if (!workspace || !selectedNodeId) return
+      const patch =
+        'title' in input
+          ? { title: input.title }
+          : { existing_target_node_id: input.existingTargetNodeId }
+      const { node, edge } = await api.advanceWorkflowChain(
+        workspace.id,
+        selectedNodeId,
+        step,
+        patch,
+      )
+      // A selected-existing target is already in `nodes`; re-adding it would duplicate the row.
+      setNodes((current) => (current.some((n) => n.id === node.id) ? current : [...current, node]))
+      setEdges((current) => [...current, edge])
+      setSelectedNodeId(node.id)
+      refreshActiveViewData(workspace.id, activeView)
+    },
+    [workspace, selectedNodeId, activeView, refreshActiveViewData],
+  )
+
+  const handleDiscoveryPreview = useCallback(
+    (instruction: string, candidates: DiscoveryCandidateInput[]) => {
+      if (!workspace) throw new Error('Workspace has not loaded yet')
+      return api.previewDiscovery(workspace.id, instruction, candidates)
+    },
+    [workspace],
+  )
+
+  const handleDiscoveryApply = useCallback(
+    async (instruction: string, candidates: DiscoveryCandidateInput[]) => {
+      if (!workspace) throw new Error('Workspace has not loaded yet')
+      const run = await api.applyDiscovery(
+        workspace.id,
+        DISCOVERY_AGENT_IDENTITY,
+        instruction,
+        candidates,
+      )
+      // A run may have created new Node+Resource pairs; a targeted refetch keeps every other
+      // view (table/Kanban/timeline/research/canvas) consistent with what was just imported.
+      const [nodesResponse, resourcesResponse] = await Promise.all([
+        api.listNodes(workspace.id),
+        api.listResources(workspace.id),
+      ])
+      setNodes(nodesResponse)
+      setResources(resourcesResponse)
+      refreshActiveViewData(workspace.id, activeView)
+      return run
+    },
+    [workspace, activeView, refreshActiveViewData],
   )
 
   const handleArchiveSelected = useCallback(async () => {
@@ -361,12 +551,15 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [selectedNodeId, handleArchiveSelected])
 
+  if (!isUnlocked) {
+    return <UnlockScreen onUnlocked={() => setIsUnlocked(true)} />
+  }
+
   if (loadError) {
     return (
       <div className="app">
         <p className="inspector-empty">
-          Could not reach the Personal Graph OS API: {loadError}. Is the backend running on{' '}
-          <code>localhost:8000</code>?
+          Could not reach the Personal Graph OS API: {loadError}. Is the backend running?
         </p>
       </div>
     )
@@ -379,6 +572,16 @@ function App() {
         onCapture={handleCapture}
         isCapturing={isCapturing}
         onOpenSchemaEditor={() => setIsSchemaEditorOpen(true)}
+        onExportWorkspace={async () => {
+          if (!workspace) return
+          const blob = await api.exportWorkspace(workspace.id)
+          const url = URL.createObjectURL(blob)
+          const link = document.createElement('a')
+          link.href = url
+          link.download = `${workspace.id}.pgos-export.zip`
+          link.click()
+          URL.revokeObjectURL(url)
+        }}
       />
 
       {actionError && (
@@ -390,80 +593,188 @@ function App() {
         </div>
       )}
 
-      <div className="workbench">
-        <CanvasRail
-          canvases={canvases}
-          activeCanvasId={activeCanvasId}
-          onSelectCanvas={setActiveCanvasId}
-          onCreateCanvas={handleCreateCanvas}
-        />
+      <NavTabs activeView={activeView} onSelectView={setActiveView} />
 
-        <div className="stage-frame">
-          <div className="stage-toolbar">
-            <span className="stage-pill">
-              {activeCanvas ? activeCanvas.name : '—'} · {visibleNodes.length} objects ·{' '}
-              {edges.length} relations
-            </span>
-            <PlaceExistingNodeControl unplacedNodes={unplacedNodes} onPlace={handlePlaceExisting} />
-          </div>
-
-          <GraphCanvas
-            canvas={activeCanvas}
-            nodes={visibleNodes}
-            edges={edges}
-            placements={placements}
-            nodeTypeById={nodeTypeById}
-            edgeTypeById={edgeTypeById}
-            statusById={statusById}
-            selectedNodeId={selectedNodeId}
-            focusSet={focusSet}
-            onSelectNode={setSelectedNodeId}
-            onMovePlacement={handleMovePlacement}
-            onRequestConnect={handleRequestConnect}
+      <div className={activeView === 'canvas' ? 'workbench' : 'workbench workbench-no-rail'}>
+        {activeView === 'canvas' && (
+          <CanvasRail
+            canvases={canvases}
+            activeCanvasId={activeCanvasId}
+            onSelectCanvas={setActiveCanvasId}
+            onCreateCanvas={handleCreateCanvas}
           />
+        )}
 
-          <div className="focus-control">
-            <span>Neighborhood focus</span>
-            <input
-              type="range"
-              aria-label="Neighborhood focus"
-              min={0}
-              max={MAX_FOCUS_DEPTH}
-              step={1}
-              value={focusDepth}
-              onChange={(event) => setFocusDepth(Number(event.target.value))}
-              disabled={!selectedNodeId}
+        {activeView === 'canvas' && (
+          <div className="stage-frame">
+            <div className="stage-toolbar">
+              <span className="stage-pill">
+                {activeCanvas ? activeCanvas.name : '—'} · {visibleNodes.length} objects ·{' '}
+                {edges.length} relations
+              </span>
+              <PlaceExistingNodeControl unplacedNodes={unplacedNodes} onPlace={handlePlaceExisting} />
+            </div>
+
+            <GraphCanvas
+              canvas={activeCanvas}
+              nodes={visibleNodes}
+              edges={edges}
+              placements={placements}
+              nodeTypeById={nodeTypeById}
+              edgeTypeById={edgeTypeById}
+              statusById={statusById}
+              selectedNodeId={selectedNodeId}
+              focusSet={focusSet}
+              onSelectNode={setSelectedNodeId}
+              onMovePlacement={handleMovePlacement}
+              onRequestConnect={handleRequestConnect}
             />
-            <span className="focus-value">
-              {focusDepth === 0 ? 'Off' : `${focusDepth} hop${focusDepth > 1 ? 's' : ''}`}
-            </span>
-          </div>
 
-          <div className="legend">
-            <div className="legend-row">
-              <span className="legend-swatch" style={{ background: 'var(--teal)' }} />
-              Task
+            <div className="focus-control">
+              <span>Neighborhood focus</span>
+              <input
+                type="range"
+                aria-label="Neighborhood focus"
+                min={0}
+                max={MAX_FOCUS_DEPTH}
+                step={1}
+                value={focusDepth}
+                onChange={(event) => setFocusDepth(Number(event.target.value))}
+                disabled={!selectedNodeId}
+              />
+              <span className="focus-value">
+                {focusDepth === 0 ? 'Off' : `${focusDepth} hop${focusDepth > 1 ? 's' : ''}`}
+              </span>
             </div>
-            <div className="legend-row">
-              <span className="legend-swatch" style={{ background: 'var(--brass)' }} />
-              Project
-            </div>
-            <div className="legend-row">
-              <span className="keyhint">drag</span>move · <span className="keyhint">connect</span>relate ·{' '}
-              <span className="keyhint">del</span>archive · <span className="keyhint">esc</span>deselect
+
+            <div className="legend">
+              <div className="legend-row">
+                <span className="legend-swatch" style={{ background: 'var(--teal)' }} />
+                Task
+              </div>
+              <div className="legend-row">
+                <span className="legend-swatch" style={{ background: 'var(--brass)' }} />
+                Project
+              </div>
+              <div className="legend-row">
+                <span className="keyhint">drag</span>move ·{' '}
+                <span className="keyhint">connect</span>relate ·{' '}
+                <span className="keyhint">del</span>archive · <span className="keyhint">esc</span>
+                deselect
+              </div>
             </div>
           </div>
+        )}
+
+        {activeView === 'table' && workspace && (
+          <div className="view-frame">
+            <SavedViewsPanel workspaceId={workspace.id} viewKind="table" />
+            <TableView
+              rows={tableRows}
+              nodeTypeById={nodeTypeById}
+              statusById={statusById}
+              selectedNodeId={selectedNodeId}
+              onSelectNode={setSelectedNodeId}
+            />
+          </div>
+        )}
+
+        {activeView === 'kanban' && (
+          <div className="view-frame">
+            <KanbanView
+              columns={kanbanColumns}
+              nodeTypeById={nodeTypeById}
+              statusById={statusById}
+              selectedNodeId={selectedNodeId}
+              onSelectNode={setSelectedNodeId}
+            />
+          </div>
+        )}
+
+        {activeView === 'timeline' && (
+          <div className="view-frame">
+            <TimelineView
+              rows={timelineRows}
+              nodeTypeById={nodeTypeById}
+              statusById={statusById}
+              selectedNodeId={selectedNodeId}
+              onSelectNode={setSelectedNodeId}
+            />
+          </div>
+        )}
+
+        {activeView === 'search' && (
+          <div className="view-frame">
+            <SearchView
+              onSearch={(query) => (workspace ? api.search(workspace.id, query) : Promise.resolve([]))}
+              selectedNodeId={selectedNodeId}
+              onSelectNode={setSelectedNodeId}
+            />
+          </div>
+        )}
+
+        {activeView === 'research' && (
+          <div className="view-frame">
+            <ResearchView
+              dashboard={researchDashboard}
+              selectedNodeId={selectedNodeId}
+              onSelectNode={setSelectedNodeId}
+            />
+          </div>
+        )}
+
+        {activeView === 'discovery' && (
+          <div className="view-frame">
+            <DiscoveryView onPreview={handleDiscoveryPreview} onApply={handleDiscoveryApply} />
+          </div>
+        )}
+
+        {activeView === 'activity' && (
+          <div className="view-frame">
+            <ActivityView
+              onLoadPage={(cursor) =>
+                workspace
+                  ? api.listActivityEvents(workspace.id, 50, cursor)
+                  : Promise.resolve({ events: [], next_cursor: null })
+              }
+              onLoadDetail={(eventId) => {
+                if (!workspace) return Promise.reject(new Error('No active workspace'))
+                return api.getActivityEvent(workspace.id, eventId)
+              }}
+              onUndo={async (eventId, reason) => {
+                if (!workspace) return
+                await api.undoActivityEvent(workspace.id, eventId, reason)
+                await reloadGraphData(workspace.id, activeCanvasId)
+              }}
+            />
+          </div>
+        )}
+
+        <div className="inspector-column">
+          <Inspector
+            node={selectedNode}
+            nodeType={selectedNodeType}
+            relations={relations}
+            referenceableNodes={referenceableNodes}
+            onChangeStatus={handleChangeStatus}
+            onChangeField={handleChangeField}
+            onArchive={handleArchiveSelected}
+          />
+          {selectedResource && (
+            <ResearchDetailPanel
+              key={selectedResource.id}
+              resource={selectedResource}
+              onUpdate={handleUpdateResource}
+            />
+          )}
+          {nextWorkflowStep && (
+            <WorkflowChainPanel
+              nodeSystemKey={selectedNodeType?.system_key}
+              existingTargetCandidates={workflowChainCandidates}
+              onAdvance={(input) => handleAdvanceWorkflow(nextWorkflowStep.step, input)}
+            />
+          )}
         </div>
-
-        <Inspector
-          node={selectedNode}
-          nodeType={selectedNodeType}
-          relations={relations}
-          referenceableNodes={referenceableNodes}
-          onChangeStatus={handleChangeStatus}
-          onChangeField={handleChangeField}
-          onArchive={handleArchiveSelected}
-        />
       </div>
 
       {pendingConnection && (

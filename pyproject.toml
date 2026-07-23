@@ -7,7 +7,13 @@ dependencies = [
     "pydantic>=2.9",
     "fastapi>=0.115",
     "uvicorn>=0.32",
+    "python-multipart>=0.0.12",
+    "mcp>=1.9",
 ]
+
+[project.scripts]
+pgos-backup = "personal_graph_os.backup.cli:main"
+pgos-token = "personal_graph_os.api.credentials_cli:main"
 
 [dependency-groups]
 dev = [
@@ -42,3 +48,7 @@ typeCheckingMode = "basic"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not slow'"
+markers = [
+    "slow: opt-in acceptance test excluded from the default run; select explicitly with -m slow (see scripts/system_pilot.py)",
+]

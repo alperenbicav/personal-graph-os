@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import * as api from './api/client'
+import { clearSession, commitToken } from './api/session'
 import type { Canvas, CanvasPlacement, GraphEdge, GraphNode, Workspace } from './types'
 
 vi.mock('./api/client')
@@ -100,15 +101,20 @@ async function captureAndSelectNode(title: string) {
 }
 
 beforeEach(() => {
+  commitToken('test-token')
   mockedApi.getWorkspace.mockResolvedValue(workspace)
   mockedApi.listEdges.mockResolvedValue([])
   mockedApi.listCanvases.mockResolvedValue([canvasA])
   mockedApi.listNodes.mockResolvedValue([])
   mockedApi.listPlacements.mockResolvedValue([])
+  mockedApi.listResources.mockResolvedValue([])
+  mockedApi.listAttachments.mockResolvedValue([])
+  mockedApi.listFileReferences.mockResolvedValue([])
 })
 
 afterEach(() => {
   vi.clearAllMocks()
+  clearSession()
 })
 
 describe('status change and archive failure handling', () => {

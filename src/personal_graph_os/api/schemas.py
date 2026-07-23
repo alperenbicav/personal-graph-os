@@ -11,16 +11,25 @@ own separate copy of them.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StrictInt
 
+from personal_graph_os.application.activity_recording import undo_disabled_reason
+from personal_graph_os.application.activity_service import ActivityEventPage
 from personal_graph_os.application.projections import ProjectionItem
 from personal_graph_os.application.workflow_chain import WorkflowChainStep
+from personal_graph_os.domain.activity import ActivityEvent
 from personal_graph_os.domain.graph import Edge, Node
+from personal_graph_os.domain.identifiers import ActivityEventId
 from personal_graph_os.domain.resource import Resource, ResourceKind, ResourceLifecycleStatus
 from personal_graph_os.domain.schema import FieldType
 from personal_graph_os.domain.views import FilterField, ProjectionQuery, ViewKind
+
+_MAX_DISCOVERY_CANDIDATES = 50
+_MAX_DISCOVERY_TEXT_LENGTH = 4000
+_MAX_DISCOVERY_TITLE_LENGTH = 300
 
 
 class CaptureNodeRequest(BaseModel):
@@ -60,6 +69,14 @@ class UpdatePlacementRequest(BaseModel):
     width: float | None = None
     height: float | None = None
     is_collapsed: bool | None = None
+
+
+class CreateFileReferenceRequest(BaseModel):
+    machine_name: str
+    relative_path: str
+    repository_name: str | None = None
+    absolute_path: str | None = None
+    git_ref: str | None = None
 
 
 class CreateNodeTypeRequest(BaseModel):
@@ -141,6 +158,8 @@ class UpdateResourceRequest(BaseModel):
     next_action_dismissed: bool | None = None
     open_questions: list[str] | None = None
     takeaways: list[str] | None = None
+    progress_percent: StrictInt | None = Field(default=None, ge=0, le=100)
+    clear_progress_percent: bool = False
     review_at: datetime | None = None
     clear_review_at: bool = False
 
@@ -157,6 +176,7 @@ class ResourceResponse(BaseModel):
     next_action_dismissed: bool
     open_questions: list[str]
     takeaways: list[str]
+    progress_percent: int | None
     review_at: datetime | None
     last_activity_at: datetime
     title: str
@@ -176,6 +196,7 @@ class ResourceResponse(BaseModel):
             next_action_dismissed=resource.next_action_dismissed,
             open_questions=list(resource.open_questions),
             takeaways=list(resource.takeaways),
+            progress_percent=resource.progress_percent,
             review_at=resource.review_at,
             last_activity_at=resource.last_activity_at,
             title=node.title,
@@ -248,3 +269,109 @@ class AdvanceWorkflowChainRequest(BaseModel):
 class WorkflowChainStepResponse(BaseModel):
     node: Node
     edge: Edge
+
+
+class DiscoveryCandidateRequest(BaseModel):
+    identifier: str = Field(min_length=1, max_length=_MAX_DISCOVERY_TEXT_LENGTH)
+    title: str = Field(min_length=1, max_length=_MAX_DISCOVERY_TITLE_LENGTH)
+    kind: ResourceKind | None = None
+    description: str = Field(default="", max_length=_MAX_DISCOVERY_TEXT_LENGTH)
+    evidence: list[str] = Field(default_factory=list, max_length=20)
+
+
+class DiscoveryPreviewRequest(BaseModel):
+    workspace_id: str
+    instruction: str = Field(min_length=1, max_length=_MAX_DISCOVERY_TEXT_LENGTH)
+    sources_searched: list[str] = Field(default_factory=list, max_length=20)
+    filters_interpreted: dict[str, object] = Field(default_factory=dict)
+    candidates: list[DiscoveryCandidateRequest] = Field(
+        min_length=1, max_length=_MAX_DISCOVERY_CANDIDATES
+    )
+
+
+class DiscoveryApplyRequest(DiscoveryPreviewRequest):
+    agent_identity: str = Field(min_length=1, max_length=_MAX_DISCOVERY_TITLE_LENGTH)
+
+
+class UndoActivityEventRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class ActivityEventSummary(BaseModel):
+    """One list-row summary -- never the before/after snapshot (ST07-F06): a page of up to
+    100 events, each potentially carrying two 256 KiB snapshots, would otherwise approach
+    50 MiB. `GET /activity-events/{id}` remains the only way to fetch a snapshot."""
+
+    id: str
+    workspace_id: str
+    actor_kind: str
+    actor_name: str
+    source: str
+    entity_type: str
+    entity_id: str
+    action: str
+    reason: str | None
+    is_undoable: bool
+    occurred_at: datetime
+    reverses_event_id: str | None
+    # Stable machine-readable code for why this event cannot be undone right now (ST07-F05
+    # re-review) -- `None` while it still can be. See
+    # `activity_recording.undo_disabled_reason` for the shared taxonomy REST/undo/UI all use.
+    disabled_reason: str | None
+
+    @classmethod
+    def from_domain(
+        cls, event: ActivityEvent, *, is_already_reversed: bool
+    ) -> ActivityEventSummary:
+        return cls(
+            id=event.id,
+            workspace_id=event.workspace_id,
+            actor_kind=event.actor_kind.value,
+            actor_name=event.actor_name,
+            source=event.source,
+            entity_type=event.entity_type,
+            entity_id=event.entity_id,
+            action=event.action.value,
+            reason=event.reason,
+            is_undoable=event.is_undoable,
+            occurred_at=event.occurred_at,
+            reverses_event_id=event.reverses_event_id,
+            disabled_reason=undo_disabled_reason(event, is_already_reversed=is_already_reversed),
+        )
+
+
+class ActivityEventDetail(ActivityEventSummary):
+    """Full detail, including bounded before/after snapshots (ST07-F06)."""
+
+    before_state: dict[str, object] | None
+    after_state: dict[str, object] | None
+    request_id: str | None
+
+    @classmethod
+    def from_domain(cls, event: ActivityEvent, *, is_already_reversed: bool) -> ActivityEventDetail:
+        summary = ActivityEventSummary.from_domain(event, is_already_reversed=is_already_reversed)
+        return cls(
+            **summary.model_dump(),
+            before_state=event.before_state,
+            after_state=event.after_state,
+            request_id=event.request_id,
+        )
+
+
+class ActivityEventPageResponse(BaseModel):
+    events: list[ActivityEventSummary]
+    next_cursor: str | None
+
+    @classmethod
+    def from_page(
+        cls, page: ActivityEventPage, *, is_already_reversed: Callable[[ActivityEventId], bool]
+    ) -> ActivityEventPageResponse:
+        return cls(
+            events=[
+                ActivityEventSummary.from_domain(
+                    event, is_already_reversed=is_already_reversed(event.id)
+                )
+                for event in page.events
+            ],
+            next_cursor=page.next_cursor,
+        )

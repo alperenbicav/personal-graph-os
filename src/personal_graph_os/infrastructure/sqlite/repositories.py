@@ -9,20 +9,35 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime
 
-from personal_graph_os.domain.activity import DiscoveredCandidate, DiscoveryRun
+from personal_graph_os.application.file_storage import PendingFileOperation
+from personal_graph_os.domain.activity import (
+    ActivityEvent,
+    ActorKind,
+    DiscoveredCandidate,
+    DiscoveryRun,
+    IdempotencyReceipt,
+    MutationAction,
+)
 from personal_graph_os.domain.canvas import Canvas, CanvasPlacement
+from personal_graph_os.domain.files import Attachment, FileReference
 from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.identifiers import (
+    ActivityEventId,
+    AttachmentId,
     CanvasId,
     CanvasPlacementId,
+    ContextPackId,
     DiscoveryRunId,
     EdgeId,
+    FileReferenceId,
+    IdempotencyReceiptId,
     NodeId,
     ResourceId,
     SavedViewId,
     WorkspaceId,
+    new_id,
 )
 from personal_graph_os.domain.research_settings import WorkspaceResearchSettings
 from personal_graph_os.domain.resource import Resource, ResourceKind, ResourceLifecycleStatus
@@ -34,7 +49,7 @@ from personal_graph_os.domain.schema import (
     Workspace,
 )
 from personal_graph_os.domain.search import SearchEntityType, SearchHit, compile_fts5_query
-from personal_graph_os.domain.views import SavedView, ViewKind
+from personal_graph_os.domain.views import ContextPack, SavedView, ViewKind
 
 
 class SqliteWorkspaceRepository:
@@ -55,13 +70,16 @@ class SqliteWorkspaceRepository:
 
     def save(self, workspace: Workspace) -> None:
         with self._connection:
-            self._connection.execute(
-                "INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?) "
-                "ON CONFLICT (id) DO UPDATE SET name = excluded.name",
-                (workspace.id, workspace.name, workspace.created_at.isoformat()),
-            )
-            self._save_node_types(workspace)
-            self._save_edge_types(workspace)
+            self.save_without_commit(workspace)
+
+    def save_without_commit(self, workspace: Workspace) -> None:
+        self._connection.execute(
+            "INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?) "
+            "ON CONFLICT (id) DO UPDATE SET name = excluded.name",
+            (workspace.id, workspace.name, workspace.created_at.isoformat()),
+        )
+        self._save_node_types(workspace)
+        self._save_edge_types(workspace)
 
     def _save_node_types(self, workspace: Workspace) -> None:
         for node_type in workspace.node_types:
@@ -373,7 +391,10 @@ class SqliteEdgeRepository:
 
     def delete(self, edge_id: EdgeId) -> None:
         with self._connection:
-            self._connection.execute("DELETE FROM edges WHERE id = ?", (edge_id,))
+            self.delete_without_commit(edge_id)
+
+    def delete_without_commit(self, edge_id: EdgeId) -> None:
+        self._connection.execute("DELETE FROM edges WHERE id = ?", (edge_id,))
 
     def _hydrate(self, row: sqlite3.Row) -> Edge:
         return Edge(
@@ -405,11 +426,14 @@ class SqliteCanvasRepository:
 
     def save(self, canvas: Canvas) -> None:
         with self._connection:
-            self._connection.execute(
-                "INSERT INTO canvases (id, workspace_id, name, created_at) VALUES (?, ?, ?, ?) "
-                "ON CONFLICT (id) DO UPDATE SET name = excluded.name",
-                (canvas.id, canvas.workspace_id, canvas.name, canvas.created_at.isoformat()),
-            )
+            self.save_without_commit(canvas)
+
+    def save_without_commit(self, canvas: Canvas) -> None:
+        self._connection.execute(
+            "INSERT INTO canvases (id, workspace_id, name, created_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (id) DO UPDATE SET name = excluded.name",
+            (canvas.id, canvas.workspace_id, canvas.name, canvas.created_at.isoformat()),
+        )
 
     def _hydrate(self, row: sqlite3.Row) -> Canvas:
         return Canvas(
@@ -438,28 +462,34 @@ class SqliteCanvasPlacementRepository:
 
     def save(self, placement: CanvasPlacement) -> None:
         with self._connection:
-            self._connection.execute(
-                "INSERT INTO canvas_placements "
-                "(id, canvas_id, node_id, position_x, position_y, width, height, is_collapsed) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (id) DO UPDATE SET position_x = excluded.position_x, "
-                "position_y = excluded.position_y, width = excluded.width, "
-                "height = excluded.height, is_collapsed = excluded.is_collapsed",
-                (
-                    placement.id,
-                    placement.canvas_id,
-                    placement.node_id,
-                    placement.position_x,
-                    placement.position_y,
-                    placement.width,
-                    placement.height,
-                    int(placement.is_collapsed),
-                ),
-            )
+            self.save_without_commit(placement)
+
+    def save_without_commit(self, placement: CanvasPlacement) -> None:
+        self._connection.execute(
+            "INSERT INTO canvas_placements "
+            "(id, canvas_id, node_id, position_x, position_y, width, height, is_collapsed) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (id) DO UPDATE SET position_x = excluded.position_x, "
+            "position_y = excluded.position_y, width = excluded.width, "
+            "height = excluded.height, is_collapsed = excluded.is_collapsed",
+            (
+                placement.id,
+                placement.canvas_id,
+                placement.node_id,
+                placement.position_x,
+                placement.position_y,
+                placement.width,
+                placement.height,
+                int(placement.is_collapsed),
+            ),
+        )
 
     def delete(self, placement_id: CanvasPlacementId) -> None:
         with self._connection:
-            self._connection.execute("DELETE FROM canvas_placements WHERE id = ?", (placement_id,))
+            self.delete_without_commit(placement_id)
+
+    def delete_without_commit(self, placement_id: CanvasPlacementId) -> None:
+        self._connection.execute("DELETE FROM canvas_placements WHERE id = ?", (placement_id,))
 
     def _hydrate(self, row: sqlite3.Row) -> CanvasPlacement:
         return CanvasPlacement(
@@ -518,15 +548,16 @@ class SqliteResourceRepository:
             "INSERT INTO resources "
             "(id, workspace_id, node_id, kind, canonical_identifier, source_url, "
             " lifecycle_status, next_action, next_action_dismissed, open_questions_json, "
-            " takeaways_json, review_at, last_activity_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            " takeaways_json, progress_percent, review_at, last_activity_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (id) DO UPDATE SET kind = excluded.kind, "
             "canonical_identifier = excluded.canonical_identifier, "
             "source_url = excluded.source_url, lifecycle_status = excluded.lifecycle_status, "
             "next_action = excluded.next_action, "
             "next_action_dismissed = excluded.next_action_dismissed, "
             "open_questions_json = excluded.open_questions_json, "
-            "takeaways_json = excluded.takeaways_json, review_at = excluded.review_at, "
+            "takeaways_json = excluded.takeaways_json, "
+            "progress_percent = excluded.progress_percent, review_at = excluded.review_at, "
             "last_activity_at = excluded.last_activity_at",
             (
                 resource.id,
@@ -540,6 +571,7 @@ class SqliteResourceRepository:
                 int(resource.next_action_dismissed),
                 json.dumps(list(resource.open_questions)),
                 json.dumps(list(resource.takeaways)),
+                resource.progress_percent,
                 resource.review_at.isoformat() if resource.review_at is not None else None,
                 resource.last_activity_at.isoformat(),
             ),
@@ -558,6 +590,7 @@ class SqliteResourceRepository:
             next_action_dismissed=bool(row["next_action_dismissed"]),
             open_questions=tuple(json.loads(row["open_questions_json"])),
             takeaways=tuple(json.loads(row["takeaways_json"])),
+            progress_percent=row["progress_percent"],
             review_at=(
                 datetime.fromisoformat(row["review_at"]) if row["review_at"] is not None else None
             ),
@@ -583,29 +616,35 @@ class SqliteSavedViewRepository:
 
     def save(self, saved_view: SavedView) -> None:
         with self._connection:
-            self._connection.execute(
-                "INSERT INTO saved_views "
-                "(id, workspace_id, name, view_kind, filter_definition_json, "
-                " sort_definition_json, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (id) DO UPDATE SET name = excluded.name, "
-                "view_kind = excluded.view_kind, "
-                "filter_definition_json = excluded.filter_definition_json, "
-                "sort_definition_json = excluded.sort_definition_json",
-                (
-                    saved_view.id,
-                    saved_view.workspace_id,
-                    saved_view.name,
-                    saved_view.view_kind.value,
-                    json.dumps(saved_view.filter_definition),
-                    json.dumps(saved_view.sort_definition),
-                    saved_view.created_at.isoformat(),
-                ),
-            )
+            self.save_without_commit(saved_view)
+
+    def save_without_commit(self, saved_view: SavedView) -> None:
+        self._connection.execute(
+            "INSERT INTO saved_views "
+            "(id, workspace_id, name, view_kind, filter_definition_json, "
+            " sort_definition_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (id) DO UPDATE SET name = excluded.name, "
+            "view_kind = excluded.view_kind, "
+            "filter_definition_json = excluded.filter_definition_json, "
+            "sort_definition_json = excluded.sort_definition_json",
+            (
+                saved_view.id,
+                saved_view.workspace_id,
+                saved_view.name,
+                saved_view.view_kind.value,
+                json.dumps(saved_view.filter_definition),
+                json.dumps(saved_view.sort_definition),
+                saved_view.created_at.isoformat(),
+            ),
+        )
 
     def delete(self, saved_view_id: SavedViewId) -> None:
         with self._connection:
-            self._connection.execute("DELETE FROM saved_views WHERE id = ?", (saved_view_id,))
+            self.delete_without_commit(saved_view_id)
+
+    def delete_without_commit(self, saved_view_id: SavedViewId) -> None:
+        self._connection.execute("DELETE FROM saved_views WHERE id = ?", (saved_view_id,))
 
     def _hydrate(self, row: sqlite3.Row) -> SavedView:
         return SavedView(
@@ -615,6 +654,439 @@ class SqliteSavedViewRepository:
             view_kind=ViewKind(row["view_kind"]),
             filter_definition=json.loads(row["filter_definition_json"]),
             sort_definition=json.loads(row["sort_definition_json"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+
+class SqliteContextPackRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(self, context_pack_id: ContextPackId) -> ContextPack | None:
+        row = self._connection.execute(
+            "SELECT * FROM context_packs WHERE id = ?", (context_pack_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def list_by_workspace(self, workspace_id: WorkspaceId) -> tuple[ContextPack, ...]:
+        rows = self._connection.execute(
+            "SELECT * FROM context_packs WHERE workspace_id = ?", (workspace_id,)
+        ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
+    def save(self, context_pack: ContextPack) -> None:
+        with self._connection:
+            self.save_without_commit(context_pack)
+
+    def save_without_commit(self, context_pack: ContextPack) -> None:
+        self._connection.execute(
+            "INSERT INTO context_packs "
+            "(id, workspace_id, name, node_ids_json, edge_ids_json, evidence_pointers_json, "
+            " inclusion_reasons_json, object_limit, token_limit, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                context_pack.id,
+                context_pack.workspace_id,
+                context_pack.name,
+                json.dumps(list(context_pack.node_ids)),
+                json.dumps(list(context_pack.edge_ids)),
+                json.dumps(list(context_pack.evidence_pointers)),
+                json.dumps(context_pack.inclusion_reasons),
+                context_pack.object_limit,
+                context_pack.token_limit,
+                context_pack.created_at.isoformat(),
+            ),
+        )
+
+    def delete(self, context_pack_id: ContextPackId) -> None:
+        with self._connection:
+            self.delete_without_commit(context_pack_id)
+
+    def delete_without_commit(self, context_pack_id: ContextPackId) -> None:
+        self._connection.execute("DELETE FROM context_packs WHERE id = ?", (context_pack_id,))
+
+    def _hydrate(self, row: sqlite3.Row) -> ContextPack:
+        return ContextPack(
+            id=row["id"],
+            workspace_id=row["workspace_id"],
+            name=row["name"],
+            node_ids=tuple(json.loads(row["node_ids_json"])),
+            edge_ids=tuple(json.loads(row["edge_ids_json"])),
+            evidence_pointers=tuple(json.loads(row["evidence_pointers_json"])),
+            inclusion_reasons=json.loads(row["inclusion_reasons_json"]),
+            object_limit=row["object_limit"],
+            token_limit=row["token_limit"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+
+class SqliteAttachmentRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(self, attachment_id: AttachmentId) -> Attachment | None:
+        row = self._connection.execute(
+            "SELECT * FROM attachments WHERE id = ?", (attachment_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def list_by_node(self, node_id: NodeId) -> tuple[Attachment, ...]:
+        rows = self._connection.execute(
+            "SELECT * FROM attachments WHERE node_id = ? ORDER BY created_at", (node_id,)
+        ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
+    def save(self, attachment: Attachment) -> None:
+        with self._connection:
+            self.save_without_commit(attachment)
+
+    def save_without_commit(self, attachment: Attachment) -> None:
+        self._connection.execute(
+            "INSERT INTO attachments "
+            "(id, node_id, file_name, mime_type, size_bytes, checksum_sha256, "
+            " storage_relative_path, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                attachment.id,
+                attachment.node_id,
+                attachment.file_name,
+                attachment.mime_type,
+                attachment.size_bytes,
+                attachment.checksum_sha256,
+                attachment.storage_relative_path,
+                attachment.created_at.isoformat(),
+            ),
+        )
+
+    def delete(self, attachment_id: AttachmentId) -> None:
+        with self._connection:
+            self.delete_without_commit(attachment_id)
+
+    def delete_without_commit(self, attachment_id: AttachmentId) -> None:
+        self._connection.execute("DELETE FROM attachments WHERE id = ?", (attachment_id,))
+
+    @staticmethod
+    def _hydrate(row: sqlite3.Row) -> Attachment:
+        return Attachment(
+            id=AttachmentId(row["id"]),
+            node_id=NodeId(row["node_id"]),
+            file_name=row["file_name"],
+            mime_type=row["mime_type"],
+            size_bytes=row["size_bytes"],
+            checksum_sha256=row["checksum_sha256"],
+            storage_relative_path=row["storage_relative_path"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+
+class SqliteFileReferenceRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(self, file_reference_id: FileReferenceId) -> FileReference | None:
+        row = self._connection.execute(
+            "SELECT * FROM file_references WHERE id = ?", (file_reference_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def list_by_node(self, node_id: NodeId) -> tuple[FileReference, ...]:
+        rows = self._connection.execute(
+            "SELECT * FROM file_references WHERE node_id = ? ORDER BY rowid", (node_id,)
+        ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
+    def save(self, file_reference: FileReference) -> None:
+        with self._connection:
+            self.save_without_commit(file_reference)
+
+    def save_without_commit(self, file_reference: FileReference) -> None:
+        self._connection.execute(
+            "INSERT INTO file_references "
+            "(id, node_id, machine_name, relative_path, repository_name, absolute_path, "
+            " git_ref, last_verified_at, is_missing) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (id) DO UPDATE SET last_verified_at = excluded.last_verified_at, "
+            "is_missing = excluded.is_missing",
+            (
+                file_reference.id,
+                file_reference.node_id,
+                file_reference.machine_name,
+                file_reference.relative_path,
+                file_reference.repository_name,
+                file_reference.absolute_path,
+                file_reference.git_ref,
+                file_reference.last_verified_at.isoformat()
+                if file_reference.last_verified_at
+                else None,
+                int(file_reference.is_missing),
+            ),
+        )
+
+    def delete(self, file_reference_id: FileReferenceId) -> None:
+        with self._connection:
+            self.delete_without_commit(file_reference_id)
+
+    def delete_without_commit(self, file_reference_id: FileReferenceId) -> None:
+        self._connection.execute("DELETE FROM file_references WHERE id = ?", (file_reference_id,))
+
+    @staticmethod
+    def _hydrate(row: sqlite3.Row) -> FileReference:
+        last_verified_at = row["last_verified_at"]
+        return FileReference(
+            id=FileReferenceId(row["id"]),
+            node_id=NodeId(row["node_id"]),
+            machine_name=row["machine_name"],
+            relative_path=row["relative_path"],
+            repository_name=row["repository_name"],
+            absolute_path=row["absolute_path"],
+            git_ref=row["git_ref"],
+            last_verified_at=datetime.fromisoformat(last_verified_at) if last_verified_at else None,
+            is_missing=bool(row["is_missing"]),
+        )
+
+
+class SqlitePendingFileOperationRepository:
+    """Durable journal (ST05-F01) for a managed-file operation whose completion is not yet
+    certain: an upload's finalized file awaiting its row commit, or a delete's quarantined
+    file awaiting either restore (row delete failed) or purge (row delete succeeded)."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def record(
+        self,
+        *,
+        attachment_id: AttachmentId,
+        storage_relative_path: str,
+        quarantine_token: str | None,
+    ) -> PendingFileOperation:
+        entry = PendingFileOperation(
+            id=new_id(),
+            attachment_id=attachment_id,
+            storage_relative_path=storage_relative_path,
+            quarantine_token=quarantine_token,
+            created_at=datetime.now(UTC),
+        )
+        with self._connection:
+            self._connection.execute(
+                "INSERT INTO pending_file_operations "
+                "(id, attachment_id, storage_relative_path, quarantine_token, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    entry.id,
+                    entry.attachment_id,
+                    entry.storage_relative_path,
+                    entry.quarantine_token,
+                    entry.created_at.isoformat(),
+                ),
+            )
+        return entry
+
+    def remove(self, entry_id: str) -> None:
+        with self._connection:
+            self._connection.execute(
+                "DELETE FROM pending_file_operations WHERE id = ?", (entry_id,)
+            )
+
+    def list_all(self) -> tuple[PendingFileOperation, ...]:
+        rows = self._connection.execute(
+            "SELECT * FROM pending_file_operations ORDER BY created_at"
+        ).fetchall()
+        return tuple(
+            PendingFileOperation(
+                id=row["id"],
+                attachment_id=AttachmentId(row["attachment_id"]),
+                storage_relative_path=row["storage_relative_path"],
+                quarantine_token=row["quarantine_token"],
+                created_at=datetime.fromisoformat(row["created_at"]),
+            )
+            for row in rows
+        )
+
+
+class SqliteActivityEventRepository:
+    """Audit trail writes plus MCP replay lookup (decision #14, `WORK.md`)."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get_by_request(
+        self, workspace_id: WorkspaceId, source: str, actor_name: str, request_id: str
+    ) -> ActivityEvent | None:
+        row = self._connection.execute(
+            "SELECT * FROM activity_events "
+            "WHERE workspace_id = ? AND source = ? AND actor_name = ? AND request_id = ?",
+            (workspace_id, source, actor_name, request_id),
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def get(self, event_id: ActivityEventId) -> ActivityEvent | None:
+        row = self._connection.execute(
+            "SELECT * FROM activity_events WHERE id = ?", (event_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def get_by_reverses(self, reversed_event_id: ActivityEventId) -> ActivityEvent | None:
+        row = self._connection.execute(
+            "SELECT * FROM activity_events WHERE reverses_event_id = ?", (reversed_event_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def list_by_workspace(
+        self,
+        workspace_id: WorkspaceId,
+        *,
+        limit: int,
+        before_occurred_at: str | None = None,
+        before_id: str | None = None,
+    ) -> tuple[ActivityEvent, ...]:
+        if before_occurred_at is None or before_id is None:
+            rows = self._connection.execute(
+                "SELECT * FROM activity_events WHERE workspace_id = ? "
+                "ORDER BY occurred_at DESC, id DESC LIMIT ?",
+                (workspace_id, limit),
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                "SELECT * FROM activity_events WHERE workspace_id = ? "
+                "AND (occurred_at, id) < (?, ?) "
+                "ORDER BY occurred_at DESC, id DESC LIMIT ?",
+                (workspace_id, before_occurred_at, before_id, limit),
+            ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
+    def list_by_entity(
+        self,
+        entity_type: str,
+        entity_id: str,
+        *,
+        limit: int,
+        before_occurred_at: str | None = None,
+        before_id: str | None = None,
+    ) -> tuple[ActivityEvent, ...]:
+        if before_occurred_at is None or before_id is None:
+            rows = self._connection.execute(
+                "SELECT * FROM activity_events WHERE entity_type = ? AND entity_id = ? "
+                "ORDER BY occurred_at DESC, id DESC LIMIT ?",
+                (entity_type, entity_id, limit),
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                "SELECT * FROM activity_events WHERE entity_type = ? AND entity_id = ? "
+                "AND (occurred_at, id) < (?, ?) "
+                "ORDER BY occurred_at DESC, id DESC LIMIT ?",
+                (entity_type, entity_id, before_occurred_at, before_id, limit),
+            ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
+    def save(self, event: ActivityEvent) -> None:
+        with self._connection:
+            self.save_without_commit(event)
+
+    def save_without_commit(self, event: ActivityEvent) -> None:
+        self._connection.execute(
+            "INSERT INTO activity_events "
+            "(id, workspace_id, actor_kind, actor_name, source, entity_type, entity_id, action, "
+            " session_id, reason, before_state_json, after_state_json, is_undoable, occurred_at, "
+            " request_id, reverses_event_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                event.id,
+                event.workspace_id,
+                event.actor_kind.value,
+                event.actor_name,
+                event.source,
+                event.entity_type,
+                event.entity_id,
+                event.action.value,
+                event.session_id,
+                event.reason,
+                json.dumps(event.before_state) if event.before_state is not None else None,
+                json.dumps(event.after_state) if event.after_state is not None else None,
+                int(event.is_undoable),
+                event.occurred_at.isoformat(),
+                event.request_id,
+                event.reverses_event_id,
+            ),
+        )
+
+    def _hydrate(self, row: sqlite3.Row) -> ActivityEvent:
+        return ActivityEvent(
+            id=ActivityEventId(row["id"]),
+            workspace_id=row["workspace_id"],
+            actor_kind=ActorKind(row["actor_kind"]),
+            actor_name=row["actor_name"],
+            source=row["source"],
+            entity_type=row["entity_type"],
+            entity_id=row["entity_id"],
+            action=MutationAction(row["action"]),
+            session_id=row["session_id"],
+            reason=row["reason"],
+            before_state=(
+                json.loads(row["before_state_json"])
+                if row["before_state_json"] is not None
+                else None
+            ),
+            after_state=(
+                json.loads(row["after_state_json"]) if row["after_state_json"] is not None else None
+            ),
+            is_undoable=bool(row["is_undoable"]),
+            occurred_at=datetime.fromisoformat(row["occurred_at"]),
+            request_id=row["request_id"],
+            reverses_event_id=(
+                ActivityEventId(row["reverses_event_id"])
+                if row["reverses_event_id"] is not None
+                else None
+            ),
+        )
+
+
+class SqliteIdempotencyReceiptRepository:
+    """The durable MCP replay/conflict boundary, separate from the `activity_events` audit
+    trail (ST06-F01 refactor)."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get_by_request(
+        self, workspace_id: WorkspaceId, source: str, actor_name: str, request_id: str
+    ) -> IdempotencyReceipt | None:
+        row = self._connection.execute(
+            "SELECT * FROM idempotency_receipts "
+            "WHERE workspace_id = ? AND source = ? AND actor_name = ? AND request_id = ?",
+            (workspace_id, source, actor_name, request_id),
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def save_without_commit(self, receipt: IdempotencyReceipt) -> None:
+        self._connection.execute(
+            "INSERT INTO idempotency_receipts "
+            "(id, workspace_id, source, actor_name, request_id, operation, "
+            " payload_fingerprint, result_payload_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                receipt.id,
+                receipt.workspace_id,
+                receipt.source,
+                receipt.actor_name,
+                receipt.request_id,
+                receipt.operation,
+                receipt.payload_fingerprint,
+                json.dumps(receipt.result_payload),
+                receipt.created_at.isoformat(),
+            ),
+        )
+
+    def _hydrate(self, row: sqlite3.Row) -> IdempotencyReceipt:
+        return IdempotencyReceipt(
+            id=IdempotencyReceiptId(row["id"]),
+            workspace_id=row["workspace_id"],
+            source=row["source"],
+            actor_name=row["actor_name"],
+            request_id=row["request_id"],
+            operation=row["operation"],
+            payload_fingerprint=row["payload_fingerprint"],
+            result_payload=json.loads(row["result_payload_json"]),
             created_at=datetime.fromisoformat(row["created_at"]),
         )
 
@@ -770,10 +1242,13 @@ class SqliteResearchSettingsRepository:
 
     def save(self, settings: WorkspaceResearchSettings) -> None:
         with self._connection:
-            self._connection.execute(
-                "INSERT INTO workspace_research_settings (workspace_id, stale_after_days) "
-                "VALUES (?, ?) "
-                "ON CONFLICT (workspace_id) DO UPDATE SET "
-                "stale_after_days = excluded.stale_after_days",
-                (settings.workspace_id, settings.stale_after_days),
-            )
+            self.save_without_commit(settings)
+
+    def save_without_commit(self, settings: WorkspaceResearchSettings) -> None:
+        self._connection.execute(
+            "INSERT INTO workspace_research_settings (workspace_id, stale_after_days) "
+            "VALUES (?, ?) "
+            "ON CONFLICT (workspace_id) DO UPDATE SET "
+            "stale_after_days = excluded.stale_after_days",
+            (settings.workspace_id, settings.stale_after_days),
+        )

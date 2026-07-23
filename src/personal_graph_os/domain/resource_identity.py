@@ -16,8 +16,10 @@ from pydantic import BaseModel
 from personal_graph_os.domain.errors import InvariantViolationError
 from personal_graph_os.domain.resource import ResourceKind
 
-_DOI_URL_PATTERN = re.compile(r"^https?://(?:dx\.)?doi\.org/(10\.\d{4,9}/\S+)$", re.IGNORECASE)
-_BARE_DOI_PATTERN = re.compile(r"^(?:doi:)?(10\.\d{4,9}/\S+)$", re.IGNORECASE)
+_DOI_URL_PATTERN = re.compile(
+    r"^https?://(?:dx\.)?doi\.org/(10\.\d{4,9}/[^?#\s]+)(?:[?#].*)?$", re.IGNORECASE
+)
+_BARE_DOI_PATTERN = re.compile(r"^(?:doi:)?(10\.\d{4,9}/[^?#\s]+)(?:[?#].*)?$", re.IGNORECASE)
 
 _ARXIV_URL_PATTERN = re.compile(
     r"^https?://arxiv\.org/abs/([a-z\-]*/?\d{4,7}(?:\.\d{4,5})?)(v\d+)?/?$", re.IGNORECASE
@@ -69,15 +71,26 @@ def _is_tracking_query_param(name: str) -> bool:
 
 
 def _normalize_generic_url(raw: str) -> str | None:
-    parsed = urlparse(raw)
-    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+    # `urlparse()` itself — not just `.port` — can raise `ValueError` on a malformed URL (e.g.
+    # an invalid IPv6 host like "https://[bad"). Any such shape is a malformed URL, not an
+    # unrecognized-format candidate for a later canonicalizer, so it is rejected the same way.
+    try:
+        parsed = urlparse(raw)
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+            return None
+        port = parsed.port
+    except ValueError:
         return None
 
-    host = parsed.hostname or ""
+    host = (parsed.hostname or "").lower()
     default_port = {"http": 80, "https": 443}[parsed.scheme.lower()]
-    netloc = host.lower()
-    if parsed.port is not None and parsed.port != default_port:
-        netloc = f"{netloc}:{parsed.port}"
+    # `parsed.hostname` strips an IPv6 literal's brackets; a bare `:` is never valid in an
+    # IPv4/DNS hostname, so its presence is exactly the IPv6 case. Re-add the brackets RFC 3986
+    # requires — without them the rebuilt URL is not the same host and does not even
+    # re-canonicalize to itself.
+    netloc = f"[{host}]" if ":" in host else host
+    if port is not None and port != default_port:
+        netloc = f"{netloc}:{port}"
 
     path = parsed.path or "/"
     if len(path) > 1 and path.endswith("/"):

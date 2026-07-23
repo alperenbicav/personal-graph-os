@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+from personal_graph_os.application.activity_recording import MutationContext, record_activity_event
 from personal_graph_os.application.repositories import (
     CanvasPlacementRepository,
     CanvasRepository,
@@ -25,6 +26,7 @@ from personal_graph_os.application.repositories import (
 from personal_graph_os.application.research_dashboard import get_or_default_research_settings
 from personal_graph_os.application.research_unit_of_work import ResearchUnitOfWork
 from personal_graph_os.application.semantic_keys import RESOURCE_NODE_TYPE_KEY
+from personal_graph_os.domain.activity import MutationAction
 from personal_graph_os.domain.canvas import Canvas, CanvasPlacement
 from personal_graph_os.domain.errors import (
     DomainError,
@@ -47,7 +49,10 @@ from personal_graph_os.domain.identifiers import (
 )
 from personal_graph_os.domain.research_settings import WorkspaceResearchSettings
 from personal_graph_os.domain.resource import Resource, ResourceKind, ResourceLifecycleStatus
-from personal_graph_os.domain.resource_identity import canonicalize_resource_identity
+from personal_graph_os.domain.resource_identity import (
+    ResourceIdentity,
+    canonicalize_resource_identity,
+)
 from personal_graph_os.domain.schema import (
     EdgeType,
     FieldDefinition,
@@ -136,8 +141,11 @@ def _validate_object_references(nodes: NodeRepository, node: Node, node_type: No
             )
 
 
-def _index_node_text(search_index: SearchIndexRepository | None, node: Node) -> None:
-    """Keep `search_documents` current with a node's own title/body.
+def _index_node_text(
+    search_index: SearchIndexRepository | None, node: Node, node_type: NodeType
+) -> None:
+    """Keep `search_documents` current with a node's own title/body plus its searchable
+    (`FieldType.TEXT`) custom-field values.
 
     A resource's identity/kind/takeaways/questions are indexed separately by `ResourceService`
     under the same `entity_id` (see `SqliteSearchIndexRepository`), so this never touches that
@@ -149,7 +157,7 @@ def _index_node_text(search_index: SearchIndexRepository | None, node: Node) -> 
         workspace_id=node.workspace_id,
         entity_type=SearchEntityType.NODE,
         entity_id=node.id,
-        text=build_node_search_text(node),
+        text=build_node_search_text(node, node_type),
     )
 
 
@@ -160,11 +168,13 @@ class NodeService:
         self,
         workspaces: WorkspaceRepository,
         nodes: NodeRepository,
+        unit_of_work_factory: Callable[[], ResearchUnitOfWork],
         *,
         search_index: SearchIndexRepository | None = None,
     ) -> None:
         self._workspaces = workspaces
         self._nodes = nodes
+        self._unit_of_work_factory = unit_of_work_factory
         self._search_index = search_index
 
     def _require_workspace(self, workspace_id: WorkspaceId) -> Workspace:
@@ -174,7 +184,27 @@ class NodeService:
         return workspace
 
     def capture(self, workspace_id: WorkspaceId, node_type_id: NodeTypeId, title: str) -> Node:
-        """Global quick capture: a title is the only required input."""
+        """Global quick capture: a title is the only required input. Atomically records this
+        node's `ActivityEvent` (ST-07.2, decision #6/#8 `WORK.md`)."""
+        node, node_type = self._build_captured_node(workspace_id, node_type_id, title)
+        _validate_object_references(self._nodes, node, node_type)
+        with self._unit_of_work_factory() as unit_of_work:
+            unit_of_work.nodes.save_without_commit(node)
+            record_activity_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                context=MutationContext.rest(),
+                entity_type="node",
+                entity_id=node.id,
+                action=MutationAction.CREATED,
+                after_state=node.model_dump(mode="json"),
+            )
+        _index_node_text(self._search_index, node, node_type)
+        return node
+
+    def _build_captured_node(
+        self, workspace_id: WorkspaceId, node_type_id: NodeTypeId, title: str
+    ) -> tuple[Node, NodeType]:
         workspace = self._require_workspace(workspace_id)
         node_type = workspace.node_type_by_id(node_type_id)
         if node_type is None:
@@ -183,10 +213,30 @@ class NodeService:
             )
         node = Node(workspace_id=workspace_id, node_type_id=node_type_id, title=title)
         node.validate_against(node_type)
-        _validate_object_references(self._nodes, node, node_type)
-        self._nodes.save(node)
-        _index_node_text(self._search_index, node)
+        return node, node_type
+
+    def capture_within(
+        self,
+        unit_of_work: ResearchUnitOfWork,
+        workspace_id: WorkspaceId,
+        node_type_id: NodeTypeId,
+        title: str,
+    ) -> Node:
+        """Same validation/write as `capture`, into a caller-managed, already-open
+        `unit_of_work` instead of committing on its own. The caller must index the result
+        itself (`index_captured_node`) only after its own transaction has committed — see
+        `ResourceService.create_or_reuse_within` for why indexing here would be premature."""
+        node, node_type = self._build_captured_node(workspace_id, node_type_id, title)
+        _validate_object_references(unit_of_work.nodes, node, node_type)
+        unit_of_work.nodes.save_without_commit(node)
         return node
+
+    def index_captured_node(self, node: Node) -> None:
+        """Index `node` after a `*_within` write's transaction has committed."""
+        workspace = self._require_workspace(node.workspace_id)
+        node_type = workspace.node_type_by_id(node.node_type_id)
+        if node_type is not None:
+            _index_node_text(self._search_index, node, node_type)
 
     def update(
         self,
@@ -197,7 +247,68 @@ class NodeService:
         status_id: StatusDefinitionId | None = None,
         field_values: dict[str, object] | None = None,
     ) -> Node:
-        node = self._nodes.get(node_id)
+        existing = self._nodes.get(node_id)
+        if existing is None:
+            raise NodeNotFoundError(f"node {node_id} does not exist")
+        updated, node_type = self._build_updated_node(
+            self._nodes,
+            node_id,
+            title=title,
+            body=body,
+            status_id=status_id,
+            field_values=field_values,
+        )
+        _validate_object_references(self._nodes, updated, node_type)
+        with self._unit_of_work_factory() as unit_of_work:
+            unit_of_work.nodes.save_without_commit(updated)
+            record_activity_event(
+                unit_of_work,
+                workspace_id=updated.workspace_id,
+                context=MutationContext.rest(),
+                entity_type="node",
+                entity_id=updated.id,
+                action=MutationAction.UPDATED,
+                before_state=existing.model_dump(mode="json"),
+                after_state=updated.model_dump(mode="json"),
+            )
+        _index_node_text(self._search_index, updated, node_type)
+        return updated
+
+    def update_within(
+        self,
+        unit_of_work: ResearchUnitOfWork,
+        node_id: NodeId,
+        *,
+        title: str | None = None,
+        body: str | None = None,
+        status_id: StatusDefinitionId | None = None,
+        field_values: dict[str, object] | None = None,
+    ) -> Node:
+        """Same validation/write as `update`, into a caller-managed, already-open
+        `unit_of_work`. Index the result with `index_captured_node` after commit."""
+        updated, node_type = self._build_updated_node(
+            unit_of_work.nodes,
+            node_id,
+            title=title,
+            body=body,
+            status_id=status_id,
+            field_values=field_values,
+        )
+        _validate_object_references(unit_of_work.nodes, updated, node_type)
+        unit_of_work.nodes.save_without_commit(updated)
+        return updated
+
+    def _build_updated_node(
+        self,
+        nodes: NodeRepository,
+        node_id: NodeId,
+        *,
+        title: str | None,
+        body: str | None,
+        status_id: StatusDefinitionId | None,
+        field_values: dict[str, object] | None,
+    ) -> tuple[Node, NodeType]:
+        node = nodes.get(node_id)
         if node is None:
             raise NodeNotFoundError(f"node {node_id} does not exist")
         workspace = self._require_workspace(node.workspace_id)
@@ -225,16 +336,38 @@ class NodeService:
             updated_at=datetime.now(UTC),
         )
         updated.validate_against(node_type)
-        _validate_object_references(self._nodes, updated, node_type)
-        self._nodes.save(updated)
-        _index_node_text(self._search_index, updated)
-        return updated
+        return updated, node_type
 
     def archive(self, node_id: NodeId) -> Node:
-        node = self._nodes.get(node_id)
+        existing = self._nodes.get(node_id)
+        if existing is None:
+            raise NodeNotFoundError(f"node {node_id} does not exist")
+        archived = self._build_archived_node(self._nodes, node_id)
+        with self._unit_of_work_factory() as unit_of_work:
+            unit_of_work.nodes.save_without_commit(archived)
+            record_activity_event(
+                unit_of_work,
+                workspace_id=archived.workspace_id,
+                context=MutationContext.rest(),
+                entity_type="node",
+                entity_id=archived.id,
+                action=MutationAction.ARCHIVED,
+                before_state=existing.model_dump(mode="json"),
+                after_state=archived.model_dump(mode="json"),
+            )
+        return archived
+
+    def archive_within(self, unit_of_work: ResearchUnitOfWork, node_id: NodeId) -> Node:
+        """Same write as `archive`, into a caller-managed, already-open `unit_of_work`."""
+        archived = self._build_archived_node(unit_of_work.nodes, node_id)
+        unit_of_work.nodes.save_without_commit(archived)
+        return archived
+
+    def _build_archived_node(self, nodes: NodeRepository, node_id: NodeId) -> Node:
+        node = nodes.get(node_id)
         if node is None:
             raise NodeNotFoundError(f"node {node_id} does not exist")
-        archived = Node(
+        return Node(
             id=node.id,
             workspace_id=node.workspace_id,
             node_type_id=node.node_type_id,
@@ -246,22 +379,86 @@ class NodeService:
             created_at=node.created_at,
             updated_at=datetime.now(UTC),
         )
-        self._nodes.save(archived)
-        return archived
+
+    def restore_within(self, unit_of_work: ResearchUnitOfWork, target: Node) -> Node:
+        """Write back an exact historical `Node` state (used only by undo's compensating
+        restore, ST07-F04) after re-validating it against the *current* workspace schema --
+        unlike `update_within`, which merges new fields, this reproduces a specific past
+        snapshot, so the only thing left to check is that today's schema still accepts it.
+        Raises `UnknownSchemaReferenceError` if the node type no longer exists or the
+        snapshot no longer satisfies current field/status definitions."""
+        workspace = self._require_workspace(target.workspace_id)
+        node_type = workspace.node_type_by_id(target.node_type_id)
+        if node_type is None:
+            raise UnknownSchemaReferenceError(
+                f"workspace {target.workspace_id} no longer has node type {target.node_type_id}"
+            )
+        target.validate_against(node_type)
+        _validate_object_references(unit_of_work.nodes, target, node_type)
+        unit_of_work.nodes.save_without_commit(target)
+        return target
 
 
 class EdgeService:
-    """The only path through which typed edges are created."""
+    """The only path through which typed edges are created.
+
+    `connect` is REST's own atomic path (entity write + `ActivityEvent` in one
+    `ResearchUnitOfWork`, ST-07.2); `connect_within` remains MCP's caller-managed variant."""
 
     def __init__(
-        self, workspaces: WorkspaceRepository, nodes: NodeRepository, edges: EdgeRepository
+        self,
+        workspaces: WorkspaceRepository,
+        nodes: NodeRepository,
+        edges: EdgeRepository,
+        unit_of_work_factory: Callable[[], ResearchUnitOfWork],
     ) -> None:
         self._workspaces = workspaces
         self._nodes = nodes
         self._edges = edges
+        self._unit_of_work_factory = unit_of_work_factory
 
     def connect(
         self,
+        workspace_id: WorkspaceId,
+        edge_type_id: EdgeTypeId,
+        source_node_id: NodeId,
+        target_node_id: NodeId,
+    ) -> Edge:
+        edge = self._build_edge(
+            self._nodes, workspace_id, edge_type_id, source_node_id, target_node_id
+        )
+        with self._unit_of_work_factory() as unit_of_work:
+            unit_of_work.edges.save_without_commit(edge)
+            record_activity_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                context=MutationContext.rest(),
+                entity_type="edge",
+                entity_id=edge.id,
+                action=MutationAction.CREATED,
+                after_state=edge.model_dump(mode="json"),
+            )
+        return edge
+
+    def connect_within(
+        self,
+        unit_of_work: ResearchUnitOfWork,
+        workspace_id: WorkspaceId,
+        edge_type_id: EdgeTypeId,
+        source_node_id: NodeId,
+        target_node_id: NodeId,
+    ) -> Edge:
+        """Same validation/write as `connect`, into a caller-managed, already-open
+        `unit_of_work` instead of committing on its own."""
+        edge = self._build_edge(
+            unit_of_work.nodes, workspace_id, edge_type_id, source_node_id, target_node_id
+        )
+        unit_of_work.edges.save_without_commit(edge)
+        return edge
+
+    def _build_edge(
+        self,
+        nodes: NodeRepository,
         workspace_id: WorkspaceId,
         edge_type_id: EdgeTypeId,
         source_node_id: NodeId,
@@ -275,24 +472,26 @@ class EdgeService:
                 f"workspace {workspace_id} has no edge type {edge_type_id}"
             )
         for node_id in (source_node_id, target_node_id):
-            node = self._nodes.get(node_id)
+            node = nodes.get(node_id)
             if node is None or node.workspace_id != workspace_id:
                 raise NodeNotFoundError(
                     f"node {node_id} does not exist in workspace {workspace_id}"
                 )
 
-        edge = Edge(
+        return Edge(
             workspace_id=workspace_id,
             edge_type_id=edge_type_id,
             source_node_id=source_node_id,
             target_node_id=target_node_id,
         )
-        self._edges.save(edge)
-        return edge
 
 
 class CanvasService:
-    """The only path through which canvases and node placements are created."""
+    """The only path through which canvases and node placements are created.
+
+    Every mutation opens its own `ResearchUnitOfWork` so the entity write and its attributed
+    `ActivityEvent` commit atomically (ST-07.2, decision #6/#8 `WORK.md`). REST is this
+    service's only caller, so there is no separate `*_within` variant to keep in sync."""
 
     def __init__(
         self,
@@ -300,17 +499,29 @@ class CanvasService:
         nodes: NodeRepository,
         canvases: CanvasRepository,
         placements: CanvasPlacementRepository,
+        unit_of_work_factory: Callable[[], ResearchUnitOfWork],
     ) -> None:
         self._workspaces = workspaces
         self._nodes = nodes
         self._canvases = canvases
         self._placements = placements
+        self._unit_of_work_factory = unit_of_work_factory
 
     def create_canvas(self, workspace_id: WorkspaceId, name: str) -> Canvas:
         if self._workspaces.get(workspace_id) is None:
             raise WorkspaceNotFoundError(f"workspace {workspace_id} does not exist")
         canvas = Canvas(workspace_id=workspace_id, name=name)
-        self._canvases.save(canvas)
+        with self._unit_of_work_factory() as unit_of_work:
+            unit_of_work.canvases.save_without_commit(canvas)
+            record_activity_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                context=MutationContext.rest(),
+                entity_type="canvas",
+                entity_id=canvas.id,
+                action=MutationAction.CREATED,
+                after_state=canvas.model_dump(mode="json"),
+            )
         return canvas
 
     def place_node(
@@ -333,7 +544,17 @@ class CanvasService:
         placement = CanvasPlacement(
             canvas_id=canvas_id, node_id=node_id, position_x=position_x, position_y=position_y
         )
-        self._placements.save(placement)
+        with self._unit_of_work_factory() as unit_of_work:
+            unit_of_work.placements.save_without_commit(placement)
+            record_activity_event(
+                unit_of_work,
+                workspace_id=canvas.workspace_id,
+                context=MutationContext.rest(),
+                entity_type="placement",
+                entity_id=placement.id,
+                action=MutationAction.CREATED,
+                after_state=placement.model_dump(mode="json"),
+            )
         return placement
 
     def update_placement(
@@ -354,6 +575,9 @@ class CanvasService:
         placement = self._placements.get(placement_id)
         if placement is None:
             raise PlacementNotFoundError(f"canvas placement {placement_id} does not exist")
+        canvas = self._canvases.get(placement.canvas_id)
+        if canvas is None:
+            raise CanvasNotFoundError(f"canvas {placement.canvas_id} does not exist")
 
         updated = CanvasPlacement(
             id=placement.id,
@@ -365,7 +589,18 @@ class CanvasService:
             height=height if height is not None else placement.height,
             is_collapsed=is_collapsed if is_collapsed is not None else placement.is_collapsed,
         )
-        self._placements.save(updated)
+        with self._unit_of_work_factory() as unit_of_work:
+            unit_of_work.placements.save_without_commit(updated)
+            record_activity_event(
+                unit_of_work,
+                workspace_id=canvas.workspace_id,
+                context=MutationContext.rest(),
+                entity_type="placement",
+                entity_id=updated.id,
+                action=MutationAction.UPDATED,
+                before_state=placement.model_dump(mode="json"),
+                after_state=updated.model_dump(mode="json"),
+            )
         return updated
 
 
@@ -384,11 +619,19 @@ class SchemaService:
     """
 
     def __init__(
-        self, workspaces: WorkspaceRepository, nodes: NodeRepository, edges: EdgeRepository
+        self,
+        workspaces: WorkspaceRepository,
+        nodes: NodeRepository,
+        edges: EdgeRepository,
+        unit_of_work_factory: Callable[[], ResearchUnitOfWork],
+        *,
+        search_index: SearchIndexRepository | None = None,
     ) -> None:
         self._workspaces = workspaces
         self._nodes = nodes
         self._edges = edges
+        self._unit_of_work_factory = unit_of_work_factory
+        self._search_index = search_index
 
     def _require_workspace(self, workspace_id: WorkspaceId) -> Workspace:
         workspace = self._workspaces.get(workspace_id)
@@ -408,17 +651,27 @@ class SchemaService:
             raise EdgeTypeNotFoundError(f"workspace {workspace.id} has no edge type {edge_type_id}")
         return edge_type
 
-    def _replace_node_type(self, workspace: Workspace, updated_node_type: NodeType) -> NodeType:
-        for node in self._nodes.list_by_workspace(workspace.id, include_archived=True):
-            if node.node_type_id != updated_node_type.id:
-                continue
+    def _replace_node_type_within(
+        self,
+        unit_of_work: ResearchUnitOfWork,
+        workspace: Workspace,
+        updated_node_type: NodeType,
+    ) -> list[Node]:
+        """Validate and save the schema change into `unit_of_work`; returns the affected
+        nodes so the caller can reindex them once the transaction has committed."""
+        affected_nodes = [
+            node
+            for node in unit_of_work.nodes.list_by_workspace(workspace.id, include_archived=True)
+            if node.node_type_id == updated_node_type.id
+        ]
+        for node in affected_nodes:
             try:
                 node.validate_against(updated_node_type)
                 # Reuses the same repository-backed check `NodeService` runs on every direct
                 # write, so converting a field to `object_reference` (or narrowing one that
                 # already is) can't silently persist a value that no longer names a real,
                 # same-workspace node — the schema-edit path was the one place this was missing.
-                _validate_object_references(self._nodes, node, updated_node_type)
+                _validate_object_references(unit_of_work.nodes, node, updated_node_type)
             except DomainError as error:
                 raise SchemaEditConflictError(
                     f"cannot apply schema change: node '{node.title}' ({node.id}) "
@@ -435,10 +688,27 @@ class SchemaService:
             node_types=(*remaining_node_types, updated_node_type),
             edge_types=workspace.edge_types,
         )
-        self._workspaces.save(updated_workspace)
-        return updated_node_type
+        unit_of_work.workspaces.save_without_commit(updated_workspace)
+        return affected_nodes
 
-    def _replace_edge_type(self, workspace: Workspace, updated_edge_type: EdgeType) -> EdgeType:
+    def _reindex_affected_nodes(self, affected_nodes: list[Node], node_type: NodeType) -> None:
+        # A field's type moving into/out of `FieldType.TEXT` (or a TEXT field being removed)
+        # changes what every existing node of this type should contribute to search — reindex
+        # them against the now-canonical schema, after the transaction commits, so search
+        # stays immediately consistent instead of only catching up on the next node write.
+        if self._search_index is None:
+            return
+        for node in affected_nodes:
+            self._search_index.index_document(
+                workspace_id=node.workspace_id,
+                entity_type=SearchEntityType.NODE,
+                entity_id=node.id,
+                text=build_node_search_text(node, node_type),
+            )
+
+    def _replace_edge_type_within(
+        self, unit_of_work: ResearchUnitOfWork, workspace: Workspace, updated_edge_type: EdgeType
+    ) -> None:
         remaining_edge_types = tuple(
             et for et in workspace.edge_types if et.id != updated_edge_type.id
         )
@@ -449,10 +719,30 @@ class SchemaService:
             node_types=workspace.node_types,
             edge_types=(*remaining_edge_types, updated_edge_type),
         )
-        self._workspaces.save(updated_workspace)
-        return updated_edge_type
+        unit_of_work.workspaces.save_without_commit(updated_workspace)
 
     # --- Node types -------------------------------------------------------------------
+
+    def _record_node_type_event(
+        self,
+        unit_of_work: ResearchUnitOfWork,
+        *,
+        workspace_id: WorkspaceId,
+        node_type_id: NodeTypeId,
+        action: MutationAction,
+        before: NodeType | None,
+        after: NodeType | None,
+    ) -> None:
+        record_activity_event(
+            unit_of_work,
+            workspace_id=workspace_id,
+            context=MutationContext.rest(),
+            entity_type="node_type",
+            entity_id=node_type_id,
+            action=action,
+            before_state=before.model_dump(mode="json") if before is not None else None,
+            after_state=after.model_dump(mode="json") if after is not None else None,
+        )
 
     def create_node_type(
         self,
@@ -471,7 +761,16 @@ class SchemaService:
             node_types=(*workspace.node_types, node_type),
             edge_types=workspace.edge_types,
         )
-        self._workspaces.save(updated_workspace)
+        with self._unit_of_work_factory() as unit_of_work:
+            unit_of_work.workspaces.save_without_commit(updated_workspace)
+            self._record_node_type_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                node_type_id=node_type.id,
+                action=MutationAction.CREATED,
+                before=None,
+                after=node_type,
+            )
         return node_type
 
     def update_node_type(
@@ -497,7 +796,18 @@ class SchemaService:
             # through this API while every other schema-edit field stays editable.
             system_key=node_type.system_key,
         )
-        return self._replace_node_type(workspace, updated)
+        with self._unit_of_work_factory() as unit_of_work:
+            affected_nodes = self._replace_node_type_within(unit_of_work, workspace, updated)
+            self._record_node_type_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                node_type_id=node_type.id,
+                action=MutationAction.UPDATED,
+                before=node_type,
+                after=updated,
+            )
+        self._reindex_affected_nodes(affected_nodes, updated)
+        return updated
 
     # --- Field definitions ------------------------------------------------------------
 
@@ -530,7 +840,20 @@ class SchemaService:
             status_definitions=node_type.status_definitions,
             system_key=node_type.system_key,
         )
-        self._replace_node_type(workspace, updated_node_type)
+        with self._unit_of_work_factory() as unit_of_work:
+            affected_nodes = self._replace_node_type_within(
+                unit_of_work, workspace, updated_node_type
+            )
+            record_activity_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                context=MutationContext.rest(),
+                entity_type="field_definition",
+                entity_id=field_definition.id,
+                action=MutationAction.CREATED,
+                after_state=field_definition.model_dump(mode="json"),
+            )
+        self._reindex_affected_nodes(affected_nodes, updated_node_type)
         return field_definition
 
     def update_field_definition(
@@ -577,7 +900,21 @@ class SchemaService:
             status_definitions=node_type.status_definitions,
             system_key=node_type.system_key,
         )
-        self._replace_node_type(workspace, updated_node_type)
+        with self._unit_of_work_factory() as unit_of_work:
+            affected_nodes = self._replace_node_type_within(
+                unit_of_work, workspace, updated_node_type
+            )
+            record_activity_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                context=MutationContext.rest(),
+                entity_type="field_definition",
+                entity_id=updated_field.id,
+                action=MutationAction.UPDATED,
+                before_state=existing.model_dump(mode="json"),
+                after_state=updated_field.model_dump(mode="json"),
+            )
+        self._reindex_affected_nodes(affected_nodes, updated_node_type)
         return updated_field
 
     def remove_field_definition(
@@ -588,7 +925,8 @@ class SchemaService:
     ) -> None:
         workspace = self._require_workspace(workspace_id)
         node_type = self._require_node_type(workspace, node_type_id)
-        if node_type.field_by_id(field_definition_id) is None:
+        existing = node_type.field_by_id(field_definition_id)
+        if existing is None:
             raise FieldDefinitionNotFoundError(
                 f"node type '{node_type.name}' has no field {field_definition_id}"
             )
@@ -603,7 +941,20 @@ class SchemaService:
             status_definitions=node_type.status_definitions,
             system_key=node_type.system_key,
         )
-        self._replace_node_type(workspace, updated_node_type)
+        with self._unit_of_work_factory() as unit_of_work:
+            affected_nodes = self._replace_node_type_within(
+                unit_of_work, workspace, updated_node_type
+            )
+            record_activity_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                context=MutationContext.rest(),
+                entity_type="field_definition",
+                entity_id=field_definition_id,
+                action=MutationAction.DELETED,
+                before_state=existing.model_dump(mode="json"),
+            )
+        self._reindex_affected_nodes(affected_nodes, updated_node_type)
 
     # --- Status definitions ------------------------------------------------------------
 
@@ -631,7 +982,20 @@ class SchemaService:
             status_definitions=(*node_type.status_definitions, status_definition),
             system_key=node_type.system_key,
         )
-        self._replace_node_type(workspace, updated_node_type)
+        with self._unit_of_work_factory() as unit_of_work:
+            affected_nodes = self._replace_node_type_within(
+                unit_of_work, workspace, updated_node_type
+            )
+            record_activity_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                context=MutationContext.rest(),
+                entity_type="status_definition",
+                entity_id=status_definition.id,
+                action=MutationAction.CREATED,
+                after_state=status_definition.model_dump(mode="json"),
+            )
+        self._reindex_affected_nodes(affected_nodes, updated_node_type)
         return status_definition
 
     def update_status_definition(
@@ -669,7 +1033,21 @@ class SchemaService:
             status_definitions=(*remaining, updated_status),
             system_key=node_type.system_key,
         )
-        self._replace_node_type(workspace, updated_node_type)
+        with self._unit_of_work_factory() as unit_of_work:
+            affected_nodes = self._replace_node_type_within(
+                unit_of_work, workspace, updated_node_type
+            )
+            record_activity_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                context=MutationContext.rest(),
+                entity_type="status_definition",
+                entity_id=updated_status.id,
+                action=MutationAction.UPDATED,
+                before_state=existing.model_dump(mode="json"),
+                after_state=updated_status.model_dump(mode="json"),
+            )
+        self._reindex_affected_nodes(affected_nodes, updated_node_type)
         return updated_status
 
     def remove_status_definition(
@@ -680,7 +1058,8 @@ class SchemaService:
     ) -> None:
         workspace = self._require_workspace(workspace_id)
         node_type = self._require_node_type(workspace, node_type_id)
-        if node_type.status_by_id(status_definition_id) is None:
+        existing = node_type.status_by_id(status_definition_id)
+        if existing is None:
             raise StatusDefinitionNotFoundError(
                 f"node type '{node_type.name}' has no status {status_definition_id}"
             )
@@ -695,7 +1074,20 @@ class SchemaService:
             ),
             system_key=node_type.system_key,
         )
-        self._replace_node_type(workspace, updated_node_type)
+        with self._unit_of_work_factory() as unit_of_work:
+            affected_nodes = self._replace_node_type_within(
+                unit_of_work, workspace, updated_node_type
+            )
+            record_activity_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                context=MutationContext.rest(),
+                entity_type="status_definition",
+                entity_id=status_definition_id,
+                action=MutationAction.DELETED,
+                before_state=existing.model_dump(mode="json"),
+            )
+        self._reindex_affected_nodes(affected_nodes, updated_node_type)
 
     # --- Edge types ---------------------------------------------------------------------
 
@@ -716,7 +1108,17 @@ class SchemaService:
             node_types=workspace.node_types,
             edge_types=(*workspace.edge_types, edge_type),
         )
-        self._workspaces.save(updated_workspace)
+        with self._unit_of_work_factory() as unit_of_work:
+            unit_of_work.workspaces.save_without_commit(updated_workspace)
+            record_activity_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                context=MutationContext.rest(),
+                entity_type="edge_type",
+                entity_id=edge_type.id,
+                action=MutationAction.CREATED,
+                after_state=edge_type.model_dump(mode="json"),
+            )
         return edge_type
 
     def update_edge_type(
@@ -742,11 +1144,23 @@ class SchemaService:
             color_hex=color_hex if color_hex is not None else edge_type.color_hex,
             system_key=edge_type.system_key,
         )
-        return self._replace_edge_type(workspace, updated)
+        with self._unit_of_work_factory() as unit_of_work:
+            self._replace_edge_type_within(unit_of_work, workspace, updated)
+            record_activity_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                context=MutationContext.rest(),
+                entity_type="edge_type",
+                entity_id=updated.id,
+                action=MutationAction.UPDATED,
+                before_state=edge_type.model_dump(mode="json"),
+                after_state=updated.model_dump(mode="json"),
+            )
+        return updated
 
     def remove_edge_type(self, workspace_id: WorkspaceId, edge_type_id: EdgeTypeId) -> None:
         workspace = self._require_workspace(workspace_id)
-        self._require_edge_type(workspace, edge_type_id)
+        edge_type = self._require_edge_type(workspace, edge_type_id)
         for edge in self._edges.list_by_workspace(workspace_id):
             if edge.edge_type_id == edge_type_id:
                 raise SchemaEditConflictError(
@@ -760,7 +1174,17 @@ class SchemaService:
             node_types=workspace.node_types,
             edge_types=remaining_edge_types,
         )
-        self._workspaces.save(updated_workspace)
+        with self._unit_of_work_factory() as unit_of_work:
+            unit_of_work.workspaces.save_without_commit(updated_workspace)
+            record_activity_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                context=MutationContext.rest(),
+                entity_type="edge_type",
+                entity_id=edge_type_id,
+                action=MutationAction.DELETED,
+                before_state=edge_type.model_dump(mode="json"),
+            )
 
 
 def new_workspace(name: str) -> Workspace:
@@ -837,38 +1261,133 @@ class ResourceService:
         workspace = self._require_workspace(workspace_id)
         node_type = self._require_resource_node_type(workspace)
         identity = canonicalize_resource_identity(raw_source)
+        enriched: Resource | None = None
+        with self._unit_of_work_factory() as unit_of_work:
+            resource, was_created, node = self._write_resource(
+                unit_of_work, workspace, node_type, title, identity, kind=kind, body=body
+            )
+            if was_created:
+                record_activity_event(
+                    unit_of_work,
+                    workspace_id=workspace_id,
+                    context=MutationContext.rest(),
+                    entity_type="resource",
+                    entity_id=resource.id,
+                    action=MutationAction.CREATED,
+                    after_state=resource.model_dump(mode="json"),
+                )
+            else:
+                # Enrichment is a real mutation (it can set a previously-empty `source_url`),
+                # so -- unlike a pure reuse no-op -- it commits atomically with exactly one
+                # `ActivityEvent`, inside the same unit of work as the reuse lookup (ST07-F08).
+                enriched = self._enrich_source_url_within(
+                    unit_of_work, resource, identity.normalized_source_url
+                )
+                if enriched is not None:
+                    record_activity_event(
+                        unit_of_work,
+                        workspace_id=workspace_id,
+                        context=MutationContext.rest(),
+                        entity_type="resource",
+                        entity_id=resource.id,
+                        action=MutationAction.UPDATED,
+                        before_state=resource.model_dump(mode="json"),
+                        after_state=enriched.model_dump(mode="json"),
+                    )
+        if was_created:
+            assert node is not None
+            self.index_created_resource(resource, node)
+            return resource, True
 
+        if enriched is not None:
+            self.index_updated_resource(enriched)
+            return enriched, False
+        return resource, False
+
+    def create_or_reuse_within(
+        self,
+        unit_of_work: ResearchUnitOfWork,
+        workspace_id: WorkspaceId,
+        title: str,
+        raw_source: str,
+        *,
+        kind: ResourceKind | None = None,
+        body: str = "",
+    ) -> tuple[Resource, bool, Node | None]:
+        """Same write path as `create_or_reuse`, but into a caller-managed, already-open
+        `unit_of_work` (typically inside a caller-managed `savepoint()`) instead of opening its
+        own transaction. Used by `DiscoveryService` so a batch import's per-candidate writes
+        live inside one nested savepoint rather than each candidate committing independently.
+
+        Returns `(resource, was_created, node)`; `node` is `None` on reuse. Callers must index
+        the result themselves via `index_created_resource` only after their own transaction has
+        actually committed — indexing here would commit the caller's transaction early (see
+        `index_created_resource`). Does not enrich an existing resource's `source_url` on reuse;
+        that stays `create_or_reuse`'s job only, to keep this path's side effects minimal.
+        """
+        workspace = self._require_workspace(workspace_id)
+        node_type = self._require_resource_node_type(workspace)
+        identity = canonicalize_resource_identity(raw_source)
+        return self._write_resource(
+            unit_of_work, workspace, node_type, title, identity, kind=kind, body=body
+        )
+
+    def index_created_resource(self, resource: Resource, node: Node) -> None:
+        """Index a `(resource, node)` pair created via `create_or_reuse_within`.
+
+        Call only after the unit of work that wrote them has committed: `SqliteSearchIndexRepository
+        .index_document` commits its own connection, which would end a still-open caller
+        transaction early if called beforehand.
+        """
+        workspace = self._require_workspace(resource.workspace_id)
+        node_type = self._require_resource_node_type(workspace)
+        _index_node_text(self._search_index, node, node_type)
+        self._index_resource_text(resource)
+
+    def _write_resource(
+        self,
+        unit_of_work: ResearchUnitOfWork,
+        workspace: Workspace,
+        node_type: NodeType,
+        title: str,
+        identity: ResourceIdentity,
+        *,
+        kind: ResourceKind | None,
+        body: str,
+    ) -> tuple[Resource, bool, Node | None]:
         existing = self._resources.get_by_canonical_identifier(
-            workspace_id, identity.canonical_identifier
+            workspace.id, identity.canonical_identifier
         )
         if existing is not None:
-            return self._maybe_enrich_source_url(existing, identity.normalized_source_url), False
+            return existing, False, None
 
         resolved_kind = identity.detected_kind or kind or ResourceKind.OTHER
-        node = Node(workspace_id=workspace_id, node_type_id=node_type.id, title=title, body=body)
+        node = Node(workspace_id=workspace.id, node_type_id=node_type.id, title=title, body=body)
         node.validate_against(node_type)
         resource = Resource(
-            workspace_id=workspace_id,
+            workspace_id=workspace.id,
             node_id=node.id,
             kind=resolved_kind,
             canonical_identifier=identity.canonical_identifier,
             source_url=identity.normalized_source_url,
         )
-        with self._unit_of_work_factory() as unit_of_work:
-            unit_of_work.nodes.save_without_commit(node)
-            unit_of_work.resources.save_without_commit(resource)
-        _index_node_text(self._search_index, node)
-        self._index_resource_text(resource)
-        return resource, True
+        unit_of_work.nodes.save_without_commit(node)
+        unit_of_work.resources.save_without_commit(resource)
+        return resource, True, node
 
-    def _maybe_enrich_source_url(
-        self, existing: Resource, normalized_source_url: str | None
-    ) -> Resource:
+    def _enrich_source_url_within(
+        self,
+        unit_of_work: ResearchUnitOfWork,
+        existing: Resource,
+        normalized_source_url: str | None,
+    ) -> Resource | None:
+        """Set a previously-empty `source_url` on a reused resource, atomically with the
+        caller's `ActivityEvent` write (ST07-F08). Returns `None` when there is nothing to
+        enrich, so the caller can skip recording an event for a genuine no-op reuse."""
         if existing.source_url is not None or normalized_source_url is None:
-            return existing
+            return None
         enriched = existing.model_copy(update={"source_url": normalized_source_url})
-        self._resources.save(enriched)
-        self._index_resource_text(enriched)
+        unit_of_work.resources.save_without_commit(enriched)
         return enriched
 
     def get(self, resource_id: ResourceId) -> Resource:
@@ -887,13 +1406,115 @@ class ResourceService:
         next_action_dismissed: bool | None = None,
         open_questions: tuple[str, ...] | None = None,
         takeaways: tuple[str, ...] | None = None,
+        progress_percent: int | None = None,
+        clear_progress_percent: bool = False,
         review_at: datetime | None = None,
         clear_review_at: bool = False,
     ) -> Resource:
         """Update lifecycle/progress fields. `last_activity_at` advances only when the
         resulting state actually differs from the current one — a no-op call is not a
-        "meaningful update" and leaves the resource, including its timestamp, untouched."""
-        existing = self._require_resource(resource_id)
+        "meaningful update", leaves the resource, including its timestamp, untouched, and
+        never invents an `ActivityEvent` (ST-07.2, decision #6/#8 `WORK.md`)."""
+        existing = self._resources.get(resource_id)
+        if existing is None:
+            raise ResourceNotFoundError(f"resource {resource_id} does not exist")
+        updated = self._build_updated_resource(
+            self._resources,
+            resource_id,
+            lifecycle_status=lifecycle_status,
+            next_action=next_action,
+            clear_next_action=clear_next_action,
+            next_action_dismissed=next_action_dismissed,
+            open_questions=open_questions,
+            takeaways=takeaways,
+            progress_percent=progress_percent,
+            clear_progress_percent=clear_progress_percent,
+            review_at=review_at,
+            clear_review_at=clear_review_at,
+        )
+        was_modified = updated != existing
+        if was_modified:
+            with self._unit_of_work_factory() as unit_of_work:
+                unit_of_work.resources.save_without_commit(updated)
+                record_activity_event(
+                    unit_of_work,
+                    workspace_id=updated.workspace_id,
+                    context=MutationContext.rest(),
+                    entity_type="resource",
+                    entity_id=updated.id,
+                    action=MutationAction.UPDATED,
+                    before_state=existing.model_dump(mode="json"),
+                    after_state=updated.model_dump(mode="json"),
+                )
+            self._index_resource_text(updated)
+        return updated
+
+    def update_within(
+        self,
+        unit_of_work: ResearchUnitOfWork,
+        resource_id: ResourceId,
+        *,
+        lifecycle_status: ResourceLifecycleStatus | None = None,
+        next_action: str | None = None,
+        clear_next_action: bool = False,
+        next_action_dismissed: bool | None = None,
+        open_questions: tuple[str, ...] | None = None,
+        takeaways: tuple[str, ...] | None = None,
+        progress_percent: int | None = None,
+        clear_progress_percent: bool = False,
+        review_at: datetime | None = None,
+        clear_review_at: bool = False,
+    ) -> tuple[Resource, bool]:
+        """Same validation/write as `update`, into a caller-managed, already-open
+        `unit_of_work`. Returns `(resource, was_modified)`: a no-op call skips the write
+        entirely, so a caller recording an `ActivityEvent` for this mutation can skip that too
+        rather than inventing one for a call that changed nothing. Index the result with
+        `index_updated_resource` after commit, only when `was_modified` is true."""
+        existing = unit_of_work.resources.get(resource_id)
+        if existing is None:
+            raise ResourceNotFoundError(f"resource {resource_id} does not exist")
+        updated = self._build_updated_resource(
+            unit_of_work.resources,
+            resource_id,
+            lifecycle_status=lifecycle_status,
+            next_action=next_action,
+            clear_next_action=clear_next_action,
+            next_action_dismissed=next_action_dismissed,
+            open_questions=open_questions,
+            takeaways=takeaways,
+            progress_percent=progress_percent,
+            clear_progress_percent=clear_progress_percent,
+            review_at=review_at,
+            clear_review_at=clear_review_at,
+        )
+        was_modified = updated != existing
+        if was_modified:
+            unit_of_work.resources.save_without_commit(updated)
+        return updated, was_modified
+
+    def index_updated_resource(self, resource: Resource) -> None:
+        """Index `resource` after a `*_within` write's transaction has committed."""
+        self._index_resource_text(resource)
+
+    def _build_updated_resource(
+        self,
+        resources: ResourceRepository,
+        resource_id: ResourceId,
+        *,
+        lifecycle_status: ResourceLifecycleStatus | None,
+        next_action: str | None,
+        clear_next_action: bool,
+        next_action_dismissed: bool | None,
+        open_questions: tuple[str, ...] | None,
+        takeaways: tuple[str, ...] | None,
+        progress_percent: int | None,
+        clear_progress_percent: bool,
+        review_at: datetime | None,
+        clear_review_at: bool,
+    ) -> Resource:
+        existing = resources.get(resource_id)
+        if existing is None:
+            raise ResourceNotFoundError(f"resource {resource_id} does not exist")
         candidate = Resource(
             id=existing.id,
             workspace_id=existing.workspace_id,
@@ -918,6 +1539,13 @@ class ResourceService:
                 open_questions if open_questions is not None else existing.open_questions
             ),
             takeaways=takeaways if takeaways is not None else existing.takeaways,
+            progress_percent=(
+                None
+                if clear_progress_percent
+                else (
+                    progress_percent if progress_percent is not None else existing.progress_percent
+                )
+            ),
             review_at=(
                 None
                 if clear_review_at
@@ -927,14 +1555,27 @@ class ResourceService:
         )
         if candidate == existing:
             return existing
-
-        updated = candidate.model_copy(update={"last_activity_at": datetime.now(UTC)})
-        self._resources.save(updated)
-        self._index_resource_text(updated)
-        return updated
+        return candidate.model_copy(update={"last_activity_at": datetime.now(UTC)})
 
     def archive(self, resource_id: ResourceId) -> Resource:
         return self.update(resource_id, lifecycle_status=ResourceLifecycleStatus.ARCHIVED)
+
+    def archive_within(
+        self, unit_of_work: ResearchUnitOfWork, resource_id: ResourceId
+    ) -> tuple[Resource, bool]:
+        """Same write as `archive`, into a caller-managed, already-open `unit_of_work`."""
+        return self.update_within(
+            unit_of_work, resource_id, lifecycle_status=ResourceLifecycleStatus.ARCHIVED
+        )
+
+    def restore_within(self, unit_of_work: ResearchUnitOfWork, target: Resource) -> Resource:
+        """Write back an exact historical `Resource` state (used only by undo's compensating
+        restore, ST07-F04), after confirming the workspace still carries a resource-role node
+        type -- the schema-changed-since-event conflict this aggregate can actually have."""
+        workspace = self._require_workspace(target.workspace_id)
+        self._require_resource_node_type(workspace)
+        unit_of_work.resources.save_without_commit(target)
+        return target
 
 
 class SavedViewService:
@@ -947,9 +1588,15 @@ class SavedViewService:
     between that typed shape and the persisted JSON columns (see `domain/views.py`).
     """
 
-    def __init__(self, workspaces: WorkspaceRepository, saved_views: SavedViewRepository) -> None:
+    def __init__(
+        self,
+        workspaces: WorkspaceRepository,
+        saved_views: SavedViewRepository,
+        unit_of_work_factory: Callable[[], ResearchUnitOfWork],
+    ) -> None:
         self._workspaces = workspaces
         self._saved_views = saved_views
+        self._unit_of_work_factory = unit_of_work_factory
 
     def _require_workspace(self, workspace_id: WorkspaceId) -> Workspace:
         workspace = self._workspaces.get(workspace_id)
@@ -979,7 +1626,17 @@ class SavedViewService:
             filter_definition=filter_definition,
             sort_definition=sort_definition,
         )
-        self._saved_views.save(saved_view)
+        with self._unit_of_work_factory() as unit_of_work:
+            unit_of_work.saved_views.save_without_commit(saved_view)
+            record_activity_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                context=MutationContext.rest(),
+                entity_type="saved_view",
+                entity_id=saved_view.id,
+                action=MutationAction.CREATED,
+                after_state=saved_view.model_dump(mode="json"),
+            )
         return saved_view
 
     def update(
@@ -1006,7 +1663,18 @@ class SavedViewService:
             sort_definition=sort_definition,
             created_at=existing.created_at,
         )
-        self._saved_views.save(updated)
+        with self._unit_of_work_factory() as unit_of_work:
+            unit_of_work.saved_views.save_without_commit(updated)
+            record_activity_event(
+                unit_of_work,
+                workspace_id=existing.workspace_id,
+                context=MutationContext.rest(),
+                entity_type="saved_view",
+                entity_id=updated.id,
+                action=MutationAction.UPDATED,
+                before_state=existing.model_dump(mode="json"),
+                after_state=updated.model_dump(mode="json"),
+            )
         return updated
 
     def get(self, saved_view_id: SavedViewId) -> SavedView:
@@ -1016,18 +1684,32 @@ class SavedViewService:
         return self._saved_views.list_by_workspace(workspace_id)
 
     def delete(self, saved_view_id: SavedViewId) -> None:
-        self._require_saved_view(saved_view_id)
-        self._saved_views.delete(saved_view_id)
+        existing = self._require_saved_view(saved_view_id)
+        with self._unit_of_work_factory() as unit_of_work:
+            unit_of_work.saved_views.delete_without_commit(saved_view_id)
+            record_activity_event(
+                unit_of_work,
+                workspace_id=existing.workspace_id,
+                context=MutationContext.rest(),
+                entity_type="saved_view",
+                entity_id=saved_view_id,
+                action=MutationAction.DELETED,
+                before_state=existing.model_dump(mode="json"),
+            )
 
 
 class ResearchSettingsService:
     """The only path through which per-workspace research resurfacing settings are read/set."""
 
     def __init__(
-        self, workspaces: WorkspaceRepository, research_settings: ResearchSettingsRepository
+        self,
+        workspaces: WorkspaceRepository,
+        research_settings: ResearchSettingsRepository,
+        unit_of_work_factory: Callable[[], ResearchUnitOfWork],
     ) -> None:
         self._workspaces = workspaces
         self._research_settings = research_settings
+        self._unit_of_work_factory = unit_of_work_factory
 
     def _require_workspace(self, workspace_id: WorkspaceId) -> Workspace:
         workspace = self._workspaces.get(workspace_id)
@@ -1043,8 +1725,20 @@ class ResearchSettingsService:
         self, workspace_id: WorkspaceId, *, stale_after_days: int
     ) -> WorkspaceResearchSettings:
         self._require_workspace(workspace_id)
+        existing = self._research_settings.get(workspace_id)
         settings = WorkspaceResearchSettings(
             workspace_id=workspace_id, stale_after_days=stale_after_days
         )
-        self._research_settings.save(settings)
+        with self._unit_of_work_factory() as unit_of_work:
+            unit_of_work.research_settings.save_without_commit(settings)
+            record_activity_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                context=MutationContext.rest(),
+                entity_type="research_settings",
+                entity_id=workspace_id,
+                action=MutationAction.CREATED if existing is None else MutationAction.UPDATED,
+                before_state=existing.model_dump(mode="json") if existing is not None else None,
+                after_state=settings.model_dump(mode="json"),
+            )
         return settings

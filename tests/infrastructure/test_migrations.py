@@ -30,6 +30,8 @@ _EXPECTED_TABLES = {
     "resources",
     "workspace_research_settings",
     "search_documents",
+    "pending_file_operations",
+    "idempotency_receipts",
 }
 
 
@@ -41,7 +43,15 @@ def test_run_migrations_creates_every_domain_table() -> None:
     assert _EXPECTED_TABLES.issubset(table_names)
 
 
-_ALL_MIGRATION_NAMES = ("0001_initial_schema.sql", "0002_research_library.sql")
+_ALL_MIGRATION_NAMES = (
+    "0001_initial_schema.sql",
+    "0002_research_library.sql",
+    "0003_resource_progress.sql",
+    "0004_pending_file_operations.sql",
+    "0005_activity_event_request_id.sql",
+    "0006_idempotency_receipts.sql",
+    "0007_activity_event_reversal.sql",
+)
 
 
 def test_run_migrations_is_idempotent() -> None:
@@ -84,7 +94,14 @@ def test_upgrading_an_existing_0001_database_preserves_ids_and_data() -> None:
     connection.commit()
 
     newly_applied = run_migrations(connection)
-    assert newly_applied == ("0002_research_library.sql",)
+    assert newly_applied == (
+        "0002_research_library.sql",
+        "0003_resource_progress.sql",
+        "0004_pending_file_operations.sql",
+        "0005_activity_event_request_id.sql",
+        "0006_idempotency_receipts.sql",
+        "0007_activity_event_reversal.sql",
+    )
 
     resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()
     assert resource_row["node_id"] == "node-1"
@@ -92,6 +109,71 @@ def test_upgrading_an_existing_0001_database_preserves_ids_and_data() -> None:
     assert resource_row["next_action_dismissed"] == 0
     node_type_row = connection.execute("SELECT * FROM node_types WHERE id = 'nt-1'").fetchone()
     assert node_type_row["system_key"] is None
+    assert resource_row["progress_percent"] is None
+
+
+def test_0003_adds_a_nullable_progress_percent_column(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    """ST04-F01: `resources.progress_percent` round-trips through a raw update, independent
+    of the domain layer, proving the column itself is correctly additive/nullable."""
+    connection = sqlite_connection
+    connection.execute(
+        "INSERT INTO workspaces (id, name, created_at) VALUES ('ws-1', 'Personal', 't0')"
+    )
+    connection.execute(
+        "INSERT INTO node_types (id, workspace_id, name) VALUES ('nt-1', 'ws-1', 'Resource')"
+    )
+    connection.execute(
+        "INSERT INTO nodes "
+        "(id, workspace_id, node_type_id, title, created_at, updated_at) "
+        "VALUES ('node-1', 'ws-1', 'nt-1', 'A paper', 't0', 't0')"
+    )
+    connection.execute(
+        "INSERT INTO resources "
+        "(id, workspace_id, node_id, kind, canonical_identifier, last_activity_at) "
+        "VALUES ('res-1', 'ws-1', 'node-1', 'paper', 'arxiv:1', 't0')"
+    )
+    connection.commit()
+
+    row = connection.execute("SELECT progress_percent FROM resources WHERE id = 'res-1'").fetchone()
+    assert row["progress_percent"] is None
+
+    connection.execute("UPDATE resources SET progress_percent = 42 WHERE id = 'res-1'")
+    connection.commit()
+    row = connection.execute("SELECT progress_percent FROM resources WHERE id = 'res-1'").fetchone()
+    assert row["progress_percent"] == 42
+
+
+def test_0007_reverses_event_id_is_nullable_and_at_most_one_per_reversed_event(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    """ST-07.1: existing events keep `reverses_event_id = NULL`, and the unique partial index
+    rejects a second compensating event pointing at the same reversed event."""
+    connection = sqlite_connection
+    connection.execute(
+        "INSERT INTO workspaces (id, name, created_at) VALUES ('ws-1', 'Personal', 't0')"
+    )
+    connection.executemany(
+        "INSERT INTO activity_events "
+        "(id, workspace_id, actor_kind, actor_name, source, entity_type, entity_id, action, "
+        " occurred_at) VALUES (?, 'ws-1', 'human', 'me', 'rest', 'node', 'node-1', 'updated', ?)",
+        [("evt-1", "t0"), ("evt-2", "t1"), ("evt-3", "t2")],
+    )
+    connection.commit()
+
+    row = connection.execute(
+        "SELECT reverses_event_id FROM activity_events WHERE id = 'evt-1'"
+    ).fetchone()
+    assert row["reverses_event_id"] is None
+
+    connection.execute("UPDATE activity_events SET reverses_event_id = 'evt-1' WHERE id = 'evt-2'")
+    connection.commit()
+
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            "UPDATE activity_events SET reverses_event_id = 'evt-1' WHERE id = 'evt-3'"
+        )
 
 
 def test_apply_migration_script_is_atomic_and_a_corrected_retry_succeeds() -> None:

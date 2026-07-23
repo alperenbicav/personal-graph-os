@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useModalDialog } from '../lib/useModalDialog'
 import type { EdgeType } from '../types'
 
 export interface PendingConnection {
@@ -18,9 +19,17 @@ interface ConnectEdgeModalProps {
 export function ConnectEdgeModal({ pending, edgeTypes, onConfirm, onCancel }: ConnectEdgeModalProps) {
   const [edgeTypeId, setEdgeTypeId] = useState(edgeTypes[0]?.id ?? '')
   const activeEdgeTypeId = edgeTypeId || edgeTypes[0]?.id || ''
+  const dialogRef = useModalDialog<HTMLDivElement>(onCancel)
 
   return (
-    <div className="connect-modal-backdrop" role="dialog" aria-label="Connect two objects">
+    <div
+      className="connect-modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Connect two objects"
+      ref={dialogRef}
+      tabIndex={-1}
+    >
       <div className="connect-modal">
         <p className="connect-modal-summary">
           <strong>{pending.sourceTitle}</strong>

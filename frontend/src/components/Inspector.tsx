@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { FieldDefinition, GraphNode, NodeType, StatusDefinition } from '../types'
+import { FilesPanel } from './FilesPanel'
 
 export interface RelationRow {
   edgeTypeName: string
@@ -126,7 +127,9 @@ function FieldControl({ field, value, referenceableNodes, onCommit }: FieldContr
           ))}
         </select>
         {isStale && (
-          <span className="field-error">This reference no longer exists — choose another</span>
+          <span className="field-error" role="alert">
+            This reference no longer exists — choose another
+          </span>
         )}
       </>
     )
@@ -174,7 +177,11 @@ function FieldControl({ field, value, referenceableNodes, onCommit }: FieldContr
         onChange={(event) => setDraft(event.target.value)}
         onBlur={handleBlur}
       />
-      {error && <span className="field-error">{error}</span>}
+      {error && (
+        <span className="field-error" role="alert">
+          {error}
+        </span>
+      )}
     </>
   )
 }
@@ -253,6 +260,10 @@ export function Inspector({
           />
         </div>
       ))}
+
+      <div className="divider" />
+
+      <FilesPanel nodeId={node.id} />
 
       <div className="divider" />
 

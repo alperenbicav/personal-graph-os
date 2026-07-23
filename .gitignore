@@ -12,3 +12,4 @@ workspace/
 *.db-wal
 *.db-shm
 .DS_Store
+.system-pilot-reports/

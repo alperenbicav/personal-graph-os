@@ -4,17 +4,27 @@ as a FastAPI app for the local frontend.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import anyio
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.routing import Route
+from starlette.staticfiles import StaticFiles
+from starlette.types import Scope
 
 from personal_graph_os.api.auth import TOKEN_FILE_NAME, get_or_create_api_token, require_api_token
 from personal_graph_os.api.routers import (
+    activity,
     canvases,
+    discovery,
     edges,
+    export,
+    files,
     nodes,
     placements,
     research,
@@ -26,10 +36,26 @@ from personal_graph_os.api.routers import (
     workflow_chain,
     workspace,
 )
+from personal_graph_os.application.activity_service import (
+    ActivityEventNotFoundError,
+    ActivityService,
+    InvalidActivityCursorError,
+)
 from personal_graph_os.application.bootstrap import (
     backfill_search_index,
     get_or_create_default_canvas,
     get_or_create_default_workspace,
+)
+from personal_graph_os.application.context_pack_service import ContextPackService
+from personal_graph_os.application.discovery import DiscoveryService
+from personal_graph_os.application.export_service import ExportService
+from personal_graph_os.application.file_service import (
+    AttachmentNotFoundError,
+    FileReferenceNotFoundError,
+    FileService,
+)
+from personal_graph_os.application.file_service import (
+    NodeNotFoundError as FileServiceNodeNotFoundError,
 )
 from personal_graph_os.application.projections import ProjectionService
 from personal_graph_os.application.research_dashboard import ResearchDashboardService
@@ -53,18 +79,34 @@ from personal_graph_os.application.services import (
     StatusDefinitionNotFoundError,
     WorkspaceNotFoundError,
 )
+from personal_graph_os.application.undo_service import UndoConflictError, UndoService
 from personal_graph_os.application.workflow_chain import (
     WorkflowChainService,
     WorkflowStepNodeTypeMissingError,
 )
-from personal_graph_os.domain.errors import DomainError
+from personal_graph_os.domain.errors import (
+    AttachmentContentCorruptedError,
+    AttachmentContentMissingError,
+    DomainError,
+    UploadTooLargeError,
+)
+from personal_graph_os.infrastructure.local_file_store import LocalManagedFileStore
+from personal_graph_os.infrastructure.mcp.auth import with_bearer_token
+from personal_graph_os.infrastructure.mcp.gateway import AgentGatewayService
+from personal_graph_os.infrastructure.mcp.server import create_mcp_asgi_app
 from personal_graph_os.infrastructure.sqlite.connection import open_connection
 from personal_graph_os.infrastructure.sqlite.migrations.runner import run_migrations
 from personal_graph_os.infrastructure.sqlite.repositories import (
+    SqliteActivityEventRepository,
+    SqliteAttachmentRepository,
     SqliteCanvasPlacementRepository,
     SqliteCanvasRepository,
+    SqliteContextPackRepository,
+    SqliteDiscoveryRunRepository,
     SqliteEdgeRepository,
+    SqliteFileReferenceRepository,
     SqliteNodeRepository,
+    SqlitePendingFileOperationRepository,
     SqliteResearchSettingsRepository,
     SqliteResourceRepository,
     SqliteSavedViewRepository,
@@ -77,29 +119,64 @@ from personal_graph_os.infrastructure.sqlite.research_unit_of_work import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DATABASE_PATH = _REPO_ROOT / "workspace" / "graph.db"
+MANAGED_FILES_DIR_NAME = "managed-files"
+EXPORT_TEMP_DIR_NAME = ".export-tmp"
 
-_DEV_FRONTEND_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+DEFAULT_TRUSTED_HOSTS = ["127.0.0.1", "localhost"]
+DEFAULT_STATIC_DIR = _REPO_ROOT / "frontend" / "dist"
+DEV_FRONTEND_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+STATIC_MOUNT_PATH = "/app"
+_STATIC_ASSET_PREFIX = "assets/"
+
+
+class _AppStaticFiles(StaticFiles):
+    """Serves the built frontend under `STATIC_MOUNT_PATH`. Hashed files under `assets/`
+    are safe to cache forever; the HTML shell, manifest, and generated service worker must
+    always revalidate so a browser can never keep serving a stale entrypoint after a new
+    build lands (08.2's update-prompt flow depends on this).
+    """
+
+    async def get_response(self, path: str, scope: Scope):
+        response = await super().get_response(path, scope)
+        if response.status_code < 400:
+            if path.startswith(_STATIC_ASSET_PREFIX):
+                response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            else:
+                response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 def create_app(
     database_path: Path | str = DEFAULT_DATABASE_PATH,
     *,
     api_token: str | None = None,
+    trusted_hosts: list[str] | None = None,
+    cors_origins: list[str] | None = None,
+    static_dir: Path | str | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Personal Graph OS API")
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=_DEV_FRONTEND_ORIGINS,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # Both default to permissive/absent so `create_app(tmp_path)` keeps working for the
+    # existing test suite and any programmatic embedding without a frontend build; the real
+    # server (`api/__main__.py`) opts into an explicit host allowlist and never enables CORS
+    # for its production same-origin posture.
+    if trusted_hosts is not None:
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(trusted_hosts))
+
+    if cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(cors_origins),
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
     if database_path != ":memory:":
         Path(database_path).parent.mkdir(parents=True, exist_ok=True)
-        token_path = Path(database_path).parent / TOKEN_FILE_NAME
+        workspace_dir = Path(database_path).parent
     else:
-        token_path = DEFAULT_DATABASE_PATH.parent / TOKEN_FILE_NAME
+        workspace_dir = DEFAULT_DATABASE_PATH.parent
+    token_path = workspace_dir / TOKEN_FILE_NAME
     app.state.api_token = api_token or get_or_create_api_token(token_path)
 
     # A single connection is reused for the app's lifetime; endpoint functions run in a
@@ -115,14 +192,21 @@ def create_app(
     canvas_repository = SqliteCanvasRepository(connection)
     placement_repository = SqliteCanvasPlacementRepository(connection)
     resource_repository = SqliteResourceRepository(connection)
+    context_pack_repository = SqliteContextPackRepository(connection)
+    discovery_run_repository = SqliteDiscoveryRunRepository(connection)
     saved_view_repository = SqliteSavedViewRepository(connection)
     search_index_repository = SqliteSearchIndexRepository(connection)
     research_settings_repository = SqliteResearchSettingsRepository(connection)
+    attachment_repository = SqliteAttachmentRepository(connection)
+    file_reference_repository = SqliteFileReferenceRepository(connection)
+    pending_file_operation_repository = SqlitePendingFileOperationRepository(connection)
+    activity_event_repository = SqliteActivityEventRepository(connection)
+    managed_file_store = LocalManagedFileStore(workspace_dir / MANAGED_FILES_DIR_NAME)
 
     default_workspace = get_or_create_default_workspace(workspace_repository)
     default_canvas = get_or_create_default_canvas(canvas_repository, default_workspace)
     backfill_search_index(
-        node_repository, resource_repository, search_index_repository, default_workspace.id
+        node_repository, resource_repository, search_index_repository, default_workspace
     )
 
     app.state.connection = connection
@@ -134,21 +218,51 @@ def create_app(
     app.state.resource_repository = resource_repository
     app.state.saved_view_repository = saved_view_repository
     app.state.search_index_repository = search_index_repository
+    app.state.activity_event_repository = activity_event_repository
+    app.state.file_service = FileService(
+        node_repository,
+        attachment_repository,
+        file_reference_repository,
+        managed_file_store,
+        pending_file_operation_repository,
+        lambda: SqliteResearchUnitOfWork(connection),
+    )
+    app.state.file_service.reconcile_pending_operations()
     app.state.node_service = NodeService(
-        workspace_repository, node_repository, search_index=search_index_repository
+        workspace_repository,
+        node_repository,
+        lambda: SqliteResearchUnitOfWork(connection),
+        search_index=search_index_repository,
     )
-    app.state.edge_service = EdgeService(workspace_repository, node_repository, edge_repository)
+    app.state.edge_service = EdgeService(
+        workspace_repository,
+        node_repository,
+        edge_repository,
+        lambda: SqliteResearchUnitOfWork(connection),
+    )
     app.state.canvas_service = CanvasService(
-        workspace_repository, node_repository, canvas_repository, placement_repository
+        workspace_repository,
+        node_repository,
+        canvas_repository,
+        placement_repository,
+        lambda: SqliteResearchUnitOfWork(connection),
     )
-    app.state.schema_service = SchemaService(workspace_repository, node_repository, edge_repository)
+    app.state.schema_service = SchemaService(
+        workspace_repository,
+        node_repository,
+        edge_repository,
+        lambda: SqliteResearchUnitOfWork(connection),
+        search_index=search_index_repository,
+    )
     app.state.resource_service = ResourceService(
         workspace_repository,
         resource_repository,
         lambda: SqliteResearchUnitOfWork(connection),
         search_index=search_index_repository,
     )
-    app.state.saved_view_service = SavedViewService(workspace_repository, saved_view_repository)
+    app.state.saved_view_service = SavedViewService(
+        workspace_repository, saved_view_repository, lambda: SqliteResearchUnitOfWork(connection)
+    )
     app.state.projection_service = ProjectionService(node_repository, resource_repository)
     app.state.search_service = SearchService(
         node_repository, resource_repository, search_index_repository
@@ -157,10 +271,63 @@ def create_app(
         workspace_repository, resource_repository, edge_repository, research_settings_repository
     )
     app.state.research_settings_service = ResearchSettingsService(
-        workspace_repository, research_settings_repository
+        workspace_repository,
+        research_settings_repository,
+        lambda: SqliteResearchUnitOfWork(connection),
     )
     app.state.workflow_chain_service = WorkflowChainService(
         workspace_repository, node_repository, lambda: SqliteResearchUnitOfWork(connection)
+    )
+    app.state.discovery_service = DiscoveryService(
+        workspace_repository,
+        resource_repository,
+        app.state.resource_service,
+        lambda: SqliteResearchUnitOfWork(connection),
+    )
+    app.state.activity_service = ActivityService(activity_event_repository)
+    app.state.undo_service = UndoService(
+        activity_event_repository,
+        node_repository,
+        resource_repository,
+        edge_repository,
+        placement_repository,
+        saved_view_repository,
+        research_settings_repository,
+        lambda: SqliteResearchUnitOfWork(connection),
+        node_service=app.state.node_service,
+        resource_service=app.state.resource_service,
+    )
+
+    def _list_activity_events_page(workspace_id, limit, cursor):
+        page = app.state.activity_service.list_workspace_events(
+            workspace_id, limit=limit, cursor=cursor
+        )
+        return list(page.events), page.next_cursor
+
+    app.state.export_service = ExportService(
+        workspace_repository,
+        node_repository,
+        edge_repository,
+        canvas_repository,
+        placement_repository,
+        resource_repository,
+        saved_view_repository,
+        context_pack_repository,
+        research_settings_repository,
+        discovery_run_repository,
+        attachment_repository,
+        file_reference_repository,
+        app.state.file_service,
+        _list_activity_events_page,
+        workspace_dir / EXPORT_TEMP_DIR_NAME,
+    )
+    app.state.context_pack_service = ContextPackService(
+        workspace_repository,
+        node_repository,
+        edge_repository,
+        resource_repository,
+        app.state.file_service,
+        context_pack_repository,
     )
     app.state.default_workspace_id = default_workspace.id
     app.state.default_canvas_id = default_canvas.id
@@ -168,8 +335,72 @@ def create_app(
 
     @app.middleware("http")
     async def _serialize_requests(request: Request, call_next):
+        # `/mcp` is exempt here (ST06-F05): a Streamable HTTP session can sit open and idle
+        # between tool calls, and wrapping the whole request would hold this lock across that
+        # idle time plus protocol negotiation, blocking every REST request meanwhile. MCP
+        # instead locks only the narrow gateway/database call inside each tool/resource
+        # dispatch (`build_mcp_server`, same `db_lock`), so REST and MCP still serialize their
+        # actual database execution without serializing each other's non-DB time.
+        if request.url.path == "/mcp":
+            return await call_next(request)
         async with request.app.state.db_lock:
             return await call_next(request)
+
+    @app.middleware("http")
+    async def _security_headers(request: Request, call_next):
+        # Every response, static or dynamic, gets a small fixed set of browser hardening
+        # headers. Non-static responses additionally get `no-store`: nothing under the
+        # bearer-authenticated API/MCP/export surface is safe for a shared or disk cache,
+        # unlike the public build assets `_AppStaticFiles` serves under `STATIC_MOUNT_PATH`.
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        if not request.url.path.startswith(f"{STATIC_MOUNT_PATH}/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
+    agent_gateway = AgentGatewayService(
+        workspace_repository,
+        node_repository,
+        edge_repository,
+        resource_repository,
+        app.state.search_service,
+        app.state.file_service,
+        node_service=app.state.node_service,
+        edge_service=app.state.edge_service,
+        resource_service=app.state.resource_service,
+        workflow_chain_service=app.state.workflow_chain_service,
+        discovery_service=app.state.discovery_service,
+        context_pack_service=app.state.context_pack_service,
+        activity_service=app.state.activity_service,
+        unit_of_work_factory=lambda: SqliteResearchUnitOfWork(connection),
+    )
+    mcp_asgi_app, mcp_session_manager, app.state.mcp_telemetry = create_mcp_asgi_app(
+        agent_gateway, db_lock=app.state.db_lock, connection=connection
+    )
+
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # The MCP session manager owns its own task group for the process lifetime; nothing
+        # else in this app currently needs a lifespan, so this only wires that one concern in.
+        async with mcp_session_manager.run():
+            yield
+
+    app.router.lifespan_context = _lifespan
+    # A plain Starlette `Route` wrapping a raw ASGI app, not `Mount`: `Mount`'s path pattern
+    # always requires a trailing slash to match, so an exact `/mcp` request (no trailing
+    # slash) would 307-redirect before the bearer check ever ran — a real MCP client (httpx
+    # without follow_redirects) would see the redirect, not the actual protocol response.
+    # FastAPI's typed `add_route` only accepts a `Request`-handling endpoint, so the route is
+    # constructed directly and appended to the router instead.
+    app.router.routes.append(
+        Route(
+            "/mcp",
+            with_bearer_token(mcp_asgi_app, lambda: app.state.api_token),
+            methods=["GET", "POST", "DELETE"],
+        )
+    )
 
     auth_dependency = [Depends(require_api_token)]
     app.include_router(workspace.router, dependencies=auth_dependency)
@@ -184,12 +415,44 @@ def create_app(
     app.include_router(views.router, dependencies=auth_dependency)
     app.include_router(research.router, dependencies=auth_dependency)
     app.include_router(workflow_chain.router, dependencies=auth_dependency)
+    app.include_router(discovery.router, dependencies=auth_dependency)
+    app.include_router(files.router, dependencies=auth_dependency)
+    app.include_router(activity.router, dependencies=auth_dependency)
+    app.include_router(export.router, dependencies=auth_dependency)
+
+    if static_dir is not None:
+        # A distinct `/app` prefix, mounted after every API router: it cannot shadow `/mcp`
+        # or any REST path above, and needs no bearer auth of its own (the served shell is
+        # public; the runtime-authenticated session lives in the browser, not the build).
+        app.mount(
+            STATIC_MOUNT_PATH,
+            _AppStaticFiles(directory=static_dir, html=True),
+            name="app-static",
+        )
 
     def _not_found(_request: Request, exc: Exception) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
     def _unprocessable(_request: Request, exc: Exception) -> JSONResponse:
         return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+    def _too_large(_request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=413, content={"detail": str(exc)})
+
+    def _conflict(_request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    def _undo_conflict(_request: Request, exc: Exception) -> JSONResponse:
+        # A stable machine-readable `code` alongside `detail` (ST07-F05 re-review): callers
+        # and the UI can distinguish policy-disabled undo from a snapshot-bound failure without
+        # parsing the human-readable message.
+        assert isinstance(exc, UndoConflictError)
+        return JSONResponse(status_code=409, content={"detail": str(exc), "code": exc.code})
+
+    app.add_exception_handler(UploadTooLargeError, _too_large)
+    app.add_exception_handler(AttachmentContentCorruptedError, _conflict)
+    app.add_exception_handler(UndoConflictError, _undo_conflict)
+    app.add_exception_handler(InvalidActivityCursorError, _unprocessable)
 
     for not_found_error_type in (
         WorkspaceNotFoundError,
@@ -203,6 +466,11 @@ def create_app(
         ResourceNotFoundError,
         SavedViewNotFoundError,
         WorkflowStepNodeTypeMissingError,
+        FileServiceNodeNotFoundError,
+        AttachmentNotFoundError,
+        FileReferenceNotFoundError,
+        AttachmentContentMissingError,
+        ActivityEventNotFoundError,
     ):
         app.add_exception_handler(not_found_error_type, _not_found)
     app.add_exception_handler(DomainError, _unprocessable)

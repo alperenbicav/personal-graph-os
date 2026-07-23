@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
+from personal_graph_os.application.activity_recording import MutationContext, record_activity_event
 from personal_graph_os.application.repositories import NodeRepository, WorkspaceRepository
 from personal_graph_os.application.research_unit_of_work import ResearchUnitOfWork
 from personal_graph_os.application.semantic_keys import (
@@ -26,6 +27,7 @@ from personal_graph_os.application.semantic_keys import (
     TASK_IMPLEMENTED_BY_EDGE_KEY,
     TASK_NODE_TYPE_KEY,
 )
+from personal_graph_os.domain.activity import MutationAction
 from personal_graph_os.domain.errors import DomainError, UnknownSchemaReferenceError
 from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.identifiers import NodeId, WorkspaceId
@@ -119,6 +121,44 @@ class WorkflowChainService:
 
         Exactly one of `title` (create) or `existing_target_node_id` (select) must be given.
         """
+        with self._unit_of_work_factory() as unit_of_work:
+            target_node, edge = self.advance_within(
+                unit_of_work,
+                workspace_id,
+                source_node_id,
+                step,
+                title=title,
+                existing_target_node_id=existing_target_node_id,
+            )
+            # One logical event for this compound (node + edge) write (ST-07.2, decision #6
+            # `WORK.md`); workflow compounds are never undoable (ST-07.3 allowlist).
+            record_activity_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                context=MutationContext.rest(),
+                entity_type="workflow_chain_step",
+                entity_id=edge.id,
+                action=MutationAction.CREATED,
+                after_state={
+                    "step": step.value,
+                    "target_node": target_node.model_dump(mode="json"),
+                    "edge": edge.model_dump(mode="json"),
+                },
+            )
+        return target_node, edge
+
+    def advance_within(
+        self,
+        unit_of_work: ResearchUnitOfWork,
+        workspace_id: WorkspaceId,
+        source_node_id: NodeId,
+        step: WorkflowChainStep,
+        *,
+        title: str | None = None,
+        existing_target_node_id: NodeId | None = None,
+    ) -> tuple[Node, Edge]:
+        """Same validation/write as `advance`, into a caller-managed, already-open
+        `unit_of_work` instead of committing on its own."""
         definition = WORKFLOW_CHAIN_STEP_DEFINITIONS[step]
         workspace = self._require_workspace(workspace_id)
         source_node = self._require_node(source_node_id, workspace_id)
@@ -160,8 +200,7 @@ class WorkflowChainService:
             source_node_id=source_node.id,
             target_node_id=target_node.id,
         )
-        with self._unit_of_work_factory() as unit_of_work:
-            if is_new_target:
-                unit_of_work.nodes.save_without_commit(target_node)
-            unit_of_work.edges.save_without_commit(edge)
+        if is_new_target:
+            unit_of_work.nodes.save_without_commit(target_node)
+        unit_of_work.edges.save_without_commit(edge)
         return target_node, edge

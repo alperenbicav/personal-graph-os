@@ -14,20 +14,40 @@ from contextlib import contextmanager
 from types import TracebackType
 
 from personal_graph_os.infrastructure.sqlite.repositories import (
+    SqliteActivityEventRepository,
+    SqliteAttachmentRepository,
+    SqliteCanvasPlacementRepository,
+    SqliteCanvasRepository,
+    SqliteContextPackRepository,
     SqliteDiscoveryRunRepository,
     SqliteEdgeRepository,
+    SqliteFileReferenceRepository,
+    SqliteIdempotencyReceiptRepository,
     SqliteNodeRepository,
+    SqliteResearchSettingsRepository,
     SqliteResourceRepository,
+    SqliteSavedViewRepository,
+    SqliteWorkspaceRepository,
 )
 
 
 class SqliteResearchUnitOfWork:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
+        self.workspaces = SqliteWorkspaceRepository(connection)
         self.nodes = SqliteNodeRepository(connection)
         self.resources = SqliteResourceRepository(connection)
         self.edges = SqliteEdgeRepository(connection)
+        self.canvases = SqliteCanvasRepository(connection)
+        self.placements = SqliteCanvasPlacementRepository(connection)
+        self.saved_views = SqliteSavedViewRepository(connection)
+        self.research_settings = SqliteResearchSettingsRepository(connection)
+        self.attachments = SqliteAttachmentRepository(connection)
+        self.file_references = SqliteFileReferenceRepository(connection)
         self.discovery_runs = SqliteDiscoveryRunRepository(connection)
+        self.activity_events = SqliteActivityEventRepository(connection)
+        self.idempotency_receipts = SqliteIdempotencyReceiptRepository(connection)
+        self.context_packs = SqliteContextPackRepository(connection)
         self._savepoint_count = 0
 
     def __enter__(self) -> SqliteResearchUnitOfWork:

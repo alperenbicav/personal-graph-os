@@ -14,11 +14,27 @@ from pydantic import BaseModel
 
 from personal_graph_os.domain.graph import Node
 from personal_graph_os.domain.resource import Resource
+from personal_graph_os.domain.schema import FieldType, NodeType
 
 
-def build_node_search_text(node: Node) -> str:
-    """The text `NodeService` indexes for a node's own title/body."""
-    return f"{node.title}\n{node.body}"
+def build_node_search_text(node: Node, node_type: NodeType) -> str:
+    """The text `NodeService` indexes for a node: its own title/body plus every schema-driven
+    field whose type is intentionally searchable free text.
+
+    Only `FieldType.TEXT` counts: a `select`/`url`/`file_path`/`object_reference`/`date`/
+    `number`/`boolean` value is not free text a user typed to be found by, and indexing it
+    (especially an internal node id behind `object_reference`) would leak structure beyond the
+    approved search contract rather than serve relevance.
+    """
+    text_field_ids = {
+        field.id for field in node_type.field_definitions if field.field_type is FieldType.TEXT
+    }
+    field_texts = (
+        str(value)
+        for field_id, value in node.field_values.items()
+        if field_id in text_field_ids and value is not None
+    )
+    return "\n".join((node.title, node.body, *field_texts))
 
 
 def build_resource_search_text(resource: Resource) -> str:

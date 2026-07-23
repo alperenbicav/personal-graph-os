@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import * as api from '../api/client'
 import { messageFor } from '../lib/errors'
+import { useModalDialog } from '../lib/useModalDialog'
 import type { EdgeType, FieldDefinition, FieldType, NodeType, StatusDefinition, Workspace } from '../types'
 
 interface SchemaEditorProps {
@@ -346,6 +347,7 @@ export function SchemaEditor({ workspace, onWorkspaceChange, onError, onClose }:
   const [newFieldRequired, setNewFieldRequired] = useState(false)
   const [newFieldSelectOptions, setNewFieldSelectOptions] = useState('')
   const [newStatusName, setNewStatusName] = useState('')
+  const dialogRef = useModalDialog<HTMLDivElement>(onClose)
 
   async function refresh() {
     onWorkspaceChange(await api.getWorkspace())
@@ -448,7 +450,14 @@ export function SchemaEditor({ workspace, onWorkspaceChange, onError, onClose }:
   }
 
   return (
-    <div className="schema-modal-backdrop" role="dialog" aria-label="Edit schema">
+    <div
+      className="schema-modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Edit schema"
+      ref={dialogRef}
+      tabIndex={-1}
+    >
       <div className="schema-modal">
         <div className="schema-modal-header">
           <h2>Schema</h2>

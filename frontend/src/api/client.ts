@@ -1,22 +1,40 @@
 import type {
+  ActivityEvent,
+  ActivityEventPage,
+  Attachment,
   Canvas,
   CanvasPlacement,
+  DiscoveryCandidateInput,
+  DiscoveryPreview,
+  DiscoveryRun,
   EdgeType,
   FieldDefinition,
   FieldType,
+  FileReference,
   GraphEdge,
   GraphNode,
   NodeType,
+  ProjectionItem,
+  ProjectionQuery,
+  ResearchDashboard,
+  Resource,
+  ResourceKind,
+  SavedView,
+  SearchResult,
   StatusDefinition,
+  ViewKind,
+  WorkflowChainStep,
   Workspace,
+  WorkspaceResearchSettings,
 } from '../types'
+import { getToken, reportUnauthorized } from './session'
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
-
-// The token is a local secret copied from the backend's console output into a
-// git-ignored `.env.local` (see `.env.local.example`); it must never be hardcoded here
-// or otherwise land in source or a committed build.
-const API_TOKEN = import.meta.env.VITE_API_TOKEN
+// Empty string resolves every request against the current page's own origin — the
+// same-origin production posture ST-08.1 serves the UI under (`/app/` plus the API at
+// root). `import.meta.env.DEV` gates the `VITE_API_BASE_URL` override to the Vite dev
+// server only, so a leftover local `.env.local` can never bake a dev host into a
+// production build (`vite build` sets `DEV` to `false` regardless of that file's contents).
+const BASE_URL = import.meta.env.DEV ? (import.meta.env.VITE_API_BASE_URL ?? '') : ''
 
 export class ApiError extends Error {
   status: number
@@ -28,25 +46,43 @@ export class ApiError extends Error {
   }
 }
 
+function authHeadersFromSession(): HeadersInit {
+  const token = getToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+async function throwIfUnauthorizedOrNotOk(response: Response): Promise<void> {
+  if (response.ok) return
+  if (response.status === 401) reportUnauthorized()
+  const body = await response.json().catch(() => ({ detail: response.statusText }))
+  throw new ApiError(response.status, body.detail ?? response.statusText)
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE_URL}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      ...(API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}),
+      ...authHeadersFromSession(),
       ...init?.headers,
     },
   })
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({ detail: response.statusText }))
-    throw new ApiError(response.status, body.detail ?? response.statusText)
-  }
+  await throwIfUnauthorizedOrNotOk(response)
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
 }
 
 export function getWorkspace(): Promise<Workspace> {
   return request('/workspace')
+}
+
+export async function exportWorkspace(workspaceId: string): Promise<Blob> {
+  const params = new URLSearchParams({ workspace_id: workspaceId })
+  const response = await fetch(`${BASE_URL}/export?${params.toString()}`, {
+    headers: authHeadersFromSession(),
+  })
+  await throwIfUnauthorizedOrNotOk(response)
+  return response.blob()
 }
 
 export function listNodes(workspaceId: string): Promise<GraphNode[]> {
@@ -318,4 +354,270 @@ export function removeEdgeType(workspaceId: string, edgeTypeId: string): Promise
     `/edge-types/${encodeURIComponent(edgeTypeId)}?workspace_id=${encodeURIComponent(workspaceId)}`,
     { method: 'DELETE' },
   )
+}
+
+export function listResources(workspaceId: string): Promise<Resource[]> {
+  return request(`/resources?workspace_id=${encodeURIComponent(workspaceId)}`)
+}
+
+export function createOrReuseResource(
+  workspaceId: string,
+  title: string,
+  rawSource: string,
+  kind?: ResourceKind,
+): Promise<Resource> {
+  return request('/resources', {
+    method: 'POST',
+    body: JSON.stringify({ workspace_id: workspaceId, title, raw_source: rawSource, kind }),
+  })
+}
+
+export interface UpdateResourcePatch {
+  lifecycle_status?: string
+  next_action?: string
+  clear_next_action?: boolean
+  next_action_dismissed?: boolean
+  open_questions?: string[]
+  takeaways?: string[]
+  progress_percent?: number
+  clear_progress_percent?: boolean
+  review_at?: string | null
+  clear_review_at?: boolean
+}
+
+export function updateResource(resourceId: string, patch: UpdateResourcePatch): Promise<Resource> {
+  return request(`/resources/${encodeURIComponent(resourceId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  })
+}
+
+export function archiveResource(resourceId: string): Promise<Resource> {
+  return request(`/resources/${encodeURIComponent(resourceId)}`, { method: 'DELETE' })
+}
+
+export function search(
+  workspaceId: string,
+  query: string,
+  limit = 20,
+  includeArchived = false,
+): Promise<SearchResult[]> {
+  const params = new URLSearchParams({
+    workspace_id: workspaceId,
+    q: query,
+    limit: String(limit),
+    include_archived: String(includeArchived),
+  })
+  return request(`/search?${params.toString()}`)
+}
+
+export function listActivityEvents(
+  workspaceId: string,
+  limit = 50,
+  cursor?: string | null,
+): Promise<ActivityEventPage> {
+  const params = new URLSearchParams({ workspace_id: workspaceId, limit: String(limit) })
+  if (cursor) params.set('cursor', cursor)
+  return request(`/activity-events?${params.toString()}`)
+}
+
+export function getActivityEvent(workspaceId: string, eventId: string): Promise<ActivityEvent> {
+  const params = new URLSearchParams({ workspace_id: workspaceId })
+  return request(`/activity-events/${encodeURIComponent(eventId)}?${params.toString()}`)
+}
+
+export function undoActivityEvent(
+  workspaceId: string,
+  eventId: string,
+  reason: string,
+): Promise<ActivityEvent> {
+  const params = new URLSearchParams({ workspace_id: workspaceId })
+  return request(`/activity-events/${encodeURIComponent(eventId)}/undo?${params.toString()}`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  })
+}
+
+export function listSavedViews(workspaceId: string): Promise<SavedView[]> {
+  return request(`/saved-views?workspace_id=${encodeURIComponent(workspaceId)}`)
+}
+
+export function createSavedView(
+  workspaceId: string,
+  name: string,
+  viewKind: ViewKind,
+  query: ProjectionQuery = {},
+): Promise<SavedView> {
+  return request('/saved-views', {
+    method: 'POST',
+    body: JSON.stringify({ workspace_id: workspaceId, name, view_kind: viewKind, query }),
+  })
+}
+
+export function deleteSavedView(savedViewId: string): Promise<void> {
+  return request(`/saved-views/${encodeURIComponent(savedViewId)}`, { method: 'DELETE' })
+}
+
+interface ViewRequestBase {
+  workspace_id: string
+  query?: ProjectionQuery
+  saved_view_id?: string
+}
+
+export function evaluateTableView(payload: ViewRequestBase): Promise<ProjectionItem[]> {
+  return request('/views/table', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+export function evaluateKanbanView(
+  payload: ViewRequestBase & { group_by: string },
+): Promise<Record<string, ProjectionItem[]>> {
+  return request('/views/kanban', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+export function evaluateTimelineView(
+  payload: ViewRequestBase & { date_field: string },
+): Promise<ProjectionItem[]> {
+  return request('/views/timeline', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+export function getResearchDashboard(workspaceId: string): Promise<ResearchDashboard> {
+  return request(`/research/dashboard?workspace_id=${encodeURIComponent(workspaceId)}`)
+}
+
+export function getResearchSettings(workspaceId: string): Promise<WorkspaceResearchSettings> {
+  return request(`/research-settings?workspace_id=${encodeURIComponent(workspaceId)}`)
+}
+
+export function updateResearchSettings(
+  workspaceId: string,
+  staleAfterDays: number,
+): Promise<WorkspaceResearchSettings> {
+  return request(`/research-settings?workspace_id=${encodeURIComponent(workspaceId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ stale_after_days: staleAfterDays }),
+  })
+}
+
+export interface AdvanceWorkflowChainPatch {
+  title?: string
+  existing_target_node_id?: string
+}
+
+export function advanceWorkflowChain(
+  workspaceId: string,
+  sourceNodeId: string,
+  step: WorkflowChainStep,
+  patch: AdvanceWorkflowChainPatch,
+): Promise<{ node: GraphNode; edge: GraphEdge }> {
+  return request('/workflow-chain/advance', {
+    method: 'POST',
+    body: JSON.stringify({
+      workspace_id: workspaceId,
+      source_node_id: sourceNodeId,
+      step,
+      ...patch,
+    }),
+  })
+}
+
+export function previewDiscovery(
+  workspaceId: string,
+  instruction: string,
+  candidates: DiscoveryCandidateInput[],
+): Promise<DiscoveryPreview> {
+  return request('/discovery/preview', {
+    method: 'POST',
+    body: JSON.stringify({ workspace_id: workspaceId, instruction, candidates }),
+  })
+}
+
+export function applyDiscovery(
+  workspaceId: string,
+  agentIdentity: string,
+  instruction: string,
+  candidates: DiscoveryCandidateInput[],
+): Promise<DiscoveryRun> {
+  return request('/discovery/apply', {
+    method: 'POST',
+    body: JSON.stringify({
+      workspace_id: workspaceId,
+      agent_identity: agentIdentity,
+      instruction,
+      candidates,
+    }),
+  })
+}
+
+export function listAttachments(nodeId: string): Promise<Attachment[]> {
+  return request(`/nodes/${encodeURIComponent(nodeId)}/attachments`)
+}
+
+// Bypasses `request()`: a multipart body must let the browser set its own
+// `Content-Type` boundary, which `request()`'s fixed JSON header would override.
+export async function uploadAttachment(nodeId: string, file: File): Promise<Attachment> {
+  const formData = new FormData()
+  formData.append('file', file)
+  const response = await fetch(`${BASE_URL}/nodes/${encodeURIComponent(nodeId)}/attachments`, {
+    method: 'POST',
+    headers: authHeadersFromSession(),
+    body: formData,
+  })
+  await throwIfUnauthorizedOrNotOk(response)
+  return (await response.json()) as Attachment
+}
+
+// Bypasses `request()`: the response body is binary, not JSON, and a browser download
+// needs the bearer token attached via `fetch` since a plain `<a href>` cannot set headers.
+export async function downloadAttachment(attachmentId: string, fileName: string): Promise<void> {
+  const response = await fetch(
+    `${BASE_URL}/attachments/${encodeURIComponent(attachmentId)}/download`,
+    { headers: authHeadersFromSession() },
+  )
+  await throwIfUnauthorizedOrNotOk(response)
+  const blob = await response.blob()
+  const objectUrl = URL.createObjectURL(blob)
+  try {
+    const anchor = document.createElement('a')
+    anchor.href = objectUrl
+    anchor.download = fileName
+    anchor.click()
+  } finally {
+    URL.revokeObjectURL(objectUrl)
+  }
+}
+
+export function deleteAttachment(attachmentId: string): Promise<void> {
+  return request(`/attachments/${encodeURIComponent(attachmentId)}`, { method: 'DELETE' })
+}
+
+export function listFileReferences(nodeId: string): Promise<FileReference[]> {
+  return request(`/nodes/${encodeURIComponent(nodeId)}/file-references`)
+}
+
+export interface CreateFileReferenceInput {
+  machine_name: string
+  relative_path: string
+  repository_name?: string | null
+  absolute_path?: string | null
+  git_ref?: string | null
+}
+
+export function createFileReference(
+  nodeId: string,
+  input: CreateFileReferenceInput,
+): Promise<FileReference> {
+  return request(`/nodes/${encodeURIComponent(nodeId)}/file-references`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function deleteFileReference(fileReferenceId: string): Promise<void> {
+  return request(`/file-references/${encodeURIComponent(fileReferenceId)}`, { method: 'DELETE' })
+}
+
+export function verifyFileReference(fileReferenceId: string): Promise<FileReference> {
+  return request(`/file-references/${encodeURIComponent(fileReferenceId)}/verify`, {
+    method: 'POST',
+  })
 }

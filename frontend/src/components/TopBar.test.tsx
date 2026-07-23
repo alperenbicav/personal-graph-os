@@ -11,14 +11,14 @@ const nodeTypes: NodeType[] = [
 describe('TopBar', () => {
   it('does not call onCapture for a blank title', () => {
     const onCapture = vi.fn()
-    render(<TopBar captureNodeTypes={nodeTypes} onCapture={onCapture} isCapturing={false} onOpenSchemaEditor={vi.fn()} />)
+    render(<TopBar captureNodeTypes={nodeTypes} onCapture={onCapture} isCapturing={false} onOpenSchemaEditor={vi.fn()} onExportWorkspace={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: /add/i }))
     expect(onCapture).not.toHaveBeenCalled()
   })
 
   it('captures the trimmed title with the selected node type on Add', () => {
     const onCapture = vi.fn()
-    render(<TopBar captureNodeTypes={nodeTypes} onCapture={onCapture} isCapturing={false} onOpenSchemaEditor={vi.fn()} />)
+    render(<TopBar captureNodeTypes={nodeTypes} onCapture={onCapture} isCapturing={false} onOpenSchemaEditor={vi.fn()} onExportWorkspace={vi.fn()} />)
 
     fireEvent.change(screen.getByLabelText(/capture type/i), { target: { value: 'nt-task' } })
     fireEvent.change(screen.getByLabelText(/quick capture/i), { target: { value: '  Write report  ' } })
@@ -29,7 +29,7 @@ describe('TopBar', () => {
 
   it('submits on Enter and clears the input', () => {
     const onCapture = vi.fn()
-    render(<TopBar captureNodeTypes={nodeTypes} onCapture={onCapture} isCapturing={false} onOpenSchemaEditor={vi.fn()} />)
+    render(<TopBar captureNodeTypes={nodeTypes} onCapture={onCapture} isCapturing={false} onOpenSchemaEditor={vi.fn()} onExportWorkspace={vi.fn()} />)
 
     const input = screen.getByLabelText(/quick capture/i)
     fireEvent.change(input, { target: { value: 'Read the spec' } })
@@ -40,7 +40,7 @@ describe('TopBar', () => {
   })
 
   it('disables Add while a capture is in flight', () => {
-    render(<TopBar captureNodeTypes={nodeTypes} onCapture={vi.fn()} isCapturing={true} onOpenSchemaEditor={vi.fn()} />)
+    render(<TopBar captureNodeTypes={nodeTypes} onCapture={vi.fn()} isCapturing={true} onOpenSchemaEditor={vi.fn()} onExportWorkspace={vi.fn()} />)
     expect(screen.getByRole('button', { name: /add/i })).toBeDisabled()
   })
 })

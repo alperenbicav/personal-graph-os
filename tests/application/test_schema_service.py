@@ -31,6 +31,7 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteNodeRepository,
     SqliteWorkspaceRepository,
 )
+from personal_graph_os.infrastructure.sqlite.research_unit_of_work import SqliteResearchUnitOfWork
 
 
 def _services(sqlite_connection: sqlite3.Connection):
@@ -47,9 +48,14 @@ def _services(sqlite_connection: sqlite3.Connection):
     node_repository = SqliteNodeRepository(sqlite_connection)
     edge_repository = SqliteEdgeRepository(sqlite_connection)
 
-    node_service = NodeService(workspace_repository, node_repository)
-    edge_service = EdgeService(workspace_repository, node_repository, edge_repository)
-    schema_service = SchemaService(workspace_repository, node_repository, edge_repository)
+    unit_of_work_factory = lambda: SqliteResearchUnitOfWork(sqlite_connection)  # noqa: E731
+    node_service = NodeService(workspace_repository, node_repository, unit_of_work_factory)
+    edge_service = EdgeService(
+        workspace_repository, node_repository, edge_repository, unit_of_work_factory
+    )
+    schema_service = SchemaService(
+        workspace_repository, node_repository, edge_repository, unit_of_work_factory
+    )
     return (
         schema_service,
         node_service,

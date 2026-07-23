@@ -37,6 +37,25 @@ def get_or_create_api_token(token_path: Path) -> str:
     return token
 
 
+def rotate_api_token(token_path: Path) -> str:
+    """Atomically replace the persisted token with a freshly generated one.
+
+    A running server reads its token once at startup and holds it in memory for the
+    process lifetime, so rotation only takes effect after an explicit restart (the
+    documented stop/rotate/restart sequence) — this function never touches a live process.
+    """
+    token = secrets.token_urlsafe(32)
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    staging_path = token_path.with_name(f".{token_path.name}.rotate-{secrets.token_hex(8)}")
+    staging_path.write_text(token, encoding="utf-8")
+    try:
+        staging_path.chmod(0o600)
+    except OSError:
+        pass
+    staging_path.replace(token_path)
+    return token
+
+
 async def require_api_token(
     request: Request, authorization: str | None = Header(default=None)
 ) -> None:

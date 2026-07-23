@@ -15,9 +15,11 @@ from personal_graph_os.domain.errors import InvariantViolationError
 from personal_graph_os.domain.identifiers import (
     ActivityEventId,
     DiscoveryRunId,
+    IdempotencyReceiptId,
     WorkspaceId,
     new_id,
 )
+from personal_graph_os.domain.resource import ResourceKind
 
 
 class ActorKind(StrEnum):
@@ -50,6 +52,15 @@ class ActivityEvent(BaseModel):
     after_state: dict[str, object] | None = None
     is_undoable: bool = False
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # An MCP agent's per-call idempotency key (decision #14, `WORK.md`): `None` for a
+    # human/REST-originated event. When set, `(workspace_id, source, actor_name, request_id)`
+    # is unique, so an exact replay is detected before any mutation runs rather than creating a
+    # second event or entity.
+    request_id: str | None = None
+    # ST-07: set only on a compensating (undo) event, pointing back at the event it reverses.
+    # At most one compensating event may reference a given `reverses_event_id` (DB unique
+    # index) -- undo is not repeatable. `None` for every ordinary mutation event.
+    reverses_event_id: ActivityEventId | None = None
 
     @field_validator("actor_name", "source", "entity_type", "entity_id")
     @classmethod
@@ -60,15 +71,76 @@ class ActivityEvent(BaseModel):
             raise InvariantViolationError(f"ActivityEvent.{field_name} must not be empty")
         return stripped
 
+    @field_validator("request_id")
+    @classmethod
+    def _validate_request_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        stripped = value.strip()
+        if not stripped:
+            raise InvariantViolationError("ActivityEvent.request_id must not be empty when set")
+        return stripped
+
+
+class IdempotencyReceipt(BaseModel):
+    """The durable proof that one MCP `request_id` was already handled (decision #14,
+    `WORK.md`; ST06-F01 refactor).
+
+    Unlike `ActivityEvent`, a receipt is written for *every* attributed mutation call,
+    including a no-op/reuse outcome that intentionally records no event -- so a second call
+    with the same key still replays deterministically instead of re-running the no-op logic.
+    `operation` plus `payload_fingerprint` bind the key to the exact tool and canonicalized
+    arguments that produced `result_payload`, so a reused key with a different tool or a
+    changed payload is rejected as a conflict rather than replayed.
+    """
+
+    id: IdempotencyReceiptId = Field(default_factory=lambda: IdempotencyReceiptId(new_id()))
+    workspace_id: WorkspaceId
+    source: str
+    actor_name: str
+    request_id: str
+    operation: str
+    payload_fingerprint: str
+    result_payload: dict[str, object]
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @field_validator("source", "actor_name", "request_id", "operation", "payload_fingerprint")
+    @classmethod
+    def _validate_non_empty(cls, value: str, info: object) -> str:
+        field_name = getattr(info, "field_name", "IdempotencyReceipt field")
+        stripped = value.strip()
+        if not stripped:
+            raise InvariantViolationError(f"IdempotencyReceipt.{field_name} must not be empty")
+        return stripped
+
+
+class DiscoveryOutcome(StrEnum):
+    """What ultimately happened to one candidate during `DiscoveryService.apply()`."""
+
+    IMPORTED = "imported"
+    REUSED = "reused"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
 
 class DiscoveredCandidate(BaseModel):
-    """One candidate a `DiscoveryRun` considered, whether imported or skipped."""
+    """One candidate a `DiscoveryRun` considered, with the evidence it was submitted with and
+    what ultimately happened to it — the durable provenance record ST-06 attributes imports to."""
 
-    identifier: str
+    raw_identifier: str
+    canonical_identifier: str | None = None
     title: str
-    was_imported: bool
-    skip_reason: str | None = None
+    kind: ResourceKind | None = None
+    description: str = ""
+    evidence: tuple[str, ...] = ()
+    outcome: DiscoveryOutcome
+    reason: str | None = None
+    existing_resource_id: str | None = None
     imported_node_id: str | None = None
+
+    @property
+    def was_imported(self) -> bool:
+        return self.outcome is DiscoveryOutcome.IMPORTED
 
 
 class DiscoveryRun(BaseModel):
@@ -95,8 +167,12 @@ class DiscoveryRun(BaseModel):
 
     @property
     def imported_count(self) -> int:
-        return sum(1 for candidate in self.candidates if candidate.was_imported)
+        return sum(
+            1 for candidate in self.candidates if candidate.outcome is DiscoveryOutcome.IMPORTED
+        )
 
     @property
     def skipped_count(self) -> int:
-        return sum(1 for candidate in self.candidates if not candidate.was_imported)
+        return sum(
+            1 for candidate in self.candidates if candidate.outcome is not DiscoveryOutcome.IMPORTED
+        )

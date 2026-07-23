@@ -365,6 +365,40 @@ def test_update_field_definition_via_api_succeeds_and_rejects_duplicate_name(
     assert conflict.status_code == 422
 
 
+def test_changing_a_field_out_of_text_immediately_removes_it_from_search(
+    client: TestClient,
+) -> None:
+    workspace_id, task_type_id = _default_workspace_and_task_type(client)
+    field = client.post(
+        f"/node-types/{task_type_id}/fields",
+        json={"workspace_id": workspace_id, "name": "notes", "field_type": "text"},
+    ).json()
+    node = client.post(
+        "/nodes",
+        json={"workspace_id": workspace_id, "node_type_id": task_type_id, "title": "A task"},
+    ).json()
+    client.patch(f"/nodes/{node['id']}", json={"field_values": {field["id"]: "apischemaprobe"}})
+    assert (
+        len(
+            client.get(
+                "/search", params={"workspace_id": workspace_id, "q": "apischemaprobe"}
+            ).json()
+        )
+        == 1
+    )
+
+    response = client.patch(
+        f"/node-types/{task_type_id}/fields/{field['id']}",
+        json={"workspace_id": workspace_id, "field_type": "file_path"},
+    )
+    assert response.status_code == 200
+
+    assert (
+        client.get("/search", params={"workspace_id": workspace_id, "q": "apischemaprobe"}).json()
+        == []
+    )
+
+
 def test_update_status_definition_via_api_succeeds_and_rejects_duplicate_name(
     client: TestClient,
 ) -> None:

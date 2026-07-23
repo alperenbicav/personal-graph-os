@@ -23,6 +23,7 @@ import type {
   NodeType,
   StatusDefinition,
 } from '../types'
+import { CanvasObjectList } from './CanvasObjectList'
 import { TypedNode, type TypedNodeData } from './nodes/TypedNode'
 
 const NODE_TYPES = { typedNode: TypedNode }
@@ -185,23 +186,31 @@ export function GraphCanvas({
   }
 
   return (
-    <ReactFlow
-      nodes={rfNodes}
-      edges={rfEdges}
-      nodeTypes={NODE_TYPES}
-      onNodesChange={onNodesChange}
-      onEdgesChange={onEdgesChange}
-      onNodeClick={handleNodeClick}
-      onNodeDragStop={handleNodeDragStop}
-      onPaneClick={handlePaneClick}
-      onConnect={handleConnect}
-      fitView
-      minZoom={0.4}
-      maxZoom={2}
-      proOptions={{ hideAttribution: true }}
-    >
-      <Background variant={BackgroundVariant.Dots} color="var(--line)" gap={22} size={1.4} />
-      <Controls showInteractive={false} />
-    </ReactFlow>
+    <div className="graph-canvas-root">
+      <CanvasObjectList
+        nodes={renderedNodes}
+        nodeTypeById={nodeTypeById}
+        selectedNodeId={selectedNodeId}
+        onSelectNode={onSelectNode}
+      />
+      <ReactFlow
+        nodes={rfNodes}
+        edges={rfEdges}
+        nodeTypes={NODE_TYPES}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        onNodeClick={handleNodeClick}
+        onNodeDragStop={handleNodeDragStop}
+        onPaneClick={handlePaneClick}
+        onConnect={handleConnect}
+        fitView
+        minZoom={0.4}
+        maxZoom={2}
+        proOptions={{ hideAttribution: true }}
+      >
+        <Background variant={BackgroundVariant.Dots} color="var(--line)" gap={22} size={1.4} />
+        <Controls showInteractive={false} />
+      </ReactFlow>
+    </div>
   )
 }

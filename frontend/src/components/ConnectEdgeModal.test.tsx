@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { ConnectEdgeModal, type PendingConnection } from './ConnectEdgeModal'
@@ -41,5 +42,76 @@ describe('ConnectEdgeModal', () => {
 
     expect(onCancel).toHaveBeenCalledTimes(1)
     expect(onConfirm).not.toHaveBeenCalled()
+  })
+
+  it('sets modal semantics and moves focus inside on open', () => {
+    render(<ConnectEdgeModal pending={pending} edgeTypes={edgeTypes} onConfirm={vi.fn()} onCancel={vi.fn()} />)
+
+    const dialog = screen.getByRole('dialog', { name: /connect two objects/i })
+    expect(dialog).toHaveAttribute('aria-modal', 'true')
+    expect(dialog).toContainElement(document.activeElement as HTMLElement)
+    expect(document.activeElement).not.toBe(document.body)
+  })
+
+  it('closes on Escape', () => {
+    const onCancel = vi.fn()
+    render(<ConnectEdgeModal pending={pending} edgeTypes={edgeTypes} onConfirm={vi.fn()} onCancel={onCancel} />)
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    expect(onCancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('traps Tab focus within the dialog and wraps at both ends', () => {
+    render(<ConnectEdgeModal pending={pending} edgeTypes={edgeTypes} onConfirm={vi.fn()} onCancel={vi.fn()} />)
+
+    const select = screen.getByLabelText(/relationship type/i)
+    const connectButton = screen.getByRole('button', { name: /connect/i })
+
+    // First focusable element (the select) is focused on open.
+    expect(document.activeElement).toBe(select)
+
+    // Shift+Tab from the first element wraps to the last (Connect) — the boundary the
+    // trap must own; ordinary mid-dialog Tab advancement is native browser behavior that
+    // jsdom does not simulate, so it is not asserted here.
+    fireEvent.keyDown(document.activeElement!, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(connectButton)
+
+    // Tab from the last element wraps back to the first (the select).
+    fireEvent.keyDown(document.activeElement!, { key: 'Tab' })
+    expect(document.activeElement).toBe(select)
+  })
+
+  function HostWithInvoker({ open }: { open: boolean }) {
+    const [isOpen, setIsOpen] = useState(open)
+    return (
+      <div>
+        <button type="button" onClick={() => setIsOpen(true)}>
+          Open connect modal
+        </button>
+        {isOpen && (
+          <ConnectEdgeModal
+            pending={pending}
+            edgeTypes={edgeTypes}
+            onConfirm={vi.fn()}
+            onCancel={() => setIsOpen(false)}
+          />
+        )}
+      </div>
+    )
+  }
+
+  it('restores focus to the invoking element after closing', () => {
+    render(<HostWithInvoker open={false} />)
+    const invoker = screen.getByRole('button', { name: /open connect modal/i })
+    invoker.focus()
+    fireEvent.click(invoker)
+
+    expect(screen.getByRole('dialog', { name: /connect two objects/i })).toBeInTheDocument()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    expect(screen.queryByRole('dialog', { name: /connect two objects/i })).not.toBeInTheDocument()
+    expect(document.activeElement).toBe(invoker)
   })
 })

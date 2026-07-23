@@ -26,6 +26,7 @@ AttachmentId = NewType("AttachmentId", str)
 FileReferenceId = NewType("FileReferenceId", str)
 ActivityEventId = NewType("ActivityEventId", str)
 DiscoveryRunId = NewType("DiscoveryRunId", str)
+IdempotencyReceiptId = NewType("IdempotencyReceiptId", str)
 
 
 def new_id() -> str:

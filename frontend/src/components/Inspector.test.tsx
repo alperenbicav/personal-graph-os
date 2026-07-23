@@ -1,7 +1,12 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import * as api from '../api/client'
 import { Inspector } from './Inspector'
 import type { GraphNode, NodeType } from '../types'
+
+vi.mock('../api/client')
+
+const mockedApi = vi.mocked(api)
 
 const nodeType: NodeType = {
   id: 'nt-task',
@@ -98,6 +103,11 @@ function renderInspector(overrides: Partial<Parameters<typeof Inspector>[0]> = {
 }
 
 describe('Inspector', () => {
+  beforeEach(() => {
+    mockedApi.listAttachments.mockResolvedValue([])
+    mockedApi.listFileReferences.mockResolvedValue([])
+  })
+
   it('shows an empty-state message when nothing is selected', () => {
     render(
       <Inspector

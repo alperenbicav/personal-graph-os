@@ -8,6 +8,10 @@ from __future__ import annotations
 
 from fastapi import Request
 
+from personal_graph_os.application.activity_service import ActivityService
+from personal_graph_os.application.discovery import DiscoveryService
+from personal_graph_os.application.export_service import ExportService
+from personal_graph_os.application.file_service import FileService
 from personal_graph_os.application.projections import ProjectionService
 from personal_graph_os.application.repositories import (
     CanvasPlacementRepository,
@@ -30,6 +34,7 @@ from personal_graph_os.application.services import (
     SavedViewService,
     SchemaService,
 )
+from personal_graph_os.application.undo_service import UndoService
 from personal_graph_os.application.workflow_chain import WorkflowChainService
 from personal_graph_os.domain.identifiers import CanvasId, WorkspaceId
 
@@ -108,6 +113,26 @@ def get_research_settings_service(request: Request) -> ResearchSettingsService:
 
 def get_workflow_chain_service(request: Request) -> WorkflowChainService:
     return request.app.state.workflow_chain_service
+
+
+def get_discovery_service(request: Request) -> DiscoveryService:
+    return request.app.state.discovery_service
+
+
+def get_file_service(request: Request) -> FileService:
+    return request.app.state.file_service
+
+
+def get_activity_service(request: Request) -> ActivityService:
+    return request.app.state.activity_service
+
+
+def get_undo_service(request: Request) -> UndoService:
+    return request.app.state.undo_service
+
+
+def get_export_service(request: Request) -> ExportService:
+    return request.app.state.export_service
 
 
 def get_default_workspace_id(request: Request) -> WorkspaceId:
