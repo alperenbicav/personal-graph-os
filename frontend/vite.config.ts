@@ -1,5 +1,6 @@
 /// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
+import { configDefaults } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
@@ -56,5 +57,8 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
+    // e2e/ holds Playwright acceptance specs (run via `npm run test:e2e`), not Vitest
+    // unit/component tests; Playwright's own `test`/`expect` API isn't Vitest-compatible.
+    exclude: [...configDefaults.exclude, 'e2e/**'],
   },
 })

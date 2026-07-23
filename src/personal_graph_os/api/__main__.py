@@ -13,6 +13,7 @@ import os
 import uvicorn
 
 from personal_graph_os.api.app import (
+    DEFAULT_DATABASE_PATH,
     DEFAULT_STATIC_DIR,
     DEFAULT_TRUSTED_HOSTS,
     DEV_FRONTEND_ORIGINS,
@@ -44,17 +45,22 @@ def main() -> None:
         static_dir = DEFAULT_STATIC_DIR
     else:
         static_dir = None
+    # Isolates a fresh acceptance/staging workspace from the developer's own
+    # workspace/graph.db; unset, behavior is identical to before this existed.
+    database_path = os.environ.get("PGOS_DB_PATH") or DEFAULT_DATABASE_PATH
+    port = int(os.environ.get("PGOS_PORT") or DEFAULT_PORT)
 
     app = create_app(
+        database_path,
         trusted_hosts=trusted_hosts,
         cors_origins=cors_origins,
         static_dir=static_dir,
     )
-    print(f"Personal Graph OS API listening on http://{LOOPBACK_HOST}:{DEFAULT_PORT}")
+    print(f"Personal Graph OS API listening on http://{LOOPBACK_HOST}:{port}")
     print("The bearer token is never printed here. Run `pgos-token show` to read it.")
     if static_dir is None:
         print("No production frontend build found; serving API/MCP only (no /app/ UI).")
-    uvicorn.run(app, host=LOOPBACK_HOST, port=DEFAULT_PORT)
+    uvicorn.run(app, host=LOOPBACK_HOST, port=port)
 
 
 if __name__ == "__main__":

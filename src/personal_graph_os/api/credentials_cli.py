@@ -9,6 +9,7 @@ token in memory for its whole lifetime.
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from personal_graph_os.api.app import DEFAULT_DATABASE_PATH
@@ -20,11 +21,14 @@ def _token_path(database_path: Path) -> Path:
 
 
 def main(argv: list[str] | None = None) -> None:
+    # Matches `api/__main__.py`'s `PGOS_DB_PATH`, so pointing a running server at an
+    # isolated workspace (e.g. an acceptance run) needs no separate `--db-path` bookkeeping.
+    default_db_path = Path(os.environ.get("PGOS_DB_PATH") or DEFAULT_DATABASE_PATH)
     parser = argparse.ArgumentParser(prog="pgos-token", description=__doc__)
     parser.add_argument(
         "--db-path",
         type=Path,
-        default=DEFAULT_DATABASE_PATH,
+        default=default_db_path,
         help="Workspace database path; the token file lives alongside it (default: %(default)s)",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
