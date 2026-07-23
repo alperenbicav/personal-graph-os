@@ -1,55 +1,56 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   clearSession,
+  commitToken,
   getToken,
   onSessionUnauthorized,
   reportUnauthorized,
   restoreSession,
-  SESSION_STORAGE_KEY,
-  setToken,
+  setPendingToken,
 } from './session'
 
 afterEach(() => {
   clearSession()
-  window.sessionStorage.clear()
 })
 
 describe('session', () => {
-  it('has no token until one is set', () => {
+  it('has no token until one is committed', () => {
     expect(getToken()).toBeNull()
   })
 
-  it('setToken keeps the token in memory and in tab-scoped sessionStorage', () => {
-    setToken('secret-token')
+  it('setPendingToken holds a candidate in memory only, without persisting it', () => {
+    setPendingToken('candidate-token')
 
-    expect(getToken()).toBe('secret-token')
-    expect(window.sessionStorage.getItem(SESSION_STORAGE_KEY)).toBe('secret-token')
+    expect(getToken()).toBe('candidate-token')
+    expect(restoreSession()).toBeNull() // nothing was ever committed/persisted
   })
 
-  it('restoreSession reads a token this tab persisted earlier (e.g. after a reload)', () => {
-    window.sessionStorage.setItem(SESSION_STORAGE_KEY, 'persisted-token')
+  it('commitToken persists the token so a later restore (e.g. after a reload) finds it', () => {
+    commitToken('verified-token')
 
-    const restored = restoreSession()
-
-    expect(restored).toBe('persisted-token')
-    expect(getToken()).toBe('persisted-token')
+    expect(getToken()).toBe('verified-token')
+    expect(restoreSession()).toBe('verified-token')
   })
 
-  it('restoreSession returns null when no token was ever persisted', () => {
+  it('a fresh browsing context (no history state) restores no token', () => {
+    // Simulates a brand new tab/browsing context, including one opened via `window.open`
+    // from an already-unlocked tab: it always starts with an empty history entry.
+    window.history.replaceState(null, '')
+
     expect(restoreSession()).toBeNull()
   })
 
-  it('clearSession removes the token from memory and storage', () => {
-    setToken('secret-token')
+  it('clearSession removes the token from memory and from persisted history state', () => {
+    commitToken('verified-token')
 
     clearSession()
 
     expect(getToken()).toBeNull()
-    expect(window.sessionStorage.getItem(SESSION_STORAGE_KEY)).toBeNull()
+    expect(restoreSession()).toBeNull()
   })
 
   it('reportUnauthorized clears the session and notifies the registered listener', () => {
-    setToken('secret-token')
+    commitToken('verified-token')
     const listener = vi.fn()
     onSessionUnauthorized(listener)
 

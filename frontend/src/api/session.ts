@@ -1,43 +1,44 @@
-// Runtime-authenticated browser session (ST-08.1): the bearer token is never compiled
-// into the build. It is entered once through the unlock screen, then kept only in memory
-// plus tab-scoped `sessionStorage` (which a new tab never inherits), and cleared on any
-// later `401` so a revoked/rotated token cannot silently keep looking unlocked.
+// Runtime-authenticated browser session (ST-08.1, hardened per ST08-F01/F02 review).
+//
+// - Verify-then-commit: `setPendingToken` only holds a candidate in memory so a
+//   verification request can use it; nothing is persisted until `commitToken` runs after
+//   that request actually succeeds. A crash, reload, or network/5xx failure mid-unlock can
+//   therefore never leave an unverified token retained anywhere.
+// - Persistence uses this tab's `history.state` (via `replaceState`), not `sessionStorage`.
+//   `sessionStorage` is cloned into a same-origin tab opened via `window.open`/"duplicate
+//   tab", which would silently unlock a copy; a freshly created browsing context always
+//   starts with an empty history entry (`state === null`) regardless of its opener, so only
+//   an actual reload of this exact tab ever restores a committed token.
 
-export const SESSION_STORAGE_KEY = 'pgos.apiToken'
+const HISTORY_STATE_KEY = 'pgosApiToken'
 
 let currentToken: string | null = null
 let unauthorizedListener: (() => void) | null = null
 
-function readSessionStorage(): string | null {
+function readPersistedToken(): string | null {
   try {
-    return window.sessionStorage.getItem(SESSION_STORAGE_KEY)
+    const state = window.history.state as Record<string, unknown> | null
+    const token = state?.[HISTORY_STATE_KEY]
+    return typeof token === 'string' ? token : null
   } catch {
-    // sessionStorage can throw in a locked-down/private context; the token then only
-    // survives in memory for the rest of this tab's lifetime.
     return null
   }
 }
 
-function writeSessionStorage(token: string): void {
+function writePersistedToken(token: string | null): void {
   try {
-    window.sessionStorage.setItem(SESSION_STORAGE_KEY, token)
+    window.history.replaceState(token ? { [HISTORY_STATE_KEY]: token } : null, '')
   } catch {
-    // Best-effort; in-memory `currentToken` still lets this tab keep working.
+    // Same-origin `replaceState` is not expected to throw; if it ever does, the in-memory
+    // `currentToken` still lets this tab keep working for the rest of its lifetime.
   }
 }
 
-function clearSessionStorage(): void {
-  try {
-    window.sessionStorage.removeItem(SESSION_STORAGE_KEY)
-  } catch {
-    // Nothing to clean up if storage was never writable.
-  }
-}
-
-/** Restores a token this exact tab unlocked earlier (e.g. after a reload). Never reads a
- * token set by another tab: `sessionStorage` is tab-scoped by design. */
+/** Restores a token this exact tab already verified and committed (e.g. after a reload).
+ * Never restores a token for a new browsing context, including one opened via
+ * `window.open` from an already-unlocked tab. */
 export function restoreSession(): string | null {
-  currentToken = readSessionStorage()
+  currentToken = readPersistedToken()
   return currentToken
 }
 
@@ -45,14 +46,22 @@ export function getToken(): string | null {
   return currentToken
 }
 
-export function setToken(token: string): void {
+/** Holds a candidate token in memory only, so a verification request (e.g. `getWorkspace()`)
+ * can send it. Does not persist anything — call `commitToken` only after that request
+ * actually succeeds, or `clearSession` if it does not. */
+export function setPendingToken(token: string): void {
   currentToken = token
-  writeSessionStorage(token)
+}
+
+/** Persists a token this tab has already verified via a successful authenticated request. */
+export function commitToken(token: string): void {
+  currentToken = token
+  writePersistedToken(token)
 }
 
 export function clearSession(): void {
   currentToken = null
-  clearSessionStorage()
+  writePersistedToken(null)
 }
 
 /** Called once by the app shell to learn when a `401` invalidated the current session. */

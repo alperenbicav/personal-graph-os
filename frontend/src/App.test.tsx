@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import * as api from './api/client'
-import { SESSION_STORAGE_KEY } from './api/session'
+import { clearSession, commitToken } from './api/session'
 import type { Canvas, CanvasPlacement, GraphNode, Workspace } from './types'
 
 vi.mock('./api/client')
@@ -88,7 +88,7 @@ function placementFor(canvasId: string, nodeId: string, id: string): CanvasPlace
 beforeEach(() => {
   // These tests exercise the post-unlock dashboard, not the unlock flow itself (covered
   // separately in App.unlock.test.tsx); seed an already-unlocked tab session up front.
-  window.sessionStorage.setItem(SESSION_STORAGE_KEY, 'test-token')
+  commitToken('test-token')
   mockedApi.getWorkspace.mockResolvedValue(workspace)
   mockedApi.listEdges.mockResolvedValue([])
   mockedApi.listCanvases.mockResolvedValue([canvasA, canvasB])
@@ -99,7 +99,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks()
-  window.sessionStorage.clear()
+  clearSession()
 })
 
 describe('App bootstrap', () => {

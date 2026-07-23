@@ -18,10 +18,16 @@ export default defineConfig({
   use: {
     trace: 'retain-on-failure',
   },
+  // Both required desktop viewports (ST08-F03) run every spec file in this directory —
+  // unlock/capture/export/auth acceptance and the PWA/session-security checks alike.
   projects: [
     {
-      name: 'Desktop Chromium',
+      name: 'Desktop Chromium 1440x900',
       use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } },
+    },
+    {
+      name: 'Desktop Chromium 1024x768',
+      use: { ...devices['Desktop Chrome'], viewport: { width: 1024, height: 768 } },
     },
   ],
 })

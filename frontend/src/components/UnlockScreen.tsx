@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { ApiError, getWorkspace } from '../api/client'
-import { setToken } from '../api/session'
+import { clearSession, commitToken, setPendingToken } from '../api/session'
 
 interface UnlockScreenProps {
   onUnlocked: () => void
@@ -21,13 +21,15 @@ export function UnlockScreen({ onUnlocked }: UnlockScreenProps) {
 
     setIsVerifying(true)
     setError(null)
-    // Setting the token before verifying lets `getWorkspace()` actually send it; a wrong
-    // token never lingers afterward because a 401 clears the session again automatically.
-    setToken(candidate)
+    // Held in memory only until verified: a crash, reload, or network failure during this
+    // request must never leave an unverified candidate persisted (ST08-F01).
+    setPendingToken(candidate)
     try {
       await getWorkspace()
+      commitToken(candidate)
       onUnlocked()
     } catch (caught) {
+      clearSession()
       if (caught instanceof ApiError && caught.status === 401) {
         setError('That token was rejected. Check it and try again.')
       } else {

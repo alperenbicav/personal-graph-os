@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, getWorkspace } from './client'
-import { clearSession, getToken, onSessionUnauthorized, setToken } from './session'
+import { clearSession, commitToken, getToken, onSessionUnauthorized } from './session'
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -21,7 +21,7 @@ afterEach(() => {
 
 describe('request()', () => {
   it('attaches the session token as a bearer header when one is set', async () => {
-    setToken('my-token')
+    commitToken('my-token')
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(200, { id: 'ws-1' }))
 
     await getWorkspace()
@@ -42,7 +42,7 @@ describe('request()', () => {
   })
 
   it('clears the session and notifies listeners on a 401, distinct from other failures', async () => {
-    setToken('stale-token')
+    commitToken('stale-token')
     const listener = vi.fn()
     onSessionUnauthorized(listener)
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(401, { detail: 'Invalid bearer token' }))
@@ -54,7 +54,7 @@ describe('request()', () => {
   })
 
   it('leaves the session untouched on a non-401 error', async () => {
-    setToken('good-token')
+    commitToken('good-token')
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(500, { detail: 'boom' }))
 
     await expect(getWorkspace()).rejects.toBeInstanceOf(ApiError)
