@@ -69,6 +69,12 @@ class ActivityService:
             raise ActivityEventNotFoundError(event_id)
         return event
 
+    def is_already_reversed(self, event_id: ActivityEventId) -> bool:
+        """Whether some compensating event already reverses `event_id` (ST07-F05 re-review):
+        needed to distinguish an `already_reversed` disabled-undo reason from every other one
+        in read-only views, the same way `UndoService` already checks before an undo attempt."""
+        return self._activity_events.get_by_reverses(event_id) is not None
+
     def list_workspace_events(
         self,
         workspace_id: WorkspaceId,

@@ -14,9 +14,13 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from personal_graph_os.application.activity_recording import (
+    REASON_ALREADY_REVERSED,
+    REASON_COMPENSATING_EVENT,
+    REASON_SNAPSHOT_OMITTED_OVERSIZED,
+    REASON_UNSUPPORTED_ACTION,
     REST_ACTOR_NAME,
     REST_SOURCE,
-    is_snapshot_omitted,
+    undo_disabled_reason,
 )
 from personal_graph_os.application.repositories import (
     ActivityEventRepository,
@@ -63,16 +67,29 @@ _REMOVE_ON_CREATE = frozenset({_EDGE, _PLACEMENT})
 
 class UndoConflictError(ValueError):
     """One undo precondition failed: missing/cross-workspace, non-undoable, already reversed,
-    an unusably oversized recorded snapshot, or stale (current state no longer matches the
-    recorded after-state). Reported as 409, unchanged -- never a partial write."""
+    an unusably oversized recorded snapshot, stale (current state no longer matches the
+    recorded after-state), an invalid reason, or a schema that no longer accepts the recorded
+    state. Reported as 409, unchanged -- never a partial write.
+
+    `code` is the same stable machine-readable taxonomy `activity_recording.undo_disabled_reason`
+    uses for read-only views (ST07-F05 re-review), plus a few undo-attempt-specific codes
+    (`not_found`, `stale`, `invalid_reason`, `schema_invalid`) that only make sense for an
+    actual undo call, not a passive list/detail read.
+    """
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def _validate_reason(reason: str) -> str:
     stripped = reason.strip()
     if not stripped:
-        raise UndoConflictError("undo requires a non-empty reason")
+        raise UndoConflictError("undo requires a non-empty reason", code="invalid_reason")
     if len(stripped) > MAX_UNDO_REASON_LENGTH:
-        raise UndoConflictError(f"reason must not exceed {MAX_UNDO_REASON_LENGTH} characters")
+        raise UndoConflictError(
+            f"reason must not exceed {MAX_UNDO_REASON_LENGTH} characters", code="invalid_reason"
+        )
     return stripped
 
 
@@ -132,29 +149,41 @@ class UndoService:
 
         event = self._activity_events.get(event_id)
         if event is None or event.workspace_id != workspace_id:
-            raise UndoConflictError(f"activity event {event_id} does not exist in this workspace")
-        if event.reverses_event_id is not None:
             raise UndoConflictError(
-                f"activity event {event_id} is itself a compensating event and cannot be undone"
+                f"activity event {event_id} does not exist in this workspace", code="not_found"
             )
-        if not event.is_undoable:
-            raise UndoConflictError(f"activity event {event_id} is not undoable")
-        if self._activity_events.get_by_reverses(event_id) is not None:
-            raise UndoConflictError(f"activity event {event_id} was already reversed")
-        if is_snapshot_omitted(event.before_state) or is_snapshot_omitted(event.after_state):
-            # Defense in depth (ST07-F05): `record_activity_event` already marks such an event
-            # non-undoable, but this rejects an omission marker before it could ever reach
+
+        is_already_reversed = self._activity_events.get_by_reverses(event_id) is not None
+        disabled_reason = undo_disabled_reason(event, is_already_reversed=is_already_reversed)
+        if disabled_reason == REASON_COMPENSATING_EVENT:
+            raise UndoConflictError(
+                f"activity event {event_id} is itself a compensating event and cannot be undone",
+                code=disabled_reason,
+            )
+        if disabled_reason == REASON_SNAPSHOT_OMITTED_OVERSIZED:
+            # Checked before the generic non-undoable case (ST07-F05 re-review): this rejects
+            # the omission marker with its own stable code before it could ever reach
             # `Node.model_validate()`/`Resource.model_validate()` as if it were real state.
             raise UndoConflictError(
                 f"activity event {event_id} cannot be undone: its recorded snapshot was too "
-                "large to store safely"
+                "large to store safely",
+                code=disabled_reason,
+            )
+        if disabled_reason == REASON_UNSUPPORTED_ACTION:
+            raise UndoConflictError(
+                f"activity event {event_id} is not undoable", code=disabled_reason
+            )
+        if disabled_reason == REASON_ALREADY_REVERSED:
+            raise UndoConflictError(
+                f"activity event {event_id} was already reversed", code=disabled_reason
             )
 
         current_state = self._current_state(event.entity_type, event.entity_id)
         if current_state != event.after_state:
             raise UndoConflictError(
                 f"activity event {event_id} is stale: {event.entity_type} state has changed "
-                "since it was recorded"
+                "since it was recorded",
+                code="stale",
             )
 
         try:
@@ -192,7 +221,8 @@ class UndoService:
             # (ST07-F04). The unit of work above has already rolled back on this exception.
             raise UndoConflictError(
                 f"activity event {event_id} cannot be undone: recorded state is no longer "
-                f"valid against the current schema ({error})"
+                f"valid against the current schema ({error})",
+                code="schema_invalid",
             ) from error
 
         self._reindex_after_undo(event.entity_type, event.entity_id)
@@ -227,7 +257,9 @@ class UndoService:
         if entity_type == _PLACEMENT:
             unit_of_work.placements.delete_without_commit(CanvasPlacementId(entity_id))
             return
-        raise UndoConflictError(f"entity type {entity_type!r} has no create-undo path")
+        raise UndoConflictError(
+            f"entity type {entity_type!r} has no create-undo path", code="unsupported_action"
+        )
 
     def _apply_restore_inverse(
         self,
@@ -238,7 +270,8 @@ class UndoService:
     ) -> None:
         if before_state is None:
             raise UndoConflictError(
-                f"activity event for {entity_type} {entity_id} has no recorded before-state"
+                f"activity event for {entity_type} {entity_id} has no recorded before-state",
+                code="snapshot_omitted_oversized",
             )
         if entity_type == _NODE:
             self._node_service.restore_within(unit_of_work, Node.model_validate(before_state))
@@ -261,4 +294,6 @@ class UndoService:
                 WorkspaceResearchSettings.model_validate(before_state)
             )
             return
-        raise UndoConflictError(f"entity type {entity_type!r} has no restore-undo path")
+        raise UndoConflictError(
+            f"entity type {entity_type!r} has no restore-undo path", code="unsupported_action"
+        )

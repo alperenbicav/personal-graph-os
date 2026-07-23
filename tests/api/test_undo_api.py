@@ -143,6 +143,7 @@ def test_undo_twice_returns_409_already_reversed(client: TestClient) -> None:
         json={"reason": "second undo"},
     )
     assert second.status_code == 409
+    assert second.json()["code"] == "already_reversed"
 
 
 def test_undo_a_stale_event_returns_409(client: TestClient) -> None:
@@ -182,6 +183,11 @@ def test_undo_an_update_with_an_oversized_omitted_after_state_returns_409_not_a_
     client.patch(f"/nodes/{node['id']}", json={"body": large_body})
     oversized_after_event = _latest_event_for(client, workspace_id, node["id"], "updated")
     assert oversized_after_event["is_undoable"] is False
+    assert oversized_after_event["disabled_reason"] == "snapshot_omitted_oversized"
+    detail = client.get(
+        f"/activity-events/{oversized_after_event['id']}?workspace_id={workspace_id}"
+    ).json()
+    assert detail["disabled_reason"] == "snapshot_omitted_oversized"
 
     response = client.post(
         f"/activity-events/{oversized_after_event['id']}/undo?workspace_id={workspace_id}",
@@ -189,6 +195,7 @@ def test_undo_an_update_with_an_oversized_omitted_after_state_returns_409_not_a_
     )
 
     assert response.status_code == 409
+    assert response.json()["code"] == "snapshot_omitted_oversized"
     unchanged = client.get("/nodes", params={"workspace_id": workspace_id}).json()
     assert next(n for n in unchanged if n["id"] == node["id"])["body"] == large_body
 
@@ -210,6 +217,7 @@ def test_undo_an_update_with_an_oversized_omitted_before_state_returns_409_not_a
     client.patch(f"/nodes/{node['id']}", json={"body": "small again"})
     oversized_before_event = _latest_event_for(client, workspace_id, node["id"], "updated")
     assert oversized_before_event["is_undoable"] is False
+    assert oversized_before_event["disabled_reason"] == "snapshot_omitted_oversized"
 
     response = client.post(
         f"/activity-events/{oversized_before_event['id']}/undo?workspace_id={workspace_id}",
@@ -217,6 +225,7 @@ def test_undo_an_update_with_an_oversized_omitted_before_state_returns_409_not_a
     )
 
     assert response.status_code == 409
+    assert response.json()["code"] == "snapshot_omitted_oversized"
     unchanged = client.get("/nodes", params={"workspace_id": workspace_id}).json()
     assert next(n for n in unchanged if n["id"] == node["id"])["body"] == "small again"
 
@@ -299,6 +308,7 @@ def test_undo_a_non_undoable_event_returns_409(client: TestClient) -> None:
     )
 
     assert response.status_code == 409
+    assert response.json()["code"] == "unsupported_action"
 
 
 def test_undo_rejects_an_empty_reason(client: TestClient) -> None:

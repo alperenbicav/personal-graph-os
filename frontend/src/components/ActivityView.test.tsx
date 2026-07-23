@@ -17,6 +17,7 @@ function makeSummary(overrides: Partial<ActivityEventSummary> = {}): ActivityEve
     is_undoable: true,
     occurred_at: '2026-01-01T00:00:00Z',
     reverses_event_id: null,
+    disabled_reason: null,
     ...overrides,
   }
 }
@@ -101,9 +102,10 @@ describe('ActivityView', () => {
   })
 
   it('does not offer undo for a non-undoable event', async () => {
-    const onLoadPage = vi
-      .fn()
-      .mockResolvedValue({ events: [makeSummary({ is_undoable: false })], next_cursor: null })
+    const onLoadPage = vi.fn().mockResolvedValue({
+      events: [makeSummary({ is_undoable: false, disabled_reason: 'unsupported_action' })],
+      next_cursor: null,
+    })
     render(
       <ActivityView
         onLoadPage={onLoadPage}
@@ -117,6 +119,27 @@ describe('ActivityView', () => {
 
     expect(screen.queryByRole('button', { name: /^undo$/i })).not.toBeInTheDocument()
     expect(screen.getByText(/not undoable/i)).toBeInTheDocument()
+  })
+
+  it('shows a distinct reason for a non-undoable event with an oversized snapshot', async () => {
+    const onLoadPage = vi.fn().mockResolvedValue({
+      events: [
+        makeSummary({ is_undoable: false, disabled_reason: 'snapshot_omitted_oversized' }),
+      ],
+      next_cursor: null,
+    })
+    render(
+      <ActivityView
+        onLoadPage={onLoadPage}
+        onLoadDetail={vi.fn().mockResolvedValue(makeDetail({ is_undoable: false }))}
+        onUndo={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(await screen.findByText('node node-1'))
+    await waitFor(() => expect(screen.queryByText(/loading detail/i)).not.toBeInTheDocument())
+
+    expect(screen.getByText(/too large to store safely/i)).toBeInTheDocument()
   })
 
   it('shows an error with a retry option when undo fails', async () => {

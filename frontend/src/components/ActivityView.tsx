@@ -21,6 +21,18 @@ type DetailState =
   | { status: 'loaded'; event: ActivityEvent }
   | { status: 'error'; message: string }
 
+const DISABLED_REASON_LABELS: Record<string, string> = {
+  snapshot_omitted_oversized: 'Not undoable: recorded snapshot was too large to store safely.',
+  unsupported_action: 'Not undoable.',
+  already_reversed: 'Already undone.',
+  compensating_event: 'This is itself an undo action.',
+}
+
+function disabledReasonLabel(reason: ActivityEventSummary['disabled_reason']): string {
+  if (reason === null) return 'Not undoable.'
+  return DISABLED_REASON_LABELS[reason] ?? 'Not undoable.'
+}
+
 /** Read-only activity/audit feed plus stale-safe undo (ST-07.1/07.3): entity-type filter,
  * lazy detail drill-in (the list page never carries a before/after snapshot, ST07-F06), and
  * per-row confirm/undo/retry feedback. Redo is out of scope. */
@@ -214,7 +226,9 @@ export function ActivityView({ onLoadPage, onLoadDetail, onUndo }: ActivityViewP
                     </button>
                   )}
                   {!event.is_undoable && !isCompensating && (
-                    <p className="activity-row-disabled-reason">Not undoable.</p>
+                    <p className="activity-row-disabled-reason" data-reason={event.disabled_reason}>
+                      {disabledReasonLabel(event.disabled_reason)}
+                    </p>
                   )}
 
                   {rowUndoState.status === 'confirming' && (

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import zipfile
@@ -433,6 +434,193 @@ def test_verify_rejects_an_aggregate_expansion_beyond_the_total_byte_cap(tmp_pat
 
     with pytest.raises(BackupIntegrityError):
         verify_backup(malicious_path)
+
+
+def test_verify_rejects_an_archive_with_no_database_entry(tmp_path: Path) -> None:
+    """ST07-F07 re-review: an archive with only attachment bytes and no `database.sqlite3`
+    entry is not a valid backup, even if every entry it does declare checks out."""
+    malicious_path = tmp_path / "no-database.zip"
+    data = b"orphan attachment bytes"
+    manifest = {
+        "format_version": "1",
+        "schema_version": "1",
+        "entries": [
+            {
+                "path": "attachments/orphan-id/file.txt",
+                "size_bytes": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+        ],
+    }
+    with zipfile.ZipFile(malicious_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("attachments/orphan-id/file.txt", data)
+        archive.writestr("manifest.json", json.dumps(manifest).encode("utf-8"))
+
+    with pytest.raises(BackupIntegrityError, match="exactly one"):
+        verify_backup(malicious_path)
+
+
+def test_restore_rejects_an_archive_with_no_database_entry_without_installing_anything(
+    tmp_path: Path,
+) -> None:
+    """The exact reported bug: `restore_backup` must never let `open_connection()` silently
+    create a fresh empty `graph.db` for an archive that never had one."""
+    malicious_path = tmp_path / "no-database.zip"
+    data = b"orphan attachment bytes"
+    manifest = {
+        "format_version": "1",
+        "schema_version": "1",
+        "entries": [
+            {
+                "path": "attachments/orphan-id/file.txt",
+                "size_bytes": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+        ],
+    }
+    with zipfile.ZipFile(malicious_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("attachments/orphan-id/file.txt", data)
+        archive.writestr("manifest.json", json.dumps(manifest).encode("utf-8"))
+
+    destination = tmp_path / "restored"
+    with pytest.raises(BackupIntegrityError):
+        restore_backup(malicious_path, destination)
+
+    assert not destination.exists()
+
+
+def test_verify_rejects_an_unexpected_root_entry(tmp_path: Path) -> None:
+    malicious_path = tmp_path / "extra-root-entry.zip"
+    db_data = b"fake db bytes"
+    extra_data = b"not part of the backup format"
+    manifest = {
+        "format_version": "1",
+        "schema_version": "1",
+        "entries": [
+            {
+                "path": "database.sqlite3",
+                "size_bytes": len(db_data),
+                "sha256": hashlib.sha256(db_data).hexdigest(),
+            },
+            {
+                "path": "secrets.txt",
+                "size_bytes": len(extra_data),
+                "sha256": hashlib.sha256(extra_data).hexdigest(),
+            },
+        ],
+    }
+    with zipfile.ZipFile(malicious_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("database.sqlite3", db_data)
+        archive.writestr("secrets.txt", extra_data)
+        archive.writestr("manifest.json", json.dumps(manifest).encode("utf-8"))
+
+    with pytest.raises(BackupIntegrityError, match="entry grammar"):
+        verify_backup(malicious_path)
+
+
+def test_verify_rejects_a_malformed_attachment_entry_path(tmp_path: Path) -> None:
+    malicious_path = tmp_path / "malformed-attachment-path.zip"
+    db_data = b"fake db bytes"
+    attachment_data = b"bytes"
+    manifest = {
+        "format_version": "1",
+        "schema_version": "1",
+        "entries": [
+            {
+                "path": "database.sqlite3",
+                "size_bytes": len(db_data),
+                "sha256": hashlib.sha256(db_data).hexdigest(),
+            },
+            {
+                "path": "attachments/nested/too/deep.txt",
+                "size_bytes": len(attachment_data),
+                "sha256": hashlib.sha256(attachment_data).hexdigest(),
+            },
+        ],
+    }
+    with zipfile.ZipFile(malicious_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("database.sqlite3", db_data)
+        archive.writestr("attachments/nested/too/deep.txt", attachment_data)
+        archive.writestr("manifest.json", json.dumps(manifest).encode("utf-8"))
+
+    with pytest.raises(BackupIntegrityError, match="entry grammar"):
+        verify_backup(malicious_path)
+
+
+def test_verify_rejects_a_duplicate_attachment_id(tmp_path: Path) -> None:
+    malicious_path = tmp_path / "duplicate-attachment-id.zip"
+    db_data = b"fake db bytes"
+    first = b"first"
+    second = b"second"
+    manifest = {
+        "format_version": "1",
+        "schema_version": "1",
+        "entries": [
+            {
+                "path": "database.sqlite3",
+                "size_bytes": len(db_data),
+                "sha256": hashlib.sha256(db_data).hexdigest(),
+            },
+            {
+                "path": "attachments/same-id/a.txt",
+                "size_bytes": len(first),
+                "sha256": hashlib.sha256(first).hexdigest(),
+            },
+            {
+                "path": "attachments/same-id/b.txt",
+                "size_bytes": len(second),
+                "sha256": hashlib.sha256(second).hexdigest(),
+            },
+        ],
+    }
+    with zipfile.ZipFile(malicious_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("database.sqlite3", db_data)
+        archive.writestr("attachments/same-id/a.txt", first)
+        archive.writestr("attachments/same-id/b.txt", second)
+        archive.writestr("manifest.json", json.dumps(manifest).encode("utf-8"))
+
+    with pytest.raises(BackupIntegrityError, match="more than one entry"):
+        verify_backup(malicious_path)
+
+
+def test_verify_rejects_an_oversized_single_entry(tmp_path: Path) -> None:
+    from personal_graph_os.backup.service import MAX_SINGLE_ENTRY_BYTES
+
+    malicious_path = tmp_path / "oversized-single-entry.zip"
+    manifest = {
+        "format_version": "1",
+        "schema_version": "1",
+        "entries": [
+            {
+                "path": "database.sqlite3",
+                "size_bytes": MAX_SINGLE_ENTRY_BYTES + 1,
+                "sha256": "a" * 64,
+            }
+        ],
+    }
+    with zipfile.ZipFile(malicious_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", json.dumps(manifest).encode("utf-8"))
+
+    with pytest.raises(BackupIntegrityError, match="per-entry"):
+        verify_backup(malicious_path)
+
+
+def test_create_backup_validates_before_publishing(tmp_path: Path) -> None:
+    """ST07-F07 re-review: `create_backup` runs the archive it just built through the same
+    `verify_backup` checks before renaming it into place."""
+    workspace_dir = tmp_path / "workspace"
+    app, client, workspace_id, task_type_id = _build_workspace(workspace_dir)
+    _create_node_with_attachment(client, workspace_id, task_type_id)
+    app.state.connection.close()
+
+    output_dir = tmp_path / "backups"
+    backup_path = create_backup(workspace_dir, output_dir)
+
+    # A normal backup already passes verify_backup's grammar/cap checks unmodified; this
+    # documents that create_backup would fail closed the same way verify_backup does, since
+    # it now runs that exact function on its own output before publishing.
+    manifest = verify_backup(backup_path)
+    assert manifest["format_version"] == "1"
 
 
 def test_cli_verify_fails_closed_on_a_non_zip_file_instead_of_a_traceback(tmp_path: Path) -> None:

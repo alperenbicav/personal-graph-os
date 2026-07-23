@@ -11,15 +11,18 @@ own separate copy of them.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 
 from pydantic import BaseModel, Field, StrictInt
 
+from personal_graph_os.application.activity_recording import undo_disabled_reason
 from personal_graph_os.application.activity_service import ActivityEventPage
 from personal_graph_os.application.projections import ProjectionItem
 from personal_graph_os.application.workflow_chain import WorkflowChainStep
 from personal_graph_os.domain.activity import ActivityEvent
 from personal_graph_os.domain.graph import Edge, Node
+from personal_graph_os.domain.identifiers import ActivityEventId
 from personal_graph_os.domain.resource import Resource, ResourceKind, ResourceLifecycleStatus
 from personal_graph_os.domain.schema import FieldType
 from personal_graph_os.domain.views import FilterField, ProjectionQuery, ViewKind
@@ -311,9 +314,15 @@ class ActivityEventSummary(BaseModel):
     is_undoable: bool
     occurred_at: datetime
     reverses_event_id: str | None
+    # Stable machine-readable code for why this event cannot be undone right now (ST07-F05
+    # re-review) -- `None` while it still can be. See
+    # `activity_recording.undo_disabled_reason` for the shared taxonomy REST/undo/UI all use.
+    disabled_reason: str | None
 
     @classmethod
-    def from_domain(cls, event: ActivityEvent) -> ActivityEventSummary:
+    def from_domain(
+        cls, event: ActivityEvent, *, is_already_reversed: bool
+    ) -> ActivityEventSummary:
         return cls(
             id=event.id,
             workspace_id=event.workspace_id,
@@ -327,6 +336,25 @@ class ActivityEventSummary(BaseModel):
             is_undoable=event.is_undoable,
             occurred_at=event.occurred_at,
             reverses_event_id=event.reverses_event_id,
+            disabled_reason=undo_disabled_reason(event, is_already_reversed=is_already_reversed),
+        )
+
+
+class ActivityEventDetail(ActivityEventSummary):
+    """Full detail, including bounded before/after snapshots (ST07-F06)."""
+
+    before_state: dict[str, object] | None
+    after_state: dict[str, object] | None
+    request_id: str | None
+
+    @classmethod
+    def from_domain(cls, event: ActivityEvent, *, is_already_reversed: bool) -> ActivityEventDetail:
+        summary = ActivityEventSummary.from_domain(event, is_already_reversed=is_already_reversed)
+        return cls(
+            **summary.model_dump(),
+            before_state=event.before_state,
+            after_state=event.after_state,
+            request_id=event.request_id,
         )
 
 
@@ -335,8 +363,15 @@ class ActivityEventPageResponse(BaseModel):
     next_cursor: str | None
 
     @classmethod
-    def from_page(cls, page: ActivityEventPage) -> ActivityEventPageResponse:
+    def from_page(
+        cls, page: ActivityEventPage, *, is_already_reversed: Callable[[ActivityEventId], bool]
+    ) -> ActivityEventPageResponse:
         return cls(
-            events=[ActivityEventSummary.from_domain(event) for event in page.events],
+            events=[
+                ActivityEventSummary.from_domain(
+                    event, is_already_reversed=is_already_reversed(event.id)
+                )
+                for event in page.events
+            ],
             next_cursor=page.next_cursor,
         )

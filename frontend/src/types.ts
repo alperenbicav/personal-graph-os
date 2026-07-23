@@ -298,6 +298,12 @@ export interface ActivityEventSummary {
   is_undoable: boolean
   occurred_at: string
   reverses_event_id: string | null
+  disabled_reason:
+    | 'snapshot_omitted_oversized'
+    | 'unsupported_action'
+    | 'already_reversed'
+    | 'compensating_event'
+    | null
 }
 
 export interface ActivityEvent extends ActivityEventSummary {

@@ -94,6 +94,31 @@ def is_snapshot_omitted(snapshot: dict[str, object] | None) -> bool:
     return isinstance(snapshot, dict) and snapshot.get(OMITTED_SNAPSHOT_MARKER_KEY) is True
 
 
+# Stable machine-readable codes for why an event cannot be undone right now (ST07-F05
+# re-review): a boolean `is_undoable` cannot distinguish "this kind of mutation is never
+# reversible" from "this specific event's snapshot was too large" from "already undone" --
+# callers (REST list/detail, the undo 409 body, the UI) need the same taxonomy everywhere.
+REASON_SNAPSHOT_OMITTED_OVERSIZED = "snapshot_omitted_oversized"
+REASON_UNSUPPORTED_ACTION = "unsupported_action"
+REASON_ALREADY_REVERSED = "already_reversed"
+REASON_COMPENSATING_EVENT = "compensating_event"
+
+
+def undo_disabled_reason(event: ActivityEvent, *, is_already_reversed: bool) -> str | None:
+    """`None` when `event` can still be undone; otherwise one of the `REASON_*` codes above,
+    checked in order of specificity so an oversized-snapshot event never reports the generic
+    `unsupported_action` reason just because `is_undoable` also happens to be false for it."""
+    if event.reverses_event_id is not None:
+        return REASON_COMPENSATING_EVENT
+    if is_snapshot_omitted(event.before_state) or is_snapshot_omitted(event.after_state):
+        return REASON_SNAPSHOT_OMITTED_OVERSIZED
+    if not event.is_undoable:
+        return REASON_UNSUPPORTED_ACTION
+    if is_already_reversed:
+        return REASON_ALREADY_REVERSED
+    return None
+
+
 def _is_undoable(
     entity_type: str,
     action: MutationAction,

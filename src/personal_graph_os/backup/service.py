@@ -40,6 +40,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import stat
@@ -84,6 +85,12 @@ _READ_CHUNK_BYTES = 65536
 MAX_MANIFEST_BYTES = 10 * 1024 * 1024
 MAX_MANIFEST_ENTRIES = 100_000
 MAX_TOTAL_UNCOMPRESSED_BYTES = 50 * 1024 * 1024 * 1024
+MAX_SINGLE_ENTRY_BYTES = 5 * 1024 * 1024 * 1024
+
+# The only two shapes a backup entry may declare (ST07-F07): the one database snapshot, or
+# exactly one bytes entry per attachment id. Anything else -- an extra root file, a nested
+# path, a duplicate attachment id -- is rejected before it is ever extracted.
+_ATTACHMENT_ENTRY_PATTERN = re.compile(r"^attachments/([^/]+)/[^/]+$")
 
 # Rebuildable/internal tables excluded from the snapshot -- see module docstring. Idempotency
 # receipts are deliberately NOT here (ST07-F02): they must survive alongside the activity
@@ -251,6 +258,11 @@ def create_backup(workspace_dir: Path, output_dir: Path) -> Path:
                     _MANIFEST_ENTRY_NAME,
                     json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8"),
                 )
+
+            # Creation validates the exact same format/size/grammar limits `verify_backup`
+            # enforces, before ever publishing the archive (ST07-F07): a bug here must fail
+            # closed on the temp file, not surface only when a caller later verifies/restores.
+            verify_backup(temp_path)
         except BaseException:
             temp_path.unlink(missing_ok=True)
             raise
@@ -302,6 +314,8 @@ def _validate_manifest_shape(manifest: object) -> dict[str, object]:
         )
 
     total_declared_bytes = 0
+    database_entry_count = 0
+    seen_attachment_ids: set[str] = set()
     for entry in entries:
         if not isinstance(entry, dict):
             raise BackupIntegrityError("backup manifest entry is not a JSON object")
@@ -314,13 +328,40 @@ def _validate_manifest_shape(manifest: object) -> dict[str, object]:
             raise BackupIntegrityError("backup manifest entry has an invalid path")
         if not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes < 0:
             raise BackupIntegrityError(f"{path!r} has an invalid manifest size_bytes")
+        if size_bytes > MAX_SINGLE_ENTRY_BYTES:
+            raise BackupIntegrityError(
+                f"{path!r} exceeds the per-entry {MAX_SINGLE_ENTRY_BYTES}-byte limit"
+            )
         if not isinstance(sha256_hex, str) or len(sha256_hex) != 64:
             raise BackupIntegrityError(f"{path!r} has an invalid manifest sha256")
+
+        if path == _DATABASE_ENTRY_NAME:
+            database_entry_count += 1
+        else:
+            match = _ATTACHMENT_ENTRY_PATTERN.match(path)
+            if match is None:
+                raise BackupIntegrityError(
+                    f"{path!r} does not match the backup entry grammar "
+                    f"({_DATABASE_ENTRY_NAME!r} or 'attachments/<id>/<name>')"
+                )
+            attachment_id = match.group(1)
+            if attachment_id in seen_attachment_ids:
+                raise BackupIntegrityError(
+                    f"backup manifest declares more than one entry for attachment {attachment_id!r}"
+                )
+            seen_attachment_ids.add(attachment_id)
+
         total_declared_bytes += size_bytes
         if total_declared_bytes > MAX_TOTAL_UNCOMPRESSED_BYTES:
             raise BackupIntegrityError(
                 f"backup manifest declares more than {MAX_TOTAL_UNCOMPRESSED_BYTES} total bytes"
             )
+
+    if database_entry_count != 1:
+        raise BackupIntegrityError(
+            f"backup manifest must declare exactly one {_DATABASE_ENTRY_NAME!r} entry, "
+            f"found {database_entry_count}"
+        )
 
     return manifest
 
@@ -329,12 +370,16 @@ def verify_backup(backup_path: Path) -> dict[str, object]:
     """Validate a backup archive against its own manifest; return the parsed manifest.
 
     Rejects a duplicate, traversal, symlink, or unsafely named entry; an oversized or
-    malformed manifest (missing/wrong-typed fields, too many entries, too many aggregate
-    declared bytes); an unknown/newer format or schema version; any mismatch between the
-    manifest's declared entries and the archive's actual entries; and any entry whose actual
-    size or SHA-256 does not match what the manifest declares (including an entry that
-    expands past its declared size). A corrupt/non-ZIP archive or unparseable manifest JSON
-    is translated into `BackupIntegrityError` rather than a raw `BadZipFile`/`JSONDecodeError`.
+    malformed manifest (missing/wrong-typed fields, too many entries, too many aggregate or
+    per-entry declared bytes); an unknown/newer format or schema version; an entry that is
+    neither exactly one `database.sqlite3` nor a uniquely-attributed
+    `attachments/<id>/<name>` (ST07-F07 -- an archive with no database entry, an extra root
+    file, or two entries for the same attachment id is never a valid backup); any mismatch
+    between the manifest's declared entries and the archive's actual entries; and any entry
+    whose actual size or SHA-256 does not match what the manifest declares (including an
+    entry that expands past its declared size). A corrupt/non-ZIP archive or unparseable
+    manifest JSON is translated into `BackupIntegrityError` rather than a raw
+    `BadZipFile`/`JSONDecodeError`.
     """
     try:
         with zipfile.ZipFile(backup_path) as archive:

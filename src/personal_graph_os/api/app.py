@@ -383,9 +383,16 @@ def create_app(
     def _conflict(_request: Request, exc: Exception) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
+    def _undo_conflict(_request: Request, exc: Exception) -> JSONResponse:
+        # A stable machine-readable `code` alongside `detail` (ST07-F05 re-review): callers
+        # and the UI can distinguish policy-disabled undo from a snapshot-bound failure without
+        # parsing the human-readable message.
+        assert isinstance(exc, UndoConflictError)
+        return JSONResponse(status_code=409, content={"detail": str(exc), "code": exc.code})
+
     app.add_exception_handler(UploadTooLargeError, _too_large)
     app.add_exception_handler(AttachmentContentCorruptedError, _conflict)
-    app.add_exception_handler(UndoConflictError, _conflict)
+    app.add_exception_handler(UndoConflictError, _undo_conflict)
     app.add_exception_handler(InvalidActivityCursorError, _unprocessable)
 
     for not_found_error_type in (
