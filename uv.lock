@@ -388,6 +388,8 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "httpcore" },
+    { name = "httpx" },
     { name = "mcp" },
     { name = "pydantic" },
     { name = "python-multipart" },
@@ -396,7 +398,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "ruff" },
@@ -405,6 +406,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpcore", specifier = ">=1.0" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "mcp", specifier = ">=1.9" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "python-multipart", specifier = ">=0.0.12" },
@@ -413,7 +416,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx", specifier = ">=0.27" },
     { name = "pyright", specifier = ">=1.1" },
     { name = "pytest", specifier = ">=8.3" },
     { name = "ruff", specifier = ">=0.8" },
