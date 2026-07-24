@@ -20,9 +20,13 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteCanvasRepository,
     SqliteContextPackRepository,
     SqliteDiscoveryRunRepository,
+    SqliteDocumentLinkRepository,
+    SqliteDocumentRepository,
+    SqliteDocumentVersionRepository,
     SqliteEdgeRepository,
     SqliteFileReferenceRepository,
     SqliteIdempotencyReceiptRepository,
+    SqliteIngestionJobRepository,
     SqliteNodeRepository,
     SqliteResearchSettingsRepository,
     SqliteResourceRepository,
@@ -48,6 +52,10 @@ class SqliteResearchUnitOfWork:
         self.activity_events = SqliteActivityEventRepository(connection)
         self.idempotency_receipts = SqliteIdempotencyReceiptRepository(connection)
         self.context_packs = SqliteContextPackRepository(connection)
+        self.documents = SqliteDocumentRepository(connection)
+        self.document_versions = SqliteDocumentVersionRepository(connection)
+        self.document_links = SqliteDocumentLinkRepository(connection)
+        self.ingestion_jobs = SqliteIngestionJobRepository(connection)
         self._savepoint_count = 0
 
     def __enter__(self) -> SqliteResearchUnitOfWork:

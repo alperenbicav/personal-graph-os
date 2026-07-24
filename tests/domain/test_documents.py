@@ -51,6 +51,15 @@ def test_document_rejects_empty_source() -> None:
         _document(source="")
 
 
+def test_document_rejects_blank_source_reference() -> None:
+    with pytest.raises(InvariantViolationError):
+        _document(source_reference="   ")
+
+
+def test_document_source_reference_defaults_to_none() -> None:
+    assert _document().source_reference is None
+
+
 def test_document_rejects_duplicate_tag_ids() -> None:
     tag_id = TagId(new_id())
     with pytest.raises(InvariantViolationError):

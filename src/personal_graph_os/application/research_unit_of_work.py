@@ -14,6 +14,14 @@ applied.
 ST-06 reuses this same port for MCP mutations: an agent's write and its attributed
 `ActivityEvent` (`activity_events`) must commit or roll back together, so `AgentGatewayService`
 opens the identical unit of work rather than a second, parallel one.
+
+ST-02 reuses it for the standalone-document aggregate (Document + its first DocumentVersion +
+optional DocumentLink): `DocumentVersionRepository` deliberately exposes no single-table `save`,
+so a document is never left without the version that holds its actual content. It also commits
+the resulting `IngestionJob` in the same transaction as the Resource/Document it captured
+(review finding S2-R01): a capture either fully lands -- entity and job together -- or nothing
+does, so a retry after any crash always finds either a clean committed job or none at all, never
+a partially written one to reconcile.
 """
 
 from __future__ import annotations
@@ -29,9 +37,13 @@ from personal_graph_os.application.repositories import (
     CanvasRepository,
     ContextPackRepository,
     DiscoveryRunRepository,
+    DocumentLinkRepository,
+    DocumentRepository,
+    DocumentVersionRepository,
     EdgeRepository,
     FileReferenceRepository,
     IdempotencyReceiptRepository,
+    IngestionJobRepository,
     NodeRepository,
     ResearchSettingsRepository,
     ResourceRepository,
@@ -85,6 +97,18 @@ class ResearchUnitOfWork(Protocol):
 
     @property
     def context_packs(self) -> ContextPackRepository: ...
+
+    @property
+    def documents(self) -> DocumentRepository: ...
+
+    @property
+    def document_versions(self) -> DocumentVersionRepository: ...
+
+    @property
+    def document_links(self) -> DocumentLinkRepository: ...
+
+    @property
+    def ingestion_jobs(self) -> IngestionJobRepository: ...
 
     def __enter__(self) -> ResearchUnitOfWork: ...
 

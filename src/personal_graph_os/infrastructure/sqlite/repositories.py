@@ -1399,11 +1399,11 @@ class SqliteDocumentRepository:
         self._connection.execute(
             "INSERT INTO documents "
             "(id, workspace_id, kind, title, collection_id, is_archived, source, "
-            " created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            " source_reference, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (id) DO UPDATE SET kind = excluded.kind, title = excluded.title, "
             "collection_id = excluded.collection_id, is_archived = excluded.is_archived, "
-            "updated_at = excluded.updated_at",
+            "source_reference = excluded.source_reference, updated_at = excluded.updated_at",
             (
                 document.id,
                 document.workspace_id,
@@ -1412,6 +1412,7 @@ class SqliteDocumentRepository:
                 document.collection_id,
                 int(document.is_archived),
                 document.source,
+                document.source_reference,
                 document.created_at.isoformat(),
                 document.updated_at.isoformat(),
             ),
@@ -1450,6 +1451,7 @@ class SqliteDocumentRepository:
             tag_ids=tuple(TagId(tag_row["tag_id"]) for tag_row in tag_rows),
             is_archived=bool(row["is_archived"]),
             source=row["source"],
+            source_reference=row["source_reference"],
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )

@@ -60,6 +60,7 @@ _ALL_MIGRATION_NAMES = (
     "0006_idempotency_receipts.sql",
     "0007_activity_event_reversal.sql",
     "0008_agentic_os_foundation.sql",
+    "0009_document_source_reference.sql",
 )
 
 
@@ -111,6 +112,7 @@ def test_upgrading_an_existing_0001_database_preserves_ids_and_data() -> None:
         "0006_idempotency_receipts.sql",
         "0007_activity_event_reversal.sql",
         "0008_agentic_os_foundation.sql",
+        "0009_document_source_reference.sql",
     )
 
     resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()
@@ -293,7 +295,7 @@ def test_upgrading_an_existing_0007_database_preserves_resources_and_nodes() -> 
     connection = sqlite3.connect(":memory:")
     connection.row_factory = sqlite3.Row
     applied_migration_names(connection)
-    for name in _ALL_MIGRATION_NAMES[:-1]:
+    for name in _ALL_MIGRATION_NAMES[:7]:
         sql_script = (
             resources.files("personal_graph_os.infrastructure.sqlite.migrations.versions") / name
         ).read_text(encoding="utf-8")
@@ -318,7 +320,10 @@ def test_upgrading_an_existing_0007_database_preserves_resources_and_nodes() -> 
     connection.commit()
 
     newly_applied = run_migrations(connection)
-    assert newly_applied == ("0008_agentic_os_foundation.sql",)
+    assert newly_applied == (
+        "0008_agentic_os_foundation.sql",
+        "0009_document_source_reference.sql",
+    )
 
     resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()
     assert resource_row["node_id"] == "node-1"

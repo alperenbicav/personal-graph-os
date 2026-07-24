@@ -101,6 +101,13 @@ class Document(BaseModel):
     # Capture provenance: "manual", "agent:<identity>", "clickup", "telegram", etc. Never a
     # secret or raw transcript -- just the channel/actor identity that created this document.
     source: str
+    # The captured source's own stable identifier when one exists -- a `FileReferenceId`, a
+    # ClickUp/external item id, etc. (EP-2026-012 ST-02, review finding S2-R03): without this, a
+    # raw-inbox document captured from a file/external item has no recoverable link back to what
+    # it came from, and a later extraction adapter (ST-03) could never find it. `None` for a
+    # document with no external source identity (a standalone note, or one captured from
+    # unparseable free text).
+    source_reference: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -109,6 +116,13 @@ class Document(BaseModel):
     def _validate_non_empty(cls, value: str, info: object) -> str:
         field_name = getattr(info, "field_name", "Document field")
         return _non_empty(value, f"Document.{field_name}")
+
+    @field_validator("source_reference")
+    @classmethod
+    def _validate_source_reference(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _non_empty(value, "Document.source_reference")
 
     @field_validator("tag_ids")
     @classmethod

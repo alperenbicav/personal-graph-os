@@ -598,6 +598,24 @@ def test_document_round_trips_with_collection_and_tags(
     assert set(reloaded.tag_ids) == {tag_one.id, tag_two.id}
 
 
+def test_document_source_reference_round_trips(sqlite_connection: sqlite3.Connection) -> None:
+    """EP-2026-012 ST-02, review finding S2-R03: a raw-inbox document captured from a file or
+    external item must keep that source's stable identifier recoverable after reload."""
+    document_repository = SqliteDocumentRepository(sqlite_connection)
+    document = Document(
+        workspace_id=_saved_workspace(sqlite_connection).id,
+        kind=DocumentKind.NOTE,
+        title="Captured file",
+        source="manual",
+        source_reference="file-ref-123",
+    )
+    document_repository.save(document)
+
+    reloaded = document_repository.get(document.id)
+    assert reloaded is not None
+    assert reloaded.source_reference == "file-ref-123"
+
+
 def test_document_save_replaces_tag_assignment_on_update(
     sqlite_connection: sqlite3.Connection,
 ) -> None:
