@@ -32,6 +32,14 @@ _EXPECTED_TABLES = {
     "search_documents",
     "pending_file_operations",
     "idempotency_receipts",
+    "collections",
+    "tags",
+    "documents",
+    "document_tags",
+    "document_versions",
+    "document_links",
+    "ingestion_jobs",
+    "work_items",
 }
 
 
@@ -51,6 +59,7 @@ _ALL_MIGRATION_NAMES = (
     "0005_activity_event_request_id.sql",
     "0006_idempotency_receipts.sql",
     "0007_activity_event_reversal.sql",
+    "0008_agentic_os_foundation.sql",
 )
 
 
@@ -101,6 +110,7 @@ def test_upgrading_an_existing_0001_database_preserves_ids_and_data() -> None:
         "0005_activity_event_request_id.sql",
         "0006_idempotency_receipts.sql",
         "0007_activity_event_reversal.sql",
+        "0008_agentic_os_foundation.sql",
     )
 
     resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()
@@ -275,6 +285,88 @@ def test_apply_migration_script_handles_trigger_body_with_semicolons() -> None:
     mirrored = connection.execute("SELECT id, value FROM mirrored_rows").fetchall()
     assert mirrored == [("1", "hello")]
     assert applied_migration_names(connection) == {"999_trigger.sql"}
+
+
+def test_upgrading_an_existing_0007_database_preserves_resources_and_nodes() -> None:
+    """ST-01 (EP-2026-012): 0008 is purely additive -- a pre-existing resource/node must still
+    round-trip unchanged after the new document/ingestion/work-item tables are added."""
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    applied_migration_names(connection)
+    for name in _ALL_MIGRATION_NAMES[:-1]:
+        sql_script = (
+            resources.files("personal_graph_os.infrastructure.sqlite.migrations.versions") / name
+        ).read_text(encoding="utf-8")
+        apply_migration_script(connection, name, sql_script)
+
+    connection.execute(
+        "INSERT INTO workspaces (id, name, created_at) VALUES ('ws-1', 'Personal', 't0')"
+    )
+    connection.execute(
+        "INSERT INTO node_types (id, workspace_id, name) VALUES ('nt-1', 'ws-1', 'Resource')"
+    )
+    connection.execute(
+        "INSERT INTO nodes "
+        "(id, workspace_id, node_type_id, title, created_at, updated_at) "
+        "VALUES ('node-1', 'ws-1', 'nt-1', 'A paper', 't0', 't0')"
+    )
+    connection.execute(
+        "INSERT INTO resources "
+        "(id, workspace_id, node_id, kind, canonical_identifier, last_activity_at) "
+        "VALUES ('res-1', 'ws-1', 'node-1', 'paper', 'arxiv:1', 't0')"
+    )
+    connection.commit()
+
+    newly_applied = run_migrations(connection)
+    assert newly_applied == ("0008_agentic_os_foundation.sql",)
+
+    resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()
+    assert resource_row["node_id"] == "node-1"
+    assert resource_row["canonical_identifier"] == "arxiv:1"
+
+
+def test_work_item_node_id_is_unique_and_ingestion_job_source_identity_is_unique(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    connection = sqlite_connection
+    connection.execute(
+        "INSERT INTO workspaces (id, name, created_at) VALUES ('ws-1', 'Personal', 't0')"
+    )
+    connection.execute(
+        "INSERT INTO node_types (id, workspace_id, name) VALUES ('nt-1', 'ws-1', 'Task')"
+    )
+    connection.execute(
+        "INSERT INTO nodes "
+        "(id, workspace_id, node_type_id, title, created_at, updated_at) "
+        "VALUES ('node-1', 'ws-1', 'nt-1', 'Ship it', 't0', 't0')"
+    )
+    connection.execute(
+        "INSERT INTO work_items "
+        "(id, workspace_id, node_id, kind, work_type, source, created_at, updated_at) "
+        "VALUES ('wi-1', 'ws-1', 'node-1', 'task', 'fix', 'manual', 't0', 't0')"
+    )
+    connection.commit()
+
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            "INSERT INTO work_items "
+            "(id, workspace_id, node_id, kind, work_type, source, created_at, updated_at) "
+            "VALUES ('wi-2', 'ws-1', 'node-1', 'task', 'fix', 'manual', 't0', 't0')"
+        )
+
+    connection.execute(
+        "INSERT INTO ingestion_jobs "
+        "(id, workspace_id, source, source_identifier, created_at, updated_at) "
+        "VALUES ('job-1', 'ws-1', 'telegram', 'update:1', 't0', 't0')"
+    )
+    connection.commit()
+
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            "INSERT INTO ingestion_jobs "
+            "(id, workspace_id, source, source_identifier, created_at, updated_at) "
+            "VALUES ('job-2', 'ws-1', 'telegram', 'update:1', 't0', 't0')"
+        )
 
 
 def test_resources_uniqueness_is_workspace_and_identifier_independent_of_kind() -> None:

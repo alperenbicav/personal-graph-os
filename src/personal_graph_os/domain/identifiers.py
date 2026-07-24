@@ -27,6 +27,13 @@ FileReferenceId = NewType("FileReferenceId", str)
 ActivityEventId = NewType("ActivityEventId", str)
 DiscoveryRunId = NewType("DiscoveryRunId", str)
 IdempotencyReceiptId = NewType("IdempotencyReceiptId", str)
+CollectionId = NewType("CollectionId", str)
+TagId = NewType("TagId", str)
+DocumentId = NewType("DocumentId", str)
+DocumentVersionId = NewType("DocumentVersionId", str)
+DocumentLinkId = NewType("DocumentLinkId", str)
+IngestionJobId = NewType("IngestionJobId", str)
+WorkItemId = NewType("WorkItemId", str)
 
 
 def new_id() -> str:

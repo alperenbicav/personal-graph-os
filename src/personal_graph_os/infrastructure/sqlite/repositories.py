@@ -21,6 +21,15 @@ from personal_graph_os.domain.activity import (
     MutationAction,
 )
 from personal_graph_os.domain.canvas import Canvas, CanvasPlacement
+from personal_graph_os.domain.documents import (
+    Collection,
+    Document,
+    DocumentKind,
+    DocumentLink,
+    DocumentLinkTargetType,
+    DocumentVersion,
+    Tag,
+)
 from personal_graph_os.domain.files import Attachment, FileReference
 from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.identifiers import (
@@ -28,17 +37,25 @@ from personal_graph_os.domain.identifiers import (
     AttachmentId,
     CanvasId,
     CanvasPlacementId,
+    CollectionId,
     ContextPackId,
     DiscoveryRunId,
+    DocumentId,
+    DocumentLinkId,
+    DocumentVersionId,
     EdgeId,
     FileReferenceId,
     IdempotencyReceiptId,
+    IngestionJobId,
     NodeId,
     ResourceId,
     SavedViewId,
+    TagId,
+    WorkItemId,
     WorkspaceId,
     new_id,
 )
+from personal_graph_os.domain.ingestion import IngestionJob, IngestionJobStatus, IngestionStage
 from personal_graph_os.domain.research_settings import WorkspaceResearchSettings
 from personal_graph_os.domain.resource import Resource, ResourceKind, ResourceLifecycleStatus
 from personal_graph_os.domain.schema import (
@@ -50,6 +67,12 @@ from personal_graph_os.domain.schema import (
 )
 from personal_graph_os.domain.search import SearchEntityType, SearchHit, compile_fts5_query
 from personal_graph_os.domain.views import ContextPack, SavedView, ViewKind
+from personal_graph_os.domain.work_items import (
+    WorkItem,
+    WorkItemKind,
+    WorkItemStatus,
+    WorkItemType,
+)
 
 
 class SqliteWorkspaceRepository:
@@ -1251,4 +1274,426 @@ class SqliteResearchSettingsRepository:
             "ON CONFLICT (workspace_id) DO UPDATE SET "
             "stale_after_days = excluded.stale_after_days",
             (settings.workspace_id, settings.stale_after_days),
+        )
+
+
+class SqliteCollectionRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(self, collection_id: CollectionId) -> Collection | None:
+        row = self._connection.execute(
+            "SELECT * FROM collections WHERE id = ?", (collection_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def list_by_workspace(self, workspace_id: WorkspaceId) -> tuple[Collection, ...]:
+        rows = self._connection.execute(
+            "SELECT * FROM collections WHERE workspace_id = ?", (workspace_id,)
+        ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
+    def save(self, collection: Collection) -> None:
+        with self._connection:
+            self.save_without_commit(collection)
+
+    def save_without_commit(self, collection: Collection) -> None:
+        self._connection.execute(
+            "INSERT INTO collections (id, workspace_id, name, parent_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT (id) DO UPDATE SET name = excluded.name, parent_id = excluded.parent_id",
+            (
+                collection.id,
+                collection.workspace_id,
+                collection.name,
+                collection.parent_id,
+                collection.created_at.isoformat(),
+            ),
+        )
+
+    def _hydrate(self, row: sqlite3.Row) -> Collection:
+        return Collection(
+            id=CollectionId(row["id"]),
+            workspace_id=row["workspace_id"],
+            name=row["name"],
+            parent_id=CollectionId(row["parent_id"]) if row["parent_id"] is not None else None,
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+
+class SqliteTagRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(self, tag_id: TagId) -> Tag | None:
+        row = self._connection.execute("SELECT * FROM tags WHERE id = ?", (tag_id,)).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def get_by_name(self, workspace_id: WorkspaceId, name: str) -> Tag | None:
+        row = self._connection.execute(
+            "SELECT * FROM tags WHERE workspace_id = ? AND name = ?", (workspace_id, name)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def list_by_workspace(self, workspace_id: WorkspaceId) -> tuple[Tag, ...]:
+        rows = self._connection.execute(
+            "SELECT * FROM tags WHERE workspace_id = ?", (workspace_id,)
+        ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
+    def save(self, tag: Tag) -> None:
+        with self._connection:
+            self.save_without_commit(tag)
+
+    def save_without_commit(self, tag: Tag) -> None:
+        self._connection.execute(
+            "INSERT INTO tags (id, workspace_id, name, created_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (id) DO UPDATE SET name = excluded.name",
+            (tag.id, tag.workspace_id, tag.name, tag.created_at.isoformat()),
+        )
+
+    def _hydrate(self, row: sqlite3.Row) -> Tag:
+        return Tag(
+            id=TagId(row["id"]),
+            workspace_id=row["workspace_id"],
+            name=row["name"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+
+class SqliteDocumentRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(self, document_id: DocumentId) -> Document | None:
+        row = self._connection.execute(
+            "SELECT * FROM documents WHERE id = ?", (document_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def list_by_workspace(
+        self, workspace_id: WorkspaceId, *, include_archived: bool = False
+    ) -> tuple[Document, ...]:
+        if include_archived:
+            rows = self._connection.execute(
+                "SELECT * FROM documents WHERE workspace_id = ?", (workspace_id,)
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                "SELECT * FROM documents WHERE workspace_id = ? AND is_archived = 0",
+                (workspace_id,),
+            ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
+    def list_by_collection(self, collection_id: CollectionId) -> tuple[Document, ...]:
+        rows = self._connection.execute(
+            "SELECT * FROM documents WHERE collection_id = ?", (collection_id,)
+        ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
+    def save(self, document: Document) -> None:
+        with self._connection:
+            self.save_without_commit(document)
+
+    def save_without_commit(self, document: Document) -> None:
+        self._connection.execute(
+            "INSERT INTO documents "
+            "(id, workspace_id, kind, title, collection_id, is_archived, source, "
+            " created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (id) DO UPDATE SET kind = excluded.kind, title = excluded.title, "
+            "collection_id = excluded.collection_id, is_archived = excluded.is_archived, "
+            "updated_at = excluded.updated_at",
+            (
+                document.id,
+                document.workspace_id,
+                document.kind.value,
+                document.title,
+                document.collection_id,
+                int(document.is_archived),
+                document.source,
+                document.created_at.isoformat(),
+                document.updated_at.isoformat(),
+            ),
+        )
+        current_tag_ids = tuple(document.tag_ids)
+        if current_tag_ids:
+            placeholders = ",".join("?" for _ in current_tag_ids)
+            self._connection.execute(
+                f"DELETE FROM document_tags WHERE document_id = ? "
+                f"AND tag_id NOT IN ({placeholders})",
+                (document.id, *current_tag_ids),
+            )
+        else:
+            self._connection.execute(
+                "DELETE FROM document_tags WHERE document_id = ?", (document.id,)
+            )
+        for tag_id in current_tag_ids:
+            self._connection.execute(
+                "INSERT INTO document_tags (document_id, tag_id) VALUES (?, ?) "
+                "ON CONFLICT (document_id, tag_id) DO NOTHING",
+                (document.id, tag_id),
+            )
+
+    def _hydrate(self, row: sqlite3.Row) -> Document:
+        tag_rows = self._connection.execute(
+            "SELECT tag_id FROM document_tags WHERE document_id = ?", (row["id"],)
+        ).fetchall()
+        return Document(
+            id=DocumentId(row["id"]),
+            workspace_id=row["workspace_id"],
+            kind=DocumentKind(row["kind"]),
+            title=row["title"],
+            collection_id=(
+                CollectionId(row["collection_id"]) if row["collection_id"] is not None else None
+            ),
+            tag_ids=tuple(TagId(tag_row["tag_id"]) for tag_row in tag_rows),
+            is_archived=bool(row["is_archived"]),
+            source=row["source"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+
+class SqliteDocumentVersionRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(self, document_version_id: DocumentVersionId) -> DocumentVersion | None:
+        row = self._connection.execute(
+            "SELECT * FROM document_versions WHERE id = ?", (document_version_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def list_by_document(self, document_id: DocumentId) -> tuple[DocumentVersion, ...]:
+        rows = self._connection.execute(
+            "SELECT * FROM document_versions WHERE document_id = ? ORDER BY version_number",
+            (document_id,),
+        ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
+    def latest_for_document(self, document_id: DocumentId) -> DocumentVersion | None:
+        row = self._connection.execute(
+            "SELECT * FROM document_versions WHERE document_id = ? "
+            "ORDER BY version_number DESC LIMIT 1",
+            (document_id,),
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def save_without_commit(self, document_version: DocumentVersion) -> None:
+        """Insert-only: a version is immutable once written (see `DocumentVersion`)."""
+        self._connection.execute(
+            "INSERT INTO document_versions "
+            "(id, document_id, version_number, body_markdown, created_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                document_version.id,
+                document_version.document_id,
+                document_version.version_number,
+                document_version.body_markdown,
+                document_version.created_by,
+                document_version.created_at.isoformat(),
+            ),
+        )
+
+    def _hydrate(self, row: sqlite3.Row) -> DocumentVersion:
+        return DocumentVersion(
+            id=DocumentVersionId(row["id"]),
+            document_id=DocumentId(row["document_id"]),
+            version_number=row["version_number"],
+            body_markdown=row["body_markdown"],
+            created_by=row["created_by"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+
+class SqliteDocumentLinkRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def list_by_document(self, document_id: DocumentId) -> tuple[DocumentLink, ...]:
+        rows = self._connection.execute(
+            "SELECT * FROM document_links WHERE document_id = ?", (document_id,)
+        ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
+    def save(self, document_link: DocumentLink) -> None:
+        with self._connection:
+            self.save_without_commit(document_link)
+
+    def save_without_commit(self, document_link: DocumentLink) -> None:
+        self._connection.execute(
+            "INSERT INTO document_links "
+            "(id, document_id, target_type, target_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT (id) DO NOTHING",
+            (
+                document_link.id,
+                document_link.document_id,
+                document_link.target_type.value,
+                document_link.target_id,
+                document_link.created_at.isoformat(),
+            ),
+        )
+
+    def delete(self, document_link_id: DocumentLinkId) -> None:
+        with self._connection:
+            self.delete_without_commit(document_link_id)
+
+    def delete_without_commit(self, document_link_id: DocumentLinkId) -> None:
+        self._connection.execute("DELETE FROM document_links WHERE id = ?", (document_link_id,))
+
+    def _hydrate(self, row: sqlite3.Row) -> DocumentLink:
+        return DocumentLink(
+            id=DocumentLinkId(row["id"]),
+            document_id=DocumentId(row["document_id"]),
+            target_type=DocumentLinkTargetType(row["target_type"]),
+            target_id=row["target_id"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+
+class SqliteIngestionJobRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(self, ingestion_job_id: IngestionJobId) -> IngestionJob | None:
+        row = self._connection.execute(
+            "SELECT * FROM ingestion_jobs WHERE id = ?", (ingestion_job_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def get_by_source(
+        self, workspace_id: WorkspaceId, source: str, source_identifier: str
+    ) -> IngestionJob | None:
+        row = self._connection.execute(
+            "SELECT * FROM ingestion_jobs "
+            "WHERE workspace_id = ? AND source = ? AND source_identifier = ?",
+            (workspace_id, source, source_identifier),
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def list_by_workspace(self, workspace_id: WorkspaceId) -> tuple[IngestionJob, ...]:
+        rows = self._connection.execute(
+            "SELECT * FROM ingestion_jobs WHERE workspace_id = ?", (workspace_id,)
+        ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
+    def save(self, ingestion_job: IngestionJob) -> None:
+        with self._connection:
+            self.save_without_commit(ingestion_job)
+
+    def save_without_commit(self, ingestion_job: IngestionJob) -> None:
+        self._connection.execute(
+            "INSERT INTO ingestion_jobs "
+            "(id, workspace_id, source, source_identifier, stage, status, "
+            " result_entity_type, result_entity_id, error_message, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (id) DO UPDATE SET stage = excluded.stage, status = excluded.status, "
+            "result_entity_type = excluded.result_entity_type, "
+            "result_entity_id = excluded.result_entity_id, "
+            "error_message = excluded.error_message, updated_at = excluded.updated_at",
+            (
+                ingestion_job.id,
+                ingestion_job.workspace_id,
+                ingestion_job.source,
+                ingestion_job.source_identifier,
+                ingestion_job.stage.value,
+                ingestion_job.status.value,
+                ingestion_job.result_entity_type,
+                ingestion_job.result_entity_id,
+                ingestion_job.error_message,
+                ingestion_job.created_at.isoformat(),
+                ingestion_job.updated_at.isoformat(),
+            ),
+        )
+
+    def _hydrate(self, row: sqlite3.Row) -> IngestionJob:
+        return IngestionJob(
+            id=IngestionJobId(row["id"]),
+            workspace_id=row["workspace_id"],
+            source=row["source"],
+            source_identifier=row["source_identifier"],
+            stage=IngestionStage(row["stage"]),
+            status=IngestionJobStatus(row["status"]),
+            result_entity_type=row["result_entity_type"],
+            result_entity_id=row["result_entity_id"],
+            error_message=row["error_message"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+
+class SqliteWorkItemRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(self, work_item_id: WorkItemId) -> WorkItem | None:
+        row = self._connection.execute(
+            "SELECT * FROM work_items WHERE id = ?", (work_item_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def get_by_node(self, node_id: NodeId) -> WorkItem | None:
+        row = self._connection.execute(
+            "SELECT * FROM work_items WHERE node_id = ?", (node_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def list_by_workspace(self, workspace_id: WorkspaceId) -> tuple[WorkItem, ...]:
+        rows = self._connection.execute(
+            "SELECT * FROM work_items WHERE workspace_id = ?", (workspace_id,)
+        ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
+    def list_by_parent(self, parent_id: WorkItemId) -> tuple[WorkItem, ...]:
+        rows = self._connection.execute(
+            "SELECT * FROM work_items WHERE parent_id = ?", (parent_id,)
+        ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
+    def save(self, work_item: WorkItem) -> None:
+        with self._connection:
+            self.save_without_commit(work_item)
+
+    def save_without_commit(self, work_item: WorkItem) -> None:
+        self._connection.execute(
+            "INSERT INTO work_items "
+            "(id, workspace_id, node_id, kind, work_type, status, parent_id, "
+            " repository_node_id, source, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (id) DO UPDATE SET work_type = excluded.work_type, "
+            "status = excluded.status, parent_id = excluded.parent_id, "
+            "repository_node_id = excluded.repository_node_id, "
+            "updated_at = excluded.updated_at",
+            (
+                work_item.id,
+                work_item.workspace_id,
+                work_item.node_id,
+                work_item.kind.value,
+                work_item.work_type.value,
+                work_item.status.value,
+                work_item.parent_id,
+                work_item.repository_node_id,
+                work_item.source,
+                work_item.created_at.isoformat(),
+                work_item.updated_at.isoformat(),
+            ),
+        )
+
+    def _hydrate(self, row: sqlite3.Row) -> WorkItem:
+        return WorkItem(
+            id=WorkItemId(row["id"]),
+            workspace_id=row["workspace_id"],
+            node_id=row["node_id"],
+            kind=WorkItemKind(row["kind"]),
+            work_type=WorkItemType(row["work_type"]),
+            status=WorkItemStatus(row["status"]),
+            parent_id=WorkItemId(row["parent_id"]) if row["parent_id"] is not None else None,
+            repository_node_id=(
+                NodeId(row["repository_node_id"]) if row["repository_node_id"] is not None else None
+            ),
+            source=row["source"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
         )
