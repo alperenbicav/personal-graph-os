@@ -45,7 +45,10 @@ from personal_graph_os.application.repositories import (
     IdempotencyReceiptRepository,
     IngestionJobRepository,
     NodeRepository,
+    RelationProposalRepository,
     ResearchSettingsRepository,
+    ResourceEnrichmentProfileRepository,
+    ResourceEnrichmentProfileVersionRepository,
     ResourceRepository,
     SavedViewRepository,
     WorkspaceRepository,
@@ -109,6 +112,17 @@ class ResearchUnitOfWork(Protocol):
 
     @property
     def ingestion_jobs(self) -> IngestionJobRepository: ...
+
+    @property
+    def resource_enrichment_profiles(self) -> ResourceEnrichmentProfileRepository: ...
+
+    @property
+    def resource_enrichment_profile_versions(
+        self,
+    ) -> ResourceEnrichmentProfileVersionRepository: ...
+
+    @property
+    def relation_proposals(self) -> RelationProposalRepository: ...
 
     def __enter__(self) -> ResearchUnitOfWork: ...
 

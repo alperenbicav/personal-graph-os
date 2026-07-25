@@ -190,6 +190,47 @@ def test_edge_round_trips_and_lists_incident_edges(sqlite_connection: sqlite3.Co
     assert {e.id for e in edge_repository.list_incident_to_node(target.id)} == {edge.id}
 
 
+def test_save_if_absent_enforces_canonical_edge_uniqueness_atomically(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    """Review finding S4-R05: two distinct edge rows for the same
+    (workspace_id, edge_type_id, source_node_id, target_node_id) must never both persist, even
+    when inserted directly via the repository (bypassing any application-level check) -- proven
+    by the `idx_edges_canonical_uniqueness` unique index (migration 0011), not a non-atomic
+    read-then-insert."""
+    node_type = NodeType(name="Task")
+    edge_type = EdgeType(name="relates_to")
+    workspace = Workspace(name="Personal", node_types=(node_type,), edge_types=(edge_type,))
+    SqliteWorkspaceRepository(sqlite_connection).save(workspace)
+
+    node_repository = SqliteNodeRepository(sqlite_connection)
+    source = Node(workspace_id=workspace.id, node_type_id=node_type.id, title="Source")
+    target = Node(workspace_id=workspace.id, node_type_id=node_type.id, title="Target")
+    node_repository.save(source)
+    node_repository.save(target)
+
+    edge_repository = SqliteEdgeRepository(sqlite_connection)
+    first_edge = Edge(
+        workspace_id=workspace.id,
+        edge_type_id=edge_type.id,
+        source_node_id=source.id,
+        target_node_id=target.id,
+    )
+    second_edge = Edge(
+        workspace_id=workspace.id,
+        edge_type_id=edge_type.id,
+        source_node_id=source.id,
+        target_node_id=target.id,
+    )
+
+    assert edge_repository.save_if_absent_without_commit(first_edge) is True
+    assert edge_repository.save_if_absent_without_commit(second_edge) is False
+    sqlite_connection.commit()
+
+    surviving = edge_repository.list_incident_to_node(source.id)
+    assert [e.id for e in surviving] == [first_edge.id]
+
+
 def test_save_deletes_field_and_status_definitions_removed_from_the_node_type(
     sqlite_connection: sqlite3.Connection,
 ) -> None:

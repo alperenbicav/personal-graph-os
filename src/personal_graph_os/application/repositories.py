@@ -17,6 +17,12 @@ from personal_graph_os.domain.documents import (
     DocumentVersion,
     Tag,
 )
+from personal_graph_os.domain.enrichment import (
+    RelationProposal,
+    RelationProposalStatus,
+    ResourceEnrichmentProfile,
+    ResourceEnrichmentProfileVersion,
+)
 from personal_graph_os.domain.files import Attachment, FileReference
 from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.identifiers import (
@@ -34,6 +40,9 @@ from personal_graph_os.domain.identifiers import (
     FileReferenceId,
     IngestionJobId,
     NodeId,
+    RelationProposalId,
+    ResourceEnrichmentProfileId,
+    ResourceEnrichmentProfileVersionId,
     ResourceId,
     SavedViewId,
     TagId,
@@ -70,6 +79,13 @@ class EdgeRepository(Protocol):
     def get(self, edge_id: EdgeId) -> Edge | None: ...
     def save(self, edge: Edge) -> None: ...
     def save_without_commit(self, edge: Edge) -> None: ...
+    def save_if_absent_without_commit(self, edge: Edge) -> bool:
+        """Insert `edge` atomically only if no edge with the same `(workspace_id, edge_type_id,
+        source_node_id, target_node_id)` already exists (review finding S4-R05). Returns whether
+        a new row was actually inserted -- enforced by a database uniqueness constraint, not a
+        non-atomic read-then-insert, so it is safe even under a genuine concurrent race."""
+        ...
+
     def list_by_workspace(self, workspace_id: WorkspaceId) -> tuple[Edge, ...]: ...
     def list_incident_to_node(self, node_id: NodeId) -> tuple[Edge, ...]: ...
     def delete(self, edge_id: EdgeId) -> None: ...
@@ -243,6 +259,43 @@ class WorkItemRepository(Protocol):
     def list_by_parent(self, parent_id: WorkItemId) -> tuple[WorkItem, ...]: ...
     def save(self, work_item: WorkItem) -> None: ...
     def save_without_commit(self, work_item: WorkItem) -> None: ...
+
+
+class ResourceEnrichmentProfileRepository(Protocol):
+    def get(self, profile_id: ResourceEnrichmentProfileId) -> ResourceEnrichmentProfile | None: ...
+    def get_by_identifier(
+        self, workspace_id: WorkspaceId, canonical_identifier: str
+    ) -> ResourceEnrichmentProfile | None: ...
+    def save_without_commit(self, profile: ResourceEnrichmentProfile) -> None: ...
+
+
+class ResourceEnrichmentProfileVersionRepository(Protocol):
+    def get(
+        self, version_id: ResourceEnrichmentProfileVersionId
+    ) -> ResourceEnrichmentProfileVersion | None: ...
+    def list_by_profile(
+        self, profile_id: ResourceEnrichmentProfileId
+    ) -> tuple[ResourceEnrichmentProfileVersion, ...]: ...
+
+    def create_version_without_commit(
+        self, version: ResourceEnrichmentProfileVersion, *, expected_current_version_number: int
+    ) -> None:
+        """Insert `version`, guarded by expected-version optimistic concurrency.
+
+        Raises `personal_graph_os.domain.enrichment.ConcurrentEnrichmentUpdateError` if the
+        profile's actual current version number no longer matches
+        `expected_current_version_number` -- another write already landed, so this caller must
+        re-read and retry rather than silently overwrite it.
+        """
+        ...
+
+
+class RelationProposalRepository(Protocol):
+    def get(self, proposal_id: RelationProposalId) -> RelationProposal | None: ...
+    def list_by_workspace(
+        self, workspace_id: WorkspaceId, *, status: RelationProposalStatus | None = None
+    ) -> tuple[RelationProposal, ...]: ...
+    def save_without_commit(self, proposal: RelationProposal) -> None: ...
 
 
 class SearchIndexRepository(Protocol):

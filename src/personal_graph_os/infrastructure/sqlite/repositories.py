@@ -30,6 +30,15 @@ from personal_graph_os.domain.documents import (
     DocumentVersion,
     Tag,
 )
+from personal_graph_os.domain.enrichment import (
+    ConcurrentEnrichmentUpdateError,
+    ProposedRelationKind,
+    RelationProposal,
+    RelationProposalStatus,
+    ResourceEnrichmentProfile,
+    ResourceEnrichmentProfileVersion,
+    payload_type_for_kind,
+)
 from personal_graph_os.domain.files import Attachment, FileReference
 from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.identifiers import (
@@ -48,6 +57,9 @@ from personal_graph_os.domain.identifiers import (
     IdempotencyReceiptId,
     IngestionJobId,
     NodeId,
+    RelationProposalId,
+    ResourceEnrichmentProfileId,
+    ResourceEnrichmentProfileVersionId,
     ResourceId,
     SavedViewId,
     TagId,
@@ -387,6 +399,29 @@ class SqliteEdgeRepository:
     def save(self, edge: Edge) -> None:
         with self._connection:
             self.save_without_commit(edge)
+
+    def save_if_absent_without_commit(self, edge: Edge) -> bool:
+        """Insert `edge` atomically only if no edge with the same `(workspace_id, edge_type_id,
+        source_node_id, target_node_id)` already exists (review finding S4-R05), enforced by the
+        `idx_edges_canonical_uniqueness` unique index (migration 0011) rather than a
+        non-atomic read-then-insert. Returns whether a new row was actually inserted."""
+        cursor = self._connection.execute(
+            "INSERT INTO edges "
+            "(id, workspace_id, edge_type_id, source_node_id, target_node_id, "
+            " field_values_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (workspace_id, edge_type_id, source_node_id, target_node_id) DO NOTHING",
+            (
+                edge.id,
+                edge.workspace_id,
+                edge.edge_type_id,
+                edge.source_node_id,
+                edge.target_node_id,
+                json.dumps(edge.field_values),
+                edge.created_at.isoformat(),
+            ),
+        )
+        return cursor.rowcount > 0
 
     def save_without_commit(self, edge: Edge) -> None:
         """Write `edge`'s row without committing.
@@ -1696,6 +1731,227 @@ class SqliteWorkItemRepository:
                 NodeId(row["repository_node_id"]) if row["repository_node_id"] is not None else None
             ),
             source=row["source"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+
+class SqliteResourceEnrichmentProfileRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(self, profile_id: ResourceEnrichmentProfileId) -> ResourceEnrichmentProfile | None:
+        row = self._connection.execute(
+            "SELECT * FROM resource_enrichment_profiles WHERE id = ?", (profile_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def get_by_identifier(
+        self, workspace_id: WorkspaceId, canonical_identifier: str
+    ) -> ResourceEnrichmentProfile | None:
+        row = self._connection.execute(
+            "SELECT * FROM resource_enrichment_profiles "
+            "WHERE workspace_id = ? AND canonical_identifier = ?",
+            (workspace_id, canonical_identifier),
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def save_without_commit(self, profile: ResourceEnrichmentProfile) -> None:
+        self._connection.execute(
+            "INSERT INTO resource_enrichment_profiles "
+            "(id, workspace_id, canonical_identifier, resource_kind, current_version_number, "
+            " current_version_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (id) DO UPDATE SET "
+            "current_version_number = excluded.current_version_number, "
+            "current_version_id = excluded.current_version_id, "
+            "updated_at = excluded.updated_at",
+            (
+                profile.id,
+                profile.workspace_id,
+                profile.canonical_identifier,
+                profile.resource_kind.value,
+                profile.current_version_number,
+                profile.current_version_id,
+                profile.created_at.isoformat(),
+                profile.updated_at.isoformat(),
+            ),
+        )
+
+    def _hydrate(self, row: sqlite3.Row) -> ResourceEnrichmentProfile:
+        return ResourceEnrichmentProfile(
+            id=ResourceEnrichmentProfileId(row["id"]),
+            workspace_id=row["workspace_id"],
+            canonical_identifier=row["canonical_identifier"],
+            resource_kind=ResourceKind(row["resource_kind"]),
+            current_version_number=row["current_version_number"],
+            current_version_id=(
+                ResourceEnrichmentProfileVersionId(row["current_version_id"])
+                if row["current_version_id"] is not None
+                else None
+            ),
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+
+class SqliteResourceEnrichmentProfileVersionRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(
+        self, version_id: ResourceEnrichmentProfileVersionId
+    ) -> ResourceEnrichmentProfileVersion | None:
+        row = self._connection.execute(
+            "SELECT * FROM resource_enrichment_profile_versions WHERE id = ?", (version_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def list_by_profile(
+        self, profile_id: ResourceEnrichmentProfileId
+    ) -> tuple[ResourceEnrichmentProfileVersion, ...]:
+        rows = self._connection.execute(
+            "SELECT * FROM resource_enrichment_profile_versions "
+            "WHERE profile_id = ? ORDER BY version_number",
+            (profile_id,),
+        ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
+    def create_version_without_commit(
+        self, version: ResourceEnrichmentProfileVersion, *, expected_current_version_number: int
+    ) -> None:
+        """Insert-only: a version is immutable once written.
+
+        Always re-reads the profile's actual current version number from the database first,
+        inside the same transaction, and raises `ConcurrentEnrichmentUpdateError` immediately if
+        it has already moved past what the caller expected -- a stale in-memory read is caught
+        here rather than racing on the `UNIQUE (profile_id, version_number)` constraint below,
+        which remains a second, defense-in-depth guard against a genuine write race.
+        """
+        actual_row = self._connection.execute(
+            "SELECT current_version_number FROM resource_enrichment_profiles WHERE id = ?",
+            (version.profile_id,),
+        ).fetchone()
+        actual_version_number = 0 if actual_row is None else actual_row["current_version_number"]
+        if actual_version_number != expected_current_version_number:
+            raise ConcurrentEnrichmentUpdateError(
+                f"profile {version.profile_id} expected current version "
+                f"{expected_current_version_number} but found {actual_version_number}: "
+                "another enrichment write already landed"
+            )
+        try:
+            self._connection.execute(
+                "INSERT INTO resource_enrichment_profile_versions "
+                "(id, profile_id, version_number, resource_kind, payload_json, tags_json, "
+                " evidence_content_hashes_json, provider_name, model_name, confidence, "
+                " created_by, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    version.id,
+                    version.profile_id,
+                    version.version_number,
+                    version.resource_kind.value,
+                    json.dumps(version.payload.model_dump(mode="json")),
+                    json.dumps(list(version.tags)),
+                    json.dumps(list(version.evidence_content_hashes)),
+                    version.provider_name,
+                    version.model_name,
+                    version.confidence,
+                    version.created_by,
+                    version.created_at.isoformat(),
+                ),
+            )
+        except sqlite3.IntegrityError as error:
+            raise ConcurrentEnrichmentUpdateError(
+                f"profile {version.profile_id} already has a version "
+                f"{version.version_number}: another enrichment write already landed"
+            ) from error
+
+    def _hydrate(self, row: sqlite3.Row) -> ResourceEnrichmentProfileVersion:
+        resource_kind = ResourceKind(row["resource_kind"])
+        payload_type = payload_type_for_kind(resource_kind)
+        return ResourceEnrichmentProfileVersion(
+            id=ResourceEnrichmentProfileVersionId(row["id"]),
+            profile_id=ResourceEnrichmentProfileId(row["profile_id"]),
+            version_number=row["version_number"],
+            resource_kind=resource_kind,
+            payload=payload_type(**json.loads(row["payload_json"])),
+            tags=tuple(json.loads(row["tags_json"])),
+            evidence_content_hashes=tuple(json.loads(row["evidence_content_hashes_json"])),
+            provider_name=row["provider_name"],
+            model_name=row["model_name"],
+            confidence=row["confidence"],
+            created_by=row["created_by"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+
+class SqliteRelationProposalRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(self, proposal_id: RelationProposalId) -> RelationProposal | None:
+        row = self._connection.execute(
+            "SELECT * FROM relation_proposals WHERE id = ?", (proposal_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def list_by_workspace(
+        self, workspace_id: WorkspaceId, *, status: RelationProposalStatus | None = None
+    ) -> tuple[RelationProposal, ...]:
+        if status is None:
+            rows = self._connection.execute(
+                "SELECT * FROM relation_proposals WHERE workspace_id = ?", (workspace_id,)
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                "SELECT * FROM relation_proposals WHERE workspace_id = ? AND status = ?",
+                (workspace_id, status.value),
+            ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
+    def save_without_commit(self, proposal: RelationProposal) -> None:
+        self._connection.execute(
+            "INSERT INTO relation_proposals "
+            "(id, workspace_id, profile_version_id, source_node_id, relation_kind, "
+            " candidate_label, confidence, explanation, status, resolved_target_node_id, "
+            " created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (id) DO UPDATE SET status = excluded.status, "
+            "resolved_target_node_id = excluded.resolved_target_node_id, "
+            "updated_at = excluded.updated_at",
+            (
+                proposal.id,
+                proposal.workspace_id,
+                proposal.profile_version_id,
+                proposal.source_node_id,
+                proposal.relation_kind.value,
+                proposal.candidate_label,
+                proposal.confidence,
+                proposal.explanation,
+                proposal.status.value,
+                proposal.resolved_target_node_id,
+                proposal.created_at.isoformat(),
+                proposal.updated_at.isoformat(),
+            ),
+        )
+
+    def _hydrate(self, row: sqlite3.Row) -> RelationProposal:
+        return RelationProposal(
+            id=RelationProposalId(row["id"]),
+            workspace_id=row["workspace_id"],
+            profile_version_id=ResourceEnrichmentProfileVersionId(row["profile_version_id"]),
+            source_node_id=NodeId(row["source_node_id"]),
+            relation_kind=ProposedRelationKind(row["relation_kind"]),
+            candidate_label=row["candidate_label"],
+            confidence=row["confidence"],
+            explanation=row["explanation"],
+            status=RelationProposalStatus(row["status"]),
+            resolved_target_node_id=(
+                NodeId(row["resolved_target_node_id"])
+                if row["resolved_target_node_id"] is not None
+                else None
+            ),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )

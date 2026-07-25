@@ -34,6 +34,9 @@ DocumentVersionId = NewType("DocumentVersionId", str)
 DocumentLinkId = NewType("DocumentLinkId", str)
 IngestionJobId = NewType("IngestionJobId", str)
 WorkItemId = NewType("WorkItemId", str)
+ResourceEnrichmentProfileId = NewType("ResourceEnrichmentProfileId", str)
+ResourceEnrichmentProfileVersionId = NewType("ResourceEnrichmentProfileVersionId", str)
+RelationProposalId = NewType("RelationProposalId", str)
 
 
 def new_id() -> str:

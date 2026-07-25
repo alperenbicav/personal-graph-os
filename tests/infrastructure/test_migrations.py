@@ -61,6 +61,8 @@ _ALL_MIGRATION_NAMES = (
     "0007_activity_event_reversal.sql",
     "0008_agentic_os_foundation.sql",
     "0009_document_source_reference.sql",
+    "0010_enrichment.sql",
+    "0011_edge_uniqueness.sql",
 )
 
 
@@ -113,6 +115,8 @@ def test_upgrading_an_existing_0001_database_preserves_ids_and_data() -> None:
         "0007_activity_event_reversal.sql",
         "0008_agentic_os_foundation.sql",
         "0009_document_source_reference.sql",
+        "0010_enrichment.sql",
+        "0011_edge_uniqueness.sql",
     )
 
     resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()
@@ -323,11 +327,68 @@ def test_upgrading_an_existing_0007_database_preserves_resources_and_nodes() -> 
     assert newly_applied == (
         "0008_agentic_os_foundation.sql",
         "0009_document_source_reference.sql",
+        "0010_enrichment.sql",
+        "0011_edge_uniqueness.sql",
     )
 
     resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()
     assert resource_row["node_id"] == "node-1"
     assert resource_row["canonical_identifier"] == "arxiv:1"
+
+
+def test_upgrading_a_pre_0011_database_with_duplicate_edges_keeps_one_canonical_row() -> None:
+    """ST-04 (EP-2026-012), review finding S4-R05: a database created before 0011 could already
+    contain duplicate (workspace_id, edge_type_id, source_node_id, target_node_id) rows, since no
+    prior constraint prevented it. `CREATE UNIQUE INDEX` alone fails with `IntegrityError` against
+    such data; 0011 must reconcile duplicates first so the upgrade completes and exactly one
+    canonical edge survives per tuple."""
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    applied_migration_names(connection)
+    for name in _ALL_MIGRATION_NAMES[:10]:
+        sql_script = (
+            resources.files("personal_graph_os.infrastructure.sqlite.migrations.versions") / name
+        ).read_text(encoding="utf-8")
+        apply_migration_script(connection, name, sql_script)
+
+    connection.execute(
+        "INSERT INTO workspaces (id, name, created_at) VALUES ('ws-1', 'Personal', 't0')"
+    )
+    connection.execute(
+        "INSERT INTO node_types (id, workspace_id, name) VALUES ('nt-1', 'ws-1', 'Resource')"
+    )
+    connection.execute(
+        "INSERT INTO edge_types (id, workspace_id, name) VALUES ('et-1', 'ws-1', 'relates_to')"
+    )
+    for node_id in ("node-1", "node-2"):
+        connection.execute(
+            "INSERT INTO nodes "
+            "(id, workspace_id, node_type_id, title, created_at, updated_at) "
+            f"VALUES ('{node_id}', 'ws-1', 'nt-1', 'A node', 't0', 't0')"
+        )
+    # Two edges with the identical (workspace_id, edge_type_id, source_node_id, target_node_id)
+    # tuple -- exactly the state no prior migration/constraint prevented -- with distinct
+    # `created_at` so the earlier one is the deterministic survivor.
+    connection.execute(
+        "INSERT INTO edges "
+        "(id, workspace_id, edge_type_id, source_node_id, target_node_id, created_at) "
+        "VALUES ('edge-older', 'ws-1', 'et-1', 'node-1', 'node-2', 't0')"
+    )
+    connection.execute(
+        "INSERT INTO edges "
+        "(id, workspace_id, edge_type_id, source_node_id, target_node_id, created_at) "
+        "VALUES ('edge-newer', 'ws-1', 'et-1', 'node-1', 'node-2', 't1')"
+    )
+    connection.commit()
+
+    newly_applied = run_migrations(connection)
+    assert newly_applied == ("0011_edge_uniqueness.sql",)
+
+    rows = connection.execute(
+        "SELECT id FROM edges WHERE workspace_id = 'ws-1' AND edge_type_id = 'et-1' "
+        "AND source_node_id = 'node-1' AND target_node_id = 'node-2'"
+    ).fetchall()
+    assert [row["id"] for row in rows] == ["edge-older"]
 
 
 def test_work_item_node_id_is_unique_and_ingestion_job_source_identity_is_unique(

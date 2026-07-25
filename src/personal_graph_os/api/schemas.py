@@ -18,9 +18,15 @@ from pydantic import BaseModel, Field, StrictInt
 
 from personal_graph_os.application.activity_recording import undo_disabled_reason
 from personal_graph_os.application.activity_service import ActivityEventPage
+from personal_graph_os.application.enrichment_service import EnrichmentOutcome
 from personal_graph_os.application.projections import ProjectionItem
 from personal_graph_os.application.workflow_chain import WorkflowChainStep
 from personal_graph_os.domain.activity import ActivityEvent
+from personal_graph_os.domain.enrichment import (
+    RelationProposal,
+    ResourceEnrichmentProfile,
+    ResourceEnrichmentProfileVersion,
+)
 from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.identifiers import ActivityEventId
 from personal_graph_os.domain.resource import Resource, ResourceKind, ResourceLifecycleStatus
@@ -201,6 +207,24 @@ class ResourceResponse(BaseModel):
             last_activity_at=resource.last_activity_at,
             title=node.title,
             body=node.body,
+        )
+
+
+class EnrichResourceRequest(BaseModel):
+    actor: str
+
+
+class EnrichmentOutcomeResponse(BaseModel):
+    profile: ResourceEnrichmentProfile
+    version: ResourceEnrichmentProfileVersion
+    relation_proposals: list[RelationProposal]
+
+    @classmethod
+    def from_outcome(cls, outcome: EnrichmentOutcome) -> EnrichmentOutcomeResponse:
+        return cls(
+            profile=outcome.profile,
+            version=outcome.version,
+            relation_proposals=list(outcome.relation_proposals),
         )
 
 

@@ -10,7 +10,9 @@ from fastapi import Request
 
 from personal_graph_os.application.activity_service import ActivityService
 from personal_graph_os.application.discovery import DiscoveryService
+from personal_graph_os.application.enrichment_service import EnrichmentService
 from personal_graph_os.application.export_service import ExportService
+from personal_graph_os.application.extraction_service import ExtractionService
 from personal_graph_os.application.file_service import FileService
 from personal_graph_os.application.projections import ProjectionService
 from personal_graph_os.application.repositories import (
@@ -133,6 +135,14 @@ def get_undo_service(request: Request) -> UndoService:
 
 def get_export_service(request: Request) -> ExportService:
     return request.app.state.export_service
+
+
+def get_extraction_service(request: Request) -> ExtractionService:
+    return request.app.state.extraction_service
+
+
+def get_enrichment_service(request: Request) -> EnrichmentService | None:
+    return request.app.state.enrichment_service
 
 
 def get_default_workspace_id(request: Request) -> WorkspaceId:

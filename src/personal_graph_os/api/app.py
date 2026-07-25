@@ -4,11 +4,13 @@ as a FastAPI app for the local frontend.
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import anyio
+import httpx
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -23,6 +25,7 @@ from personal_graph_os.api.routers import (
     canvases,
     discovery,
     edges,
+    enrichment,
     export,
     files,
     nodes,
@@ -48,7 +51,12 @@ from personal_graph_os.application.bootstrap import (
 )
 from personal_graph_os.application.context_pack_service import ContextPackService
 from personal_graph_os.application.discovery import DiscoveryService
+from personal_graph_os.application.enrichment_service import (
+    EnrichmentNotConfiguredError,
+    EnrichmentService,
+)
 from personal_graph_os.application.export_service import ExportService
+from personal_graph_os.application.extraction_service import ExtractionService
 from personal_graph_os.application.file_service import (
     AttachmentNotFoundError,
     FileReferenceNotFoundError,
@@ -90,6 +98,17 @@ from personal_graph_os.domain.errors import (
     DomainError,
     UploadTooLargeError,
 )
+from personal_graph_os.infrastructure.enrichment.provider_factory import (
+    build_enrichment_provider_from_env,
+)
+from personal_graph_os.infrastructure.extraction.arxiv_metadata_adapter import ArxivMetadataAdapter
+from personal_graph_os.infrastructure.extraction.docling_pdf_parser import DoclingPdfParser
+from personal_graph_os.infrastructure.extraction.doi_metadata_adapter import DoiMetadataAdapter
+from personal_graph_os.infrastructure.extraction.github_metadata_adapter import (
+    GitHubMetadataAdapter,
+)
+from personal_graph_os.infrastructure.extraction.html_article_parser import HtmlArticleParser
+from personal_graph_os.infrastructure.extraction.http_content_fetcher import HttpContentFetcher
 from personal_graph_os.infrastructure.local_file_store import LocalManagedFileStore
 from personal_graph_os.infrastructure.mcp.auth import with_bearer_token
 from personal_graph_os.infrastructure.mcp.gateway import AgentGatewayService
@@ -153,6 +172,7 @@ def create_app(
     trusted_hosts: list[str] | None = None,
     cors_origins: list[str] | None = None,
     static_dir: Path | str | None = None,
+    enrichment_provider_transport: httpx.BaseTransport | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Personal Graph OS API")
 
@@ -304,6 +324,27 @@ def create_app(
         )
         return list(page.events), page.next_cursor
 
+    content_fetcher = HttpContentFetcher()
+    app.state.extraction_service = ExtractionService(
+        metadata_adapters=(
+            DoiMetadataAdapter(content_fetcher),
+            ArxivMetadataAdapter(content_fetcher),
+            GitHubMetadataAdapter(content_fetcher),
+        ),
+        content_parsers=(HtmlArticleParser(), DoclingPdfParser()),
+        content_fetcher=content_fetcher,
+    )
+    enrichment_provider = build_enrichment_provider_from_env(
+        os.environ, transport=enrichment_provider_transport
+    )
+    app.state.enrichment_service = (
+        EnrichmentService(
+            workspace_repository, enrichment_provider, lambda: SqliteResearchUnitOfWork(connection)
+        )
+        if enrichment_provider is not None
+        else None
+    )
+
     app.state.export_service = ExportService(
         workspace_repository,
         node_repository,
@@ -419,6 +460,7 @@ def create_app(
     app.include_router(files.router, dependencies=auth_dependency)
     app.include_router(activity.router, dependencies=auth_dependency)
     app.include_router(export.router, dependencies=auth_dependency)
+    app.include_router(enrichment.router, dependencies=auth_dependency)
 
     if static_dir is not None:
         # A distinct `/app` prefix, mounted after every API router: it cannot shadow `/mcp`
@@ -442,6 +484,9 @@ def create_app(
     def _conflict(_request: Request, exc: Exception) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
+    def _enrichment_not_configured(_request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
     def _undo_conflict(_request: Request, exc: Exception) -> JSONResponse:
         # A stable machine-readable `code` alongside `detail` (ST07-F05 re-review): callers
         # and the UI can distinguish policy-disabled undo from a snapshot-bound failure without
@@ -453,6 +498,7 @@ def create_app(
     app.add_exception_handler(AttachmentContentCorruptedError, _conflict)
     app.add_exception_handler(UndoConflictError, _undo_conflict)
     app.add_exception_handler(InvalidActivityCursorError, _unprocessable)
+    app.add_exception_handler(EnrichmentNotConfiguredError, _enrichment_not_configured)
 
     for not_found_error_type in (
         WorkspaceNotFoundError,

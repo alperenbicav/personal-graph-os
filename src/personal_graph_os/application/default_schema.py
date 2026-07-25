@@ -135,6 +135,11 @@ def _resource_node_type() -> NodeType:
         field_definitions=(
             FieldDefinition(name="source_url", field_type=FieldType.URL),
             FieldDefinition(name="repository", field_type=FieldType.OBJECT_REFERENCE),
+            # Selected display/index fields projected from the resource's latest agentic
+            # enrichment profile version (EP-2026-012 ST-04) -- never the full profile, which
+            # stays queryable only through `ResourceEnrichmentProfileVersion`.
+            FieldDefinition(name="enrichment_summary", field_type=FieldType.TEXT),
+            FieldDefinition(name="enrichment_confidence", field_type=FieldType.NUMBER),
         ),
         status_definitions=(
             StatusDefinition(name="inbox", color_hex="#9ca3af", sort_order=0),
