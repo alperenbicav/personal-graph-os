@@ -115,6 +115,10 @@ export type ResourceLifecycleStatus =
   | 'applied'
   | 'archived'
 
+// The Repositories workspace's ownership grouping (EP-2026-012 ST-06): every
+// `github_repository` resource is exactly one of these.
+export type RepositoryLabel = 'personal' | 'apilex' | 'liked_external'
+
 export interface Resource {
   id: string
   workspace_id: string
@@ -130,8 +134,110 @@ export interface Resource {
   progress_percent: number | null
   review_at: string | null
   last_activity_at: string
+  repository_label: RepositoryLabel | null
   title: string
   body: string
+}
+
+export interface ResourceListFilters {
+  kind?: ResourceKind
+  lifecycle_status?: ResourceLifecycleStatus
+  repository_label?: RepositoryLabel
+  last_activity_since?: string
+  last_activity_until?: string
+}
+
+// None of these payload shapes carries its own discriminant on the wire — the parent
+// `ResourceEnrichmentProfileVersion.resource_kind` says which one a given payload is.
+export interface PaperEnrichmentPayload {
+  summary: string
+  key_findings: string[]
+  methodology: string | null
+  limitations: string[]
+  applicability: string | null
+}
+
+export interface ArticleEnrichmentPayload {
+  summary: string
+  key_findings: string[]
+  applicability: string | null
+}
+
+export interface RepositoryEnrichmentPayload {
+  summary: string
+  capabilities: string[]
+  architecture_summary: string | null
+  risks: string[]
+  applicability: string | null
+  tech_stack: string[]
+  license_name: string | null
+  activity_summary: string | null
+}
+
+export type EnrichmentPayload =
+  | PaperEnrichmentPayload
+  | ArticleEnrichmentPayload
+  | RepositoryEnrichmentPayload
+
+export interface CitedEvidenceReference {
+  adapter_name: string
+  source_reference: string
+  content_hash: string
+  retrieved_at: string
+}
+
+export interface ResourceEnrichmentProfileVersion {
+  id: string
+  profile_id: string
+  version_number: number
+  resource_kind: ResourceKind
+  payload: EnrichmentPayload
+  tags: string[]
+  evidence_content_hashes: string[]
+  cited_evidence: CitedEvidenceReference[]
+  authors: string[]
+  published_at: string | null
+  abstract: string | null
+  provider_name: string
+  model_name: string | null
+  confidence: number
+  created_by: string
+  created_at: string
+}
+
+export type RelatedTargetDomain = 'resource' | 'work_item' | 'node'
+
+export interface RelatedNode {
+  edge_id: string
+  direction: string
+  edge_type_name: string
+  node_id: string
+  node_title: string
+  target_domain: RelatedTargetDomain
+  target_entity_id: string | null
+  resource_kind: ResourceKind | null
+}
+
+export interface RelatedDocument {
+  document_id: string
+  title: string
+  kind: string
+}
+
+export interface ResourceProvenance {
+  ingestion_job_id: string
+  source: string
+  stage: string
+  status: string
+  created_at: string
+}
+
+export interface ResourceDetail {
+  resource: Resource
+  enrichment: ResourceEnrichmentProfileVersion | null
+  relations: RelatedNode[]
+  related_documents: RelatedDocument[]
+  provenance: ResourceProvenance | null
 }
 
 export type ViewKind = 'table' | 'kanban' | 'timeline' | 'canvas' | 'search' | 'activity'

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import UTC, datetime
 
 import pytest
 
@@ -78,12 +79,16 @@ def _extracted_content(
     abstract: str | None = "A paper about testing enrichment pipelines.",
     body_markdown: str | None = None,
     topics: tuple[str, ...] = ("testing", "enrichment"),
+    authors: tuple[str, ...] = (),
+    published_at: datetime | None = None,
 ) -> ExtractedContent:
     content_hash = hash_content(f"evidence-for-{canonical_identifier}")
     return ExtractedContent(
         resource_kind=resource_kind,
         canonical_identifier=canonical_identifier,
         title="A Test Resource",
+        authors=authors,
+        published_at=published_at,
         abstract=abstract,
         body_markdown=body_markdown,
         topics=topics,
@@ -133,6 +138,67 @@ def test_enrich_resource_creates_first_version_and_projects_onto_node(
     )
     assert node.field_values[summary_field.id] == outcome.version.payload.summary
     assert node.field_values[confidence_field.id] == outcome.version.confidence
+
+
+def test_enrich_resource_persists_bibliographic_details_and_inspectable_evidence(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    """Review finding S6-R01: authors/publication date/abstract must survive persistence, and
+    cited evidence must be inspectable (adapter/source/retrieval), not only an opaque hash."""
+    resource_service, workspace_id = _resource_service(sqlite_connection)
+    resource, _ = resource_service.create_or_reuse(
+        workspace_id, "A great paper", "https://arxiv.org/abs/2401.00099"
+    )
+    enrichment_service = _enrichment_service(sqlite_connection, FakeEnrichmentProvider())
+    extracted = _extracted_content(
+        ResourceKind.PAPER,
+        resource.canonical_identifier,
+        authors=("Jane Doe", "John Smith"),
+        published_at=datetime(2024, 1, 1, tzinfo=UTC),
+        abstract="A studied abstract.",
+    )
+
+    outcome = enrichment_service.enrich_resource(
+        workspace_id=workspace_id, resource_id=resource.id, extracted=extracted, actor="agent:test"
+    )
+
+    assert outcome.version.authors == ("Jane Doe", "John Smith")
+    assert outcome.version.published_at == datetime(2024, 1, 1, tzinfo=UTC)
+    assert outcome.version.abstract == "A studied abstract."
+    assert len(outcome.version.cited_evidence) == 1
+    cited = outcome.version.cited_evidence[0]
+    assert cited.content_hash == extracted.evidence[0].content_hash
+    assert cited.adapter_name == extracted.evidence[0].adapter_name
+    assert cited.source_reference == extracted.evidence[0].source_reference
+
+    profile = SqliteResourceEnrichmentProfileRepository(sqlite_connection).get_by_identifier(
+        workspace_id, resource.canonical_identifier
+    )
+    assert profile is not None
+
+
+def test_enrich_resource_persists_a_consortium_paper_with_more_than_the_author_bound(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    """Review finding S6-R04: `ExtractedContent` places no bound on author count (real
+    consortium papers commonly exceed it), so a successfully extracted/classified paper must
+    still persist -- deterministically truncated -- rather than failing enrichment outright."""
+    resource_service, workspace_id = _resource_service(sqlite_connection)
+    resource, _ = resource_service.create_or_reuse(
+        workspace_id, "A consortium paper", "https://arxiv.org/abs/2401.00098"
+    )
+    enrichment_service = _enrichment_service(sqlite_connection, FakeEnrichmentProvider())
+    many_authors = tuple(f"Author {i}" for i in range(40))
+    extracted = _extracted_content(
+        ResourceKind.PAPER, resource.canonical_identifier, authors=many_authors
+    )
+
+    outcome = enrichment_service.enrich_resource(
+        workspace_id=workspace_id, resource_id=resource.id, extracted=extracted, actor="agent:test"
+    )
+
+    assert len(outcome.version.authors) == 25
+    assert outcome.version.authors == many_authors[:25]
 
 
 def _resource_field_definitions(sqlite_connection: sqlite3.Connection, workspace_id: WorkspaceId):

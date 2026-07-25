@@ -21,6 +21,7 @@ from personal_graph_os.application.research_unit_of_work import ResearchUnitOfWo
 from personal_graph_os.application.services import ResourceNotFoundError, WorkspaceNotFoundError
 from personal_graph_os.domain.enrichment import (
     ENRICHABLE_RESOURCE_KINDS,
+    CitedEvidenceReference,
     EnrichmentError,
     EnrichmentResult,
     EnrichmentSourceMismatchError,
@@ -32,6 +33,7 @@ from personal_graph_os.domain.enrichment import (
     ResourceEnrichmentProfileVersion,
     UncitedEnrichmentEvidenceError,
     UnsupportedResourceKindForEnrichmentError,
+    truncate_authors,
 )
 from personal_graph_os.domain.extraction import ExtractedContent
 from personal_graph_os.domain.graph import Edge
@@ -190,6 +192,17 @@ class EnrichmentService:
                 unit_of_work.resource_enrichment_profiles.save_without_commit(profile)
 
             expected_version_number = profile.current_version_number
+            cited_hashes = set(result.evidence_content_hashes)
+            cited_evidence = tuple(
+                CitedEvidenceReference(
+                    adapter_name=evidence.adapter_name,
+                    source_reference=evidence.source_reference,
+                    content_hash=evidence.content_hash,
+                    retrieved_at=evidence.retrieved_at,
+                )
+                for evidence in extracted.evidence
+                if evidence.content_hash in cited_hashes
+            )
             version = ResourceEnrichmentProfileVersion(
                 profile_id=profile.id,
                 version_number=expected_version_number + 1,
@@ -197,6 +210,10 @@ class EnrichmentService:
                 payload=result.payload,
                 tags=result.tags,
                 evidence_content_hashes=result.evidence_content_hashes,
+                cited_evidence=cited_evidence,
+                authors=truncate_authors(extracted.authors),
+                published_at=extracted.published_at,
+                abstract=extracted.abstract,
                 provider_name=self._provider.name,
                 confidence=result.confidence,
                 created_by=actor,

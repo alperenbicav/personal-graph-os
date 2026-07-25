@@ -48,7 +48,12 @@ from personal_graph_os.domain.identifiers import (
     new_id,
 )
 from personal_graph_os.domain.research_settings import WorkspaceResearchSettings
-from personal_graph_os.domain.resource import Resource, ResourceKind, ResourceLifecycleStatus
+from personal_graph_os.domain.resource import (
+    RepositoryLabel,
+    Resource,
+    ResourceKind,
+    ResourceLifecycleStatus,
+)
 from personal_graph_os.domain.resource_identity import (
     ResourceIdentity,
     canonicalize_resource_identity,
@@ -1393,8 +1398,27 @@ class ResourceService:
     def get(self, resource_id: ResourceId) -> Resource:
         return self._require_resource(resource_id)
 
-    def list_by_workspace(self, workspace_id: WorkspaceId) -> tuple[Resource, ...]:
-        return self._resources.list_by_workspace(workspace_id)
+    def list_by_workspace(
+        self,
+        workspace_id: WorkspaceId,
+        *,
+        kind: ResourceKind | None = None,
+        lifecycle_status: ResourceLifecycleStatus | None = None,
+        repository_label: RepositoryLabel | None = None,
+        last_activity_since: datetime | None = None,
+        last_activity_until: datetime | None = None,
+    ) -> tuple[Resource, ...]:
+        """List a workspace's resources, optionally bounded by the Research/Repositories
+        workspace filters (EP-2026-012 ST-06): kind (type), lifecycle_status (read state),
+        repository_label (ownership grouping), and a `last_activity_at` date range."""
+        return self._resources.list_by_workspace(
+            workspace_id,
+            kind=kind,
+            lifecycle_status=lifecycle_status,
+            repository_label=repository_label,
+            last_activity_since=last_activity_since,
+            last_activity_until=last_activity_until,
+        )
 
     def update(
         self,
@@ -1410,6 +1434,8 @@ class ResourceService:
         clear_progress_percent: bool = False,
         review_at: datetime | None = None,
         clear_review_at: bool = False,
+        repository_label: RepositoryLabel | None = None,
+        clear_repository_label: bool = False,
     ) -> Resource:
         """Update lifecycle/progress fields. `last_activity_at` advances only when the
         resulting state actually differs from the current one — a no-op call is not a
@@ -1431,6 +1457,8 @@ class ResourceService:
             clear_progress_percent=clear_progress_percent,
             review_at=review_at,
             clear_review_at=clear_review_at,
+            repository_label=repository_label,
+            clear_repository_label=clear_repository_label,
         )
         was_modified = updated != existing
         if was_modified:
@@ -1464,6 +1492,8 @@ class ResourceService:
         clear_progress_percent: bool = False,
         review_at: datetime | None = None,
         clear_review_at: bool = False,
+        repository_label: RepositoryLabel | None = None,
+        clear_repository_label: bool = False,
     ) -> tuple[Resource, bool]:
         """Same validation/write as `update`, into a caller-managed, already-open
         `unit_of_work`. Returns `(resource, was_modified)`: a no-op call skips the write
@@ -1486,6 +1516,8 @@ class ResourceService:
             clear_progress_percent=clear_progress_percent,
             review_at=review_at,
             clear_review_at=clear_review_at,
+            repository_label=repository_label,
+            clear_repository_label=clear_repository_label,
         )
         was_modified = updated != existing
         if was_modified:
@@ -1511,6 +1543,8 @@ class ResourceService:
         clear_progress_percent: bool,
         review_at: datetime | None,
         clear_review_at: bool,
+        repository_label: RepositoryLabel | None,
+        clear_repository_label: bool,
     ) -> Resource:
         existing = resources.get(resource_id)
         if existing is None:
@@ -1552,6 +1586,13 @@ class ResourceService:
                 else (review_at if review_at is not None else existing.review_at)
             ),
             last_activity_at=existing.last_activity_at,
+            repository_label=(
+                None
+                if clear_repository_label
+                else (
+                    repository_label if repository_label is not None else existing.repository_label
+                )
+            ),
         )
         if candidate == existing:
             return existing

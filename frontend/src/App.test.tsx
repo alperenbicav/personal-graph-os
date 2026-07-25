@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import * as api from './api/client'
 import { clearSession, commitToken } from './api/session'
-import type { Canvas, CanvasPlacement, GraphNode, Workspace } from './types'
+import type { Canvas, CanvasPlacement, GraphNode, Resource, ResourceDetail, Workspace } from './types'
 
 vi.mock('./api/client')
 
@@ -209,6 +209,71 @@ describe('reusing an existing node across canvases', () => {
     await waitFor(() =>
       expect(mockedApi.placeNode).toHaveBeenCalledWith('canvas-b', 'n1', expect.any(Number), expect.any(Number)),
     )
+  })
+})
+
+describe('resource detail panels stay scoped to Research/Repositories (S6-F01 regression)', () => {
+  const paperResource: Resource = {
+    id: 'r1',
+    workspace_id: 'ws-1',
+    node_id: 'n-paper',
+    kind: 'paper',
+    canonical_identifier: 'arxiv:1',
+    source_url: null,
+    lifecycle_status: 'inbox',
+    next_action: null,
+    next_action_dismissed: false,
+    open_questions: [],
+    takeaways: [],
+    progress_percent: null,
+    review_at: null,
+    last_activity_at: '2026-01-01T00:00:00Z',
+    repository_label: null,
+    title: 'A paper',
+    body: '',
+  }
+
+  const emptyDashboard = {
+    inbox: [paperResource],
+    continue_reading: [],
+    stale: [],
+    needs_takeaway: [],
+    unlinked: [],
+    applied: [],
+  }
+
+  const detail: ResourceDetail = {
+    resource: paperResource,
+    enrichment: null,
+    relations: [],
+    related_documents: [],
+    provenance: null,
+  }
+
+  it('shows the rich Resource detail in Research but not after switching to Canvas', async () => {
+    mockedApi.listNodes.mockResolvedValue([makeNode('n-paper', 'A paper')])
+    mockedApi.listPlacements.mockResolvedValue([])
+    mockedApi.listResources.mockResolvedValue([paperResource])
+    mockedApi.getResearchDashboard.mockResolvedValue(emptyDashboard)
+    mockedApi.getResourceDetail.mockResolvedValue(detail)
+
+    render(<App />)
+    await screen.findByText('Personal Graph OS')
+
+    // Scoped to the nav tab bar: the fixture's second canvas is also named "Research",
+    // which otherwise collides with this app's own "Research" nav tab button.
+    const navTabs = screen.getByRole('navigation', { name: /workspace views/i })
+    fireEvent.click(within(navTabs).getByRole('button', { name: 'Research' }))
+    await screen.findByRole('button', { name: 'A paper' })
+    fireEvent.click(screen.getByRole('button', { name: 'A paper' }))
+
+    await waitFor(() => expect(document.querySelector('.research-detail')).not.toBeNull())
+    expect(document.querySelector('.enrichment-detail')).not.toBeNull()
+
+    fireEvent.click(within(navTabs).getByRole('button', { name: 'Canvas' }))
+
+    expect(document.querySelector('.research-detail')).toBeNull()
+    expect(document.querySelector('.enrichment-detail')).toBeNull()
   })
 })
 

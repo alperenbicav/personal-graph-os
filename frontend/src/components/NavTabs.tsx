@@ -7,6 +7,7 @@ export type AppView =
   | 'timeline'
   | 'search'
   | 'research'
+  | 'repositories'
   | 'discovery'
   | 'activity'
 
@@ -48,6 +49,12 @@ const TABS: TabDefinition[] = [
     label: 'Research',
     description:
       'A dashboard of research resources by lifecycle status, with a guided workflow that suggests the next step (e.g. turn a takeaway into a decision, then a task).',
+  },
+  {
+    id: 'repositories',
+    label: 'Repositories',
+    description:
+      'GitHub repositories you have captured, grouped by ownership (personal, Apilex, liked external), with purpose, capabilities, stack, license/activity, risks, and related graph objects.',
   },
   {
     id: 'discovery',

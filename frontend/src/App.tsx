@@ -5,11 +5,13 @@ import { ActivityView } from './components/ActivityView'
 import { CanvasRail } from './components/CanvasRail'
 import { ConnectEdgeModal, type PendingConnection } from './components/ConnectEdgeModal'
 import { DiscoveryView } from './components/DiscoveryView'
+import { EnrichmentDetailPanel } from './components/EnrichmentDetailPanel'
 import { GraphCanvas } from './components/GraphCanvas'
 import { Inspector, type RelationRow } from './components/Inspector'
 import { KanbanView } from './components/KanbanView'
 import { NavTabs, type AppView } from './components/NavTabs'
 import { PlaceExistingNodeControl } from './components/PlaceExistingNodeControl'
+import { RepositoriesView } from './components/RepositoriesView'
 import { ResearchDetailPanel } from './components/ResearchDetailPanel'
 import { ResearchView } from './components/ResearchView'
 import { SavedViewsPanel } from './components/SavedViewsPanel'
@@ -34,6 +36,8 @@ import type {
   GraphEdge,
   GraphNode,
   ProjectionItem,
+  RelatedNode,
+  RepositoryLabel,
   ResearchDashboard,
   Resource,
   StatusDefinition,
@@ -423,6 +427,32 @@ function App() {
     [selectedNodeId],
   )
 
+  const handleSetRepositoryLabel = useCallback(
+    async (resourceId: string, label: RepositoryLabel) => {
+      try {
+        const updated = await api.updateResource(resourceId, { repository_label: label })
+        setResources((current) => current.map((r) => (r.id === updated.id ? updated : r)))
+      } catch (error) {
+        setActionError(`Could not set that repository's label: ${messageFor(error)}`)
+      }
+    },
+    [],
+  )
+
+  // A relation points at another domain's resource by node id; jumping to its owning tab
+  // (Research for papers/articles, Repositories for GitHub repos) mirrors the design gate's
+  // "Go to" navigation for projected nodes. Work-item/generic-node targets have no owning tab
+  // yet (ST-07/ST-08), so selection still moves but the active view does not.
+  const handleGoToRelation = useCallback((relation: RelatedNode) => {
+    setSelectedNodeId(relation.node_id)
+    if (relation.target_domain === 'resource') {
+      if (relation.resource_kind === 'github_repository') setActiveView('repositories')
+      else if (relation.resource_kind === 'paper' || relation.resource_kind === 'article') {
+        setActiveView('research')
+      }
+    }
+  }, [])
+
   const handleUpdateResource = useCallback(
     async (patch: api.UpdateResourcePatch): Promise<boolean> => {
       const resource = resources.find((r) => r.node_id === selectedNodeId)
@@ -744,8 +774,20 @@ function App() {
           <div className="view-frame">
             <ResearchView
               dashboard={researchDashboard}
+              resources={resources}
               selectedNodeId={selectedNodeId}
               onSelectNode={setSelectedNodeId}
+            />
+          </div>
+        )}
+
+        {activeView === 'repositories' && (
+          <div className="view-frame">
+            <RepositoriesView
+              resources={resources}
+              selectedNodeId={selectedNodeId}
+              onSelectNode={setSelectedNodeId}
+              onSetLabel={handleSetRepositoryLabel}
             />
           </div>
         )}
@@ -789,11 +831,22 @@ function App() {
               onChangeField={handleChangeField}
               onArchive={handleArchiveSelected}
             />
-            {selectedResource && (
+            {/* Research/Repositories own the rich canonical Resource detail (review finding
+                S6-F01); every other view keeps only the generic Inspector above, even when a
+                stale Resource selection carries over from a prior tab. */}
+            {selectedResource && activeView === 'research' && (
               <ResearchDetailPanel
                 key={selectedResource.id}
                 resource={selectedResource}
                 onUpdate={handleUpdateResource}
+              />
+            )}
+            {selectedResource && (activeView === 'research' || activeView === 'repositories') && (
+              <EnrichmentDetailPanel
+                key={`enrichment-${selectedResource.id}`}
+                resourceId={selectedResource.id}
+                onLoadDetail={api.getResourceDetail}
+                onGoToRelation={handleGoToRelation}
               />
             )}
             {nextWorkflowStep && (

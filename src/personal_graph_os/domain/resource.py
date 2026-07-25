@@ -37,6 +37,17 @@ class ResourceLifecycleStatus(StrEnum):
     ARCHIVED = "archived"
 
 
+class RepositoryLabel(StrEnum):
+    """The Repositories workspace's ownership grouping (EP-2026-012 ST-06): every
+    `ResourceKind.GITHUB_REPOSITORY` is exactly one of these, so the Repositories tab can
+    separate personal projects, Apilex's own repositories, and liked third-party repositories
+    without inventing a second free-text taxonomy."""
+
+    PERSONAL = "personal"
+    APILEX = "apilex"
+    LIKED_EXTERNAL = "liked_external"
+
+
 class Resource(BaseModel):
     """Canonical identity, lifecycle, and resurfacing data for one research item."""
 
@@ -61,6 +72,9 @@ class Resource(BaseModel):
     progress_percent: StrictInt | None = None
     review_at: datetime | None = None
     last_activity_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # Only ever set for ResourceKind.GITHUB_REPOSITORY (enforced below) -- every other kind has
+    # no ownership grouping to report in the Repositories workspace.
+    repository_label: RepositoryLabel | None = None
 
     @field_validator("canonical_identifier")
     @classmethod
@@ -89,6 +103,11 @@ class Resource(BaseModel):
             raise InvariantViolationError(
                 f"Resource {self.id} is paused but declares no next_action and no "
                 "explicit dismissal; pausing requires a next action or an explicit dismissal"
+            )
+        if self.repository_label is not None and self.kind is not ResourceKind.GITHUB_REPOSITORY:
+            raise InvariantViolationError(
+                f"Resource {self.id} declares repository_label {self.repository_label} but "
+                f"kind is {self.kind}, not {ResourceKind.GITHUB_REPOSITORY}"
             )
 
     def is_due_for_resurfacing(self, *, as_of: datetime, stale_after_days: int) -> bool:

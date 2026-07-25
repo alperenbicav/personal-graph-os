@@ -27,7 +27,12 @@ from personal_graph_os.domain.identifiers import (
 )
 from personal_graph_os.domain.ingestion import IngestionJob, IngestionJobStatus, IngestionStage
 from personal_graph_os.domain.research_settings import WorkspaceResearchSettings
-from personal_graph_os.domain.resource import Resource, ResourceKind, ResourceLifecycleStatus
+from personal_graph_os.domain.resource import (
+    RepositoryLabel,
+    Resource,
+    ResourceKind,
+    ResourceLifecycleStatus,
+)
 from personal_graph_os.domain.schema import (
     EdgeType,
     FieldDefinition,
@@ -371,6 +376,116 @@ def test_resource_repository_returns_none_for_unknown_lookups(
         repository.get_by_canonical_identifier(WorkspaceId("missing-workspace"), "missing-id")
         is None
     )
+
+
+def test_resource_round_trips_repository_label(sqlite_connection: sqlite3.Connection) -> None:
+    workspace, resource_type = _workspace_with_resource_node_type(sqlite_connection)
+    node = Node(workspace_id=workspace.id, node_type_id=resource_type.id, title="A repo")
+    SqliteNodeRepository(sqlite_connection).save(node)
+    resource = Resource(
+        workspace_id=workspace.id,
+        node_id=node.id,
+        kind=ResourceKind.GITHUB_REPOSITORY,
+        canonical_identifier="github:acme/widgets",
+        repository_label=RepositoryLabel.APILEX,
+    )
+    repository = SqliteResourceRepository(sqlite_connection)
+
+    repository.save(resource)
+    reloaded = repository.get(resource.id)
+
+    assert reloaded is not None
+    assert reloaded.repository_label is RepositoryLabel.APILEX
+
+
+def test_resource_list_by_workspace_filters_by_kind_lifecycle_and_repository_label(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    workspace, resource_type = _workspace_with_resource_node_type(sqlite_connection)
+    nodes = SqliteNodeRepository(sqlite_connection)
+    repository = SqliteResourceRepository(sqlite_connection)
+
+    paper_node = Node(workspace_id=workspace.id, node_type_id=resource_type.id, title="A paper")
+    nodes.save(paper_node)
+    paper = Resource(
+        workspace_id=workspace.id,
+        node_id=paper_node.id,
+        kind=ResourceKind.PAPER,
+        canonical_identifier="arxiv:1",
+        lifecycle_status=ResourceLifecycleStatus.TO_REVIEW,
+    )
+    repository.save(paper)
+
+    personal_repo_node = Node(workspace_id=workspace.id, node_type_id=resource_type.id, title="R1")
+    nodes.save(personal_repo_node)
+    personal_repo = Resource(
+        workspace_id=workspace.id,
+        node_id=personal_repo_node.id,
+        kind=ResourceKind.GITHUB_REPOSITORY,
+        canonical_identifier="github:acme/one",
+        repository_label=RepositoryLabel.PERSONAL,
+    )
+    repository.save(personal_repo)
+
+    apilex_repo_node = Node(workspace_id=workspace.id, node_type_id=resource_type.id, title="R2")
+    nodes.save(apilex_repo_node)
+    apilex_repo = Resource(
+        workspace_id=workspace.id,
+        node_id=apilex_repo_node.id,
+        kind=ResourceKind.GITHUB_REPOSITORY,
+        canonical_identifier="github:acme/two",
+        repository_label=RepositoryLabel.APILEX,
+    )
+    repository.save(apilex_repo)
+
+    assert repository.list_by_workspace(workspace.id, kind=ResourceKind.PAPER) == (paper,)
+    assert set(
+        r.id
+        for r in repository.list_by_workspace(workspace.id, kind=ResourceKind.GITHUB_REPOSITORY)
+    ) == {personal_repo.id, apilex_repo.id}
+    assert repository.list_by_workspace(
+        workspace.id, repository_label=RepositoryLabel.PERSONAL
+    ) == (personal_repo,)
+    assert repository.list_by_workspace(
+        workspace.id, lifecycle_status=ResourceLifecycleStatus.TO_REVIEW
+    ) == (paper,)
+
+
+def test_resource_list_by_workspace_filters_by_last_activity_range(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    workspace, resource_type = _workspace_with_resource_node_type(sqlite_connection)
+    nodes = SqliteNodeRepository(sqlite_connection)
+    repository = SqliteResourceRepository(sqlite_connection)
+
+    old_node = Node(workspace_id=workspace.id, node_type_id=resource_type.id, title="Old")
+    nodes.save(old_node)
+    old_resource = Resource(
+        workspace_id=workspace.id,
+        node_id=old_node.id,
+        kind=ResourceKind.PAPER,
+        canonical_identifier="arxiv:old",
+        last_activity_at=datetime(2020, 1, 1, tzinfo=UTC),
+    )
+    repository.save(old_resource)
+
+    recent_node = Node(workspace_id=workspace.id, node_type_id=resource_type.id, title="Recent")
+    nodes.save(recent_node)
+    recent_resource = Resource(
+        workspace_id=workspace.id,
+        node_id=recent_node.id,
+        kind=ResourceKind.PAPER,
+        canonical_identifier="arxiv:recent",
+        last_activity_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    repository.save(recent_resource)
+
+    assert repository.list_by_workspace(
+        workspace.id, last_activity_since=datetime(2025, 1, 1, tzinfo=UTC)
+    ) == (recent_resource,)
+    assert repository.list_by_workspace(
+        workspace.id, last_activity_until=datetime(2021, 1, 1, tzinfo=UTC)
+    ) == (old_resource,)
 
 
 def test_saved_view_round_trips_and_deletes(sqlite_connection: sqlite3.Connection) -> None:
@@ -738,6 +853,28 @@ def test_document_link_round_trips_and_deletes(sqlite_connection: sqlite3.Connec
     assert link_repository.list_by_document(document.id) == ()
 
 
+def test_document_link_lists_by_target(sqlite_connection: sqlite3.Connection) -> None:
+    document = Document(
+        workspace_id=_saved_workspace(sqlite_connection).id,
+        kind=DocumentKind.NOTE,
+        title="Note",
+        source="manual",
+    )
+    SqliteDocumentRepository(sqlite_connection).save(document)
+    target_node_id = new_id()
+
+    link_repository = SqliteDocumentLinkRepository(sqlite_connection)
+    link = DocumentLink(
+        document_id=document.id,
+        target_type=DocumentLinkTargetType.NODE,
+        target_id=target_node_id,
+    )
+    link_repository.save(link)
+
+    assert link_repository.list_by_target(DocumentLinkTargetType.NODE, target_node_id) == (link,)
+    assert link_repository.list_by_target(DocumentLinkTargetType.NODE, new_id()) == ()
+
+
 def test_ingestion_job_round_trips_and_looks_up_by_source(
     sqlite_connection: sqlite3.Connection,
 ) -> None:
@@ -782,6 +919,74 @@ def test_ingestion_job_round_trips_a_committed_success(
     assert reloaded.stage is IngestionStage.COMMITTED
     assert reloaded.status is IngestionJobStatus.SUCCEEDED
     assert reloaded.result_entity_id == "doc-1"
+
+
+def test_ingestion_job_looks_up_by_result_entity(sqlite_connection: sqlite3.Connection) -> None:
+    repository = SqliteIngestionJobRepository(sqlite_connection)
+    workspace_id = _saved_workspace(sqlite_connection).id
+    job = IngestionJob(workspace_id=workspace_id, source="telegram", source_identifier="update:99")
+    committed = (
+        job.advance_to(IngestionStage.NORMALIZED)
+        .advance_to(IngestionStage.EXTRACTED)
+        .advance_to(IngestionStage.ENRICHED)
+        .advance_to(IngestionStage.LINKED)
+        .advance_to(
+            IngestionStage.COMMITTED, result_entity_type="resource", result_entity_id="res-99"
+        )
+    )
+    repository.save(committed)
+
+    found = repository.get_by_result_entity(
+        workspace_id, result_entity_type="resource", result_entity_id="res-99"
+    )
+    assert found is not None
+    assert found.id == job.id
+    assert (
+        repository.get_by_result_entity(
+            workspace_id, result_entity_type="resource", result_entity_id="missing"
+        )
+        is None
+    )
+
+
+def test_ingestion_job_looks_up_the_most_recent_result_entity_match(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    """Review finding S6-R02: more than one job can legitimately resolve to the same canonical
+    resource over time; the lookup must deterministically return the most recent one, not an
+    unordered arbitrary match."""
+    repository = SqliteIngestionJobRepository(sqlite_connection)
+    workspace_id = _saved_workspace(sqlite_connection).id
+
+    def _committed_job(source_identifier: str, created_at: datetime) -> IngestionJob:
+        job = IngestionJob(
+            workspace_id=workspace_id,
+            source="manual",
+            source_identifier=source_identifier,
+            created_at=created_at,
+        )
+        return (
+            job.advance_to(IngestionStage.NORMALIZED)
+            .advance_to(IngestionStage.EXTRACTED)
+            .advance_to(IngestionStage.ENRICHED)
+            .advance_to(IngestionStage.LINKED)
+            .advance_to(
+                IngestionStage.COMMITTED,
+                result_entity_type="resource",
+                result_entity_id="res-shared",
+            )
+        )
+
+    older = _committed_job("req-1", datetime(2026, 1, 1, tzinfo=UTC))
+    repository.save(older)
+    newer = _committed_job("req-2", datetime(2026, 1, 2, tzinfo=UTC))
+    repository.save(newer)
+
+    found = repository.get_by_result_entity(
+        workspace_id, result_entity_type="resource", result_entity_id="res-shared"
+    )
+    assert found is not None
+    assert found.id == newer.id
 
 
 def test_ingestion_job_source_identity_is_unique_per_workspace(

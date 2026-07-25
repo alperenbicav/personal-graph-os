@@ -31,6 +31,7 @@ from personal_graph_os.domain.documents import (
     Tag,
 )
 from personal_graph_os.domain.enrichment import (
+    CitedEvidenceReference,
     ConcurrentEnrichmentUpdateError,
     ProposedRelationKind,
     RelationProposal,
@@ -70,7 +71,12 @@ from personal_graph_os.domain.identifiers import (
 )
 from personal_graph_os.domain.ingestion import IngestionJob, IngestionJobStatus, IngestionStage
 from personal_graph_os.domain.research_settings import WorkspaceResearchSettings
-from personal_graph_os.domain.resource import Resource, ResourceKind, ResourceLifecycleStatus
+from personal_graph_os.domain.resource import (
+    RepositoryLabel,
+    Resource,
+    ResourceKind,
+    ResourceLifecycleStatus,
+)
 from personal_graph_os.domain.schema import (
     EdgeType,
     FieldDefinition,
@@ -589,9 +595,35 @@ class SqliteResourceRepository:
         ).fetchone()
         return None if row is None else self._hydrate(row)
 
-    def list_by_workspace(self, workspace_id: WorkspaceId) -> tuple[Resource, ...]:
+    def list_by_workspace(
+        self,
+        workspace_id: WorkspaceId,
+        *,
+        kind: ResourceKind | None = None,
+        lifecycle_status: ResourceLifecycleStatus | None = None,
+        repository_label: RepositoryLabel | None = None,
+        last_activity_since: datetime | None = None,
+        last_activity_until: datetime | None = None,
+    ) -> tuple[Resource, ...]:
+        clauses = ["workspace_id = ?"]
+        params: list[object] = [workspace_id]
+        if kind is not None:
+            clauses.append("kind = ?")
+            params.append(kind.value)
+        if lifecycle_status is not None:
+            clauses.append("lifecycle_status = ?")
+            params.append(lifecycle_status.value)
+        if repository_label is not None:
+            clauses.append("repository_label = ?")
+            params.append(repository_label.value)
+        if last_activity_since is not None:
+            clauses.append("last_activity_at >= ?")
+            params.append(last_activity_since.isoformat())
+        if last_activity_until is not None:
+            clauses.append("last_activity_at <= ?")
+            params.append(last_activity_until.isoformat())
         rows = self._connection.execute(
-            "SELECT * FROM resources WHERE workspace_id = ?", (workspace_id,)
+            f"SELECT * FROM resources WHERE {' AND '.join(clauses)}", params
         ).fetchall()
         return tuple(self._hydrate(row) for row in rows)
 
@@ -608,8 +640,8 @@ class SqliteResourceRepository:
             "INSERT INTO resources "
             "(id, workspace_id, node_id, kind, canonical_identifier, source_url, "
             " lifecycle_status, next_action, next_action_dismissed, open_questions_json, "
-            " takeaways_json, progress_percent, review_at, last_activity_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            " takeaways_json, progress_percent, review_at, last_activity_at, repository_label) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (id) DO UPDATE SET kind = excluded.kind, "
             "canonical_identifier = excluded.canonical_identifier, "
             "source_url = excluded.source_url, lifecycle_status = excluded.lifecycle_status, "
@@ -618,7 +650,8 @@ class SqliteResourceRepository:
             "open_questions_json = excluded.open_questions_json, "
             "takeaways_json = excluded.takeaways_json, "
             "progress_percent = excluded.progress_percent, review_at = excluded.review_at, "
-            "last_activity_at = excluded.last_activity_at",
+            "last_activity_at = excluded.last_activity_at, "
+            "repository_label = excluded.repository_label",
             (
                 resource.id,
                 resource.workspace_id,
@@ -634,6 +667,7 @@ class SqliteResourceRepository:
                 resource.progress_percent,
                 resource.review_at.isoformat() if resource.review_at is not None else None,
                 resource.last_activity_at.isoformat(),
+                resource.repository_label.value if resource.repository_label is not None else None,
             ),
         )
 
@@ -655,6 +689,11 @@ class SqliteResourceRepository:
                 datetime.fromisoformat(row["review_at"]) if row["review_at"] is not None else None
             ),
             last_activity_at=datetime.fromisoformat(row["last_activity_at"]),
+            repository_label=(
+                RepositoryLabel(row["repository_label"])
+                if row["repository_label"] is not None
+                else None
+            ),
         )
 
 
@@ -1556,6 +1595,15 @@ class SqliteDocumentLinkRepository:
         ).fetchall()
         return tuple(self._hydrate(row) for row in rows)
 
+    def list_by_target(
+        self, target_type: DocumentLinkTargetType, target_id: str
+    ) -> tuple[DocumentLink, ...]:
+        rows = self._connection.execute(
+            "SELECT * FROM document_links WHERE target_type = ? AND target_id = ?",
+            (target_type.value, target_id),
+        ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
     def save(self, document_link: DocumentLink) -> None:
         with self._connection:
             self.save_without_commit(document_link)
@@ -1609,6 +1657,22 @@ class SqliteIngestionJobRepository:
             "SELECT * FROM ingestion_jobs "
             "WHERE workspace_id = ? AND source = ? AND source_identifier = ?",
             (workspace_id, source, source_identifier),
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def get_by_result_entity(
+        self, workspace_id: WorkspaceId, *, result_entity_type: str, result_entity_id: str
+    ) -> IngestionJob | None:
+        """The most recent job that produced `(result_entity_type, result_entity_id)` (review
+        finding S6-R02): more than one capture can legitimately resolve to the same canonical
+        resource over time (a schema uniqueness constraint on source identity, not result
+        entity), so this deterministically returns the latest by `created_at`, tying on `id` for
+        a fully stable order rather than an unordered `fetchone()`."""
+        row = self._connection.execute(
+            "SELECT * FROM ingestion_jobs "
+            "WHERE workspace_id = ? AND result_entity_type = ? AND result_entity_id = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            (workspace_id, result_entity_type, result_entity_id),
         ).fetchone()
         return None if row is None else self._hydrate(row)
 
@@ -1845,9 +1909,10 @@ class SqliteResourceEnrichmentProfileVersionRepository:
             self._connection.execute(
                 "INSERT INTO resource_enrichment_profile_versions "
                 "(id, profile_id, version_number, resource_kind, payload_json, tags_json, "
-                " evidence_content_hashes_json, provider_name, model_name, confidence, "
+                " evidence_content_hashes_json, cited_evidence_json, authors_json, "
+                " published_at, abstract, provider_name, model_name, confidence, "
                 " created_by, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     version.id,
                     version.profile_id,
@@ -1856,6 +1921,12 @@ class SqliteResourceEnrichmentProfileVersionRepository:
                     json.dumps(version.payload.model_dump(mode="json")),
                     json.dumps(list(version.tags)),
                     json.dumps(list(version.evidence_content_hashes)),
+                    json.dumps(
+                        [reference.model_dump(mode="json") for reference in version.cited_evidence]
+                    ),
+                    json.dumps(list(version.authors)),
+                    version.published_at.isoformat() if version.published_at is not None else None,
+                    version.abstract,
                     version.provider_name,
                     version.model_name,
                     version.confidence,
@@ -1880,6 +1951,17 @@ class SqliteResourceEnrichmentProfileVersionRepository:
             payload=payload_type(**json.loads(row["payload_json"])),
             tags=tuple(json.loads(row["tags_json"])),
             evidence_content_hashes=tuple(json.loads(row["evidence_content_hashes_json"])),
+            cited_evidence=tuple(
+                CitedEvidenceReference(**reference)
+                for reference in json.loads(row["cited_evidence_json"])
+            ),
+            authors=tuple(json.loads(row["authors_json"])),
+            published_at=(
+                datetime.fromisoformat(row["published_at"])
+                if row["published_at"] is not None
+                else None
+            ),
+            abstract=row["abstract"],
             provider_name=row["provider_name"],
             model_name=row["model_name"],
             confidence=row["confidence"],

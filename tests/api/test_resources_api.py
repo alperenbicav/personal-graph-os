@@ -227,3 +227,102 @@ def test_archive_resource_via_delete_sets_lifecycle_archived(client: TestClient)
 
     assert response.status_code == 200
     assert response.json()["lifecycle_status"] == "archived"
+
+
+def test_update_resource_sets_repository_label(client: TestClient) -> None:
+    workspace_id = _workspace_id(client)
+    created = client.post(
+        "/resources",
+        json={
+            "workspace_id": workspace_id,
+            "title": "A repo",
+            "raw_source": "https://github.com/acme/widgets",
+            "kind": "github_repository",
+        },
+    ).json()
+
+    response = client.patch(f"/resources/{created['id']}", json={"repository_label": "personal"})
+
+    assert response.status_code == 200
+    assert response.json()["repository_label"] == "personal"
+
+
+def test_update_resource_rejects_repository_label_on_a_non_github_kind(
+    client: TestClient,
+) -> None:
+    workspace_id = _workspace_id(client)
+    created = client.post(
+        "/resources",
+        json={
+            "workspace_id": workspace_id,
+            "title": "A paper",
+            "raw_source": "https://arxiv.org/abs/2401.00099",
+        },
+    ).json()
+
+    response = client.patch(f"/resources/{created['id']}", json={"repository_label": "personal"})
+
+    assert response.status_code == 422
+
+
+def test_list_resources_filters_by_kind_and_repository_label(client: TestClient) -> None:
+    workspace_id = _workspace_id(client)
+    client.post(
+        "/resources",
+        json={
+            "workspace_id": workspace_id,
+            "title": "A paper",
+            "raw_source": "https://arxiv.org/abs/2401.00100",
+        },
+    )
+    repo = client.post(
+        "/resources",
+        json={
+            "workspace_id": workspace_id,
+            "title": "A repo",
+            "raw_source": "https://github.com/acme/one",
+            "kind": "github_repository",
+        },
+    ).json()
+    client.patch(f"/resources/{repo['id']}", json={"repository_label": "apilex"})
+
+    response = client.get(
+        "/resources", params={"workspace_id": workspace_id, "kind": "github_repository"}
+    )
+    assert response.status_code == 200
+    assert [r["id"] for r in response.json()] == [repo["id"]]
+
+    response = client.get(
+        "/resources", params={"workspace_id": workspace_id, "repository_label": "apilex"}
+    )
+    assert response.status_code == 200
+    assert [r["id"] for r in response.json()] == [repo["id"]]
+
+
+def test_get_resource_detail_reports_empty_relations_documents_and_provenance(
+    client: TestClient,
+) -> None:
+    workspace_id = _workspace_id(client)
+    created = client.post(
+        "/resources",
+        json={
+            "workspace_id": workspace_id,
+            "title": "A paper",
+            "raw_source": "https://arxiv.org/abs/2401.00101",
+        },
+    ).json()
+
+    response = client.get(f"/resources/{created['id']}/detail")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["resource"]["id"] == created["id"]
+    assert body["enrichment"] is None
+    assert body["relations"] == []
+    assert body["related_documents"] == []
+    assert body["provenance"] is None
+
+
+def test_get_resource_detail_returns_404_for_an_unknown_resource(client: TestClient) -> None:
+    response = client.get("/resources/does-not-exist/detail")
+    assert response.status_code == 404

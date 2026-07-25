@@ -6,6 +6,7 @@ resolved once at the composition boundary. Services depend only on these protoco
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol
 
 from personal_graph_os.domain.activity import ActivityEvent, DiscoveryRun, IdempotencyReceipt
@@ -14,6 +15,7 @@ from personal_graph_os.domain.documents import (
     Collection,
     Document,
     DocumentLink,
+    DocumentLinkTargetType,
     DocumentVersion,
     Tag,
 )
@@ -51,7 +53,12 @@ from personal_graph_os.domain.identifiers import (
 )
 from personal_graph_os.domain.ingestion import IngestionJob
 from personal_graph_os.domain.research_settings import WorkspaceResearchSettings
-from personal_graph_os.domain.resource import Resource
+from personal_graph_os.domain.resource import (
+    RepositoryLabel,
+    Resource,
+    ResourceKind,
+    ResourceLifecycleStatus,
+)
 from personal_graph_os.domain.schema import Workspace
 from personal_graph_os.domain.search import SearchEntityType, SearchHit
 from personal_graph_os.domain.views import ContextPack, SavedView
@@ -117,7 +124,16 @@ class ResourceRepository(Protocol):
     ) -> Resource | None: ...
     def save(self, resource: Resource) -> None: ...
     def save_without_commit(self, resource: Resource) -> None: ...
-    def list_by_workspace(self, workspace_id: WorkspaceId) -> tuple[Resource, ...]: ...
+    def list_by_workspace(
+        self,
+        workspace_id: WorkspaceId,
+        *,
+        kind: ResourceKind | None = None,
+        lifecycle_status: ResourceLifecycleStatus | None = None,
+        repository_label: RepositoryLabel | None = None,
+        last_activity_since: datetime | None = None,
+        last_activity_until: datetime | None = None,
+    ) -> tuple[Resource, ...]: ...
 
 
 class SavedViewRepository(Protocol):
@@ -237,6 +253,9 @@ class DocumentVersionRepository(Protocol):
 
 class DocumentLinkRepository(Protocol):
     def list_by_document(self, document_id: DocumentId) -> tuple[DocumentLink, ...]: ...
+    def list_by_target(
+        self, target_type: DocumentLinkTargetType, target_id: str
+    ) -> tuple[DocumentLink, ...]: ...
     def save(self, document_link: DocumentLink) -> None: ...
     def save_without_commit(self, document_link: DocumentLink) -> None: ...
     def delete(self, document_link_id: DocumentLinkId) -> None: ...
@@ -248,6 +267,16 @@ class IngestionJobRepository(Protocol):
     def get_by_source(
         self, workspace_id: WorkspaceId, source: str, source_identifier: str
     ) -> IngestionJob | None: ...
+    def get_by_result_entity(
+        self, workspace_id: WorkspaceId, *, result_entity_type: str, result_entity_id: str
+    ) -> IngestionJob | None:
+        """The most recent job whose committed write produced `(result_entity_type,
+        result_entity_id)` (EP-2026-012 ST-06's Research/Repository job-provenance requirement;
+        review finding S6-R02: more than one job can legitimately resolve to the same result over
+        time, so this deterministically returns the latest, not an arbitrary match) -- `None`
+        when no job recorded that result (e.g. a resource created outside Capture)."""
+        ...
+
     def list_by_workspace(self, workspace_id: WorkspaceId) -> tuple[IngestionJob, ...]: ...
     def save(self, ingestion_job: IngestionJob) -> None: ...
     def save_without_commit(self, ingestion_job: IngestionJob) -> None: ...

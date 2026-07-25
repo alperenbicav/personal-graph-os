@@ -29,6 +29,7 @@ from personal_graph_os.application.repositories import (
     WorkspaceRepository,
 )
 from personal_graph_os.application.research_dashboard import ResearchDashboardService
+from personal_graph_os.application.resource_detail_service import ResourceDetailService
 from personal_graph_os.application.search_service import SearchService
 from personal_graph_os.application.services import (
     CanvasService,
@@ -86,6 +87,10 @@ def get_resource_repository(request: Request) -> ResourceRepository:
 
 def get_resource_service(request: Request) -> ResourceService:
     return request.app.state.resource_service
+
+
+def get_resource_detail_service(request: Request) -> ResourceDetailService:
+    return request.app.state.resource_detail_service
 
 
 def get_saved_view_repository(request: Request) -> SavedViewRepository:

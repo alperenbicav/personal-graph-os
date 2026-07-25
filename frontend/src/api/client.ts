@@ -18,7 +18,9 @@ import type {
   ProjectionQuery,
   ResearchDashboard,
   Resource,
+  ResourceDetail,
   ResourceKind,
+  ResourceListFilters,
   SavedView,
   SearchResult,
   StatusDefinition,
@@ -356,8 +358,21 @@ export function removeEdgeType(workspaceId: string, edgeTypeId: string): Promise
   )
 }
 
-export function listResources(workspaceId: string): Promise<Resource[]> {
-  return request(`/resources?workspace_id=${encodeURIComponent(workspaceId)}`)
+export function listResources(
+  workspaceId: string,
+  filters?: ResourceListFilters,
+): Promise<Resource[]> {
+  const params = new URLSearchParams({ workspace_id: workspaceId })
+  if (filters?.kind) params.set('kind', filters.kind)
+  if (filters?.lifecycle_status) params.set('lifecycle_status', filters.lifecycle_status)
+  if (filters?.repository_label) params.set('repository_label', filters.repository_label)
+  if (filters?.last_activity_since) params.set('last_activity_since', filters.last_activity_since)
+  if (filters?.last_activity_until) params.set('last_activity_until', filters.last_activity_until)
+  return request(`/resources?${params.toString()}`)
+}
+
+export function getResourceDetail(resourceId: string): Promise<ResourceDetail> {
+  return request(`/resources/${encodeURIComponent(resourceId)}/detail`)
 }
 
 export function createOrReuseResource(
@@ -383,6 +398,8 @@ export interface UpdateResourcePatch {
   clear_progress_percent?: boolean
   review_at?: string | null
   clear_review_at?: boolean
+  repository_label?: string
+  clear_repository_label?: boolean
 }
 
 export function updateResource(resourceId: string, patch: UpdateResourcePatch): Promise<Resource> {

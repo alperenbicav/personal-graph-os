@@ -72,6 +72,7 @@ from personal_graph_os.application.file_service import (
 )
 from personal_graph_os.application.projections import ProjectionService
 from personal_graph_os.application.research_dashboard import ResearchDashboardService
+from personal_graph_os.application.resource_detail_service import ResourceDetailService
 from personal_graph_os.application.search_service import SearchService
 from personal_graph_os.application.services import (
     CanvasNotFoundError,
@@ -130,6 +131,8 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteCanvasRepository,
     SqliteContextPackRepository,
     SqliteDiscoveryRunRepository,
+    SqliteDocumentLinkRepository,
+    SqliteDocumentRepository,
     SqliteEdgeRepository,
     SqliteFileReferenceRepository,
     SqliteIdempotencyReceiptRepository,
@@ -137,6 +140,8 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteNodeRepository,
     SqlitePendingFileOperationRepository,
     SqliteResearchSettingsRepository,
+    SqliteResourceEnrichmentProfileRepository,
+    SqliteResourceEnrichmentProfileVersionRepository,
     SqliteResourceRepository,
     SqliteSavedViewRepository,
     SqliteSearchIndexRepository,
@@ -239,6 +244,12 @@ def create_app(
     ingestion_job_repository = SqliteIngestionJobRepository(connection)
     idempotency_receipt_repository = SqliteIdempotencyReceiptRepository(connection)
     work_item_repository = SqliteWorkItemRepository(connection)
+    document_repository = SqliteDocumentRepository(connection)
+    document_link_repository = SqliteDocumentLinkRepository(connection)
+    resource_enrichment_profile_repository = SqliteResourceEnrichmentProfileRepository(connection)
+    resource_enrichment_profile_version_repository = (
+        SqliteResourceEnrichmentProfileVersionRepository(connection)
+    )
     managed_file_store = LocalManagedFileStore(workspace_dir / MANAGED_FILES_DIR_NAME)
 
     default_workspace = get_or_create_default_workspace(workspace_repository)
@@ -297,6 +308,18 @@ def create_app(
         resource_repository,
         lambda: SqliteResearchUnitOfWork(connection),
         search_index=search_index_repository,
+    )
+    app.state.resource_detail_service = ResourceDetailService(
+        workspace_repository,
+        resource_repository,
+        node_repository,
+        edge_repository,
+        document_link_repository,
+        document_repository,
+        resource_enrichment_profile_repository,
+        resource_enrichment_profile_version_repository,
+        ingestion_job_repository,
+        work_item_repository,
     )
     app.state.saved_view_service = SavedViewService(
         workspace_repository, saved_view_repository, lambda: SqliteResearchUnitOfWork(connection)

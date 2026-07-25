@@ -18,6 +18,7 @@ const resource: Resource = {
   progress_percent: null,
   review_at: null,
   last_activity_at: '2026-01-01T00:00:00Z',
+  repository_label: null,
   title: 'A paper',
   body: '',
 }

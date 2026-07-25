@@ -21,6 +21,11 @@ from personal_graph_os.application.activity_service import ActivityEventPage
 from personal_graph_os.application.capture_service import CaptureOutcome
 from personal_graph_os.application.enrichment_service import EnrichmentOutcome
 from personal_graph_os.application.projections import ProjectionItem
+from personal_graph_os.application.resource_detail_service import (
+    RelatedDocument,
+    RelatedNode,
+    ResourceDetail,
+)
 from personal_graph_os.application.work_planning_service import WorkPlanOutcome
 from personal_graph_os.application.workflow_chain import WorkflowChainStep
 from personal_graph_os.domain.activity import ActivityEvent
@@ -33,7 +38,13 @@ from personal_graph_os.domain.enrichment import (
 )
 from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.identifiers import ActivityEventId
-from personal_graph_os.domain.resource import Resource, ResourceKind, ResourceLifecycleStatus
+from personal_graph_os.domain.ingestion import IngestionJob
+from personal_graph_os.domain.resource import (
+    RepositoryLabel,
+    Resource,
+    ResourceKind,
+    ResourceLifecycleStatus,
+)
 from personal_graph_os.domain.schema import FieldType
 from personal_graph_os.domain.views import FilterField, ProjectionQuery, ViewKind
 from personal_graph_os.domain.work_items import WorkItem
@@ -173,6 +184,8 @@ class UpdateResourceRequest(BaseModel):
     clear_progress_percent: bool = False
     review_at: datetime | None = None
     clear_review_at: bool = False
+    repository_label: RepositoryLabel | None = None
+    clear_repository_label: bool = False
 
 
 class ResourceResponse(BaseModel):
@@ -190,6 +203,7 @@ class ResourceResponse(BaseModel):
     progress_percent: int | None
     review_at: datetime | None
     last_activity_at: datetime
+    repository_label: RepositoryLabel | None
     title: str
     body: str
 
@@ -210,8 +224,85 @@ class ResourceResponse(BaseModel):
             progress_percent=resource.progress_percent,
             review_at=resource.review_at,
             last_activity_at=resource.last_activity_at,
+            repository_label=resource.repository_label,
             title=node.title,
             body=node.body,
+        )
+
+
+class RelatedNodeResponse(BaseModel):
+    edge_id: str
+    direction: str
+    edge_type_name: str
+    node_id: str
+    node_title: str
+    target_domain: str
+    target_entity_id: str | None
+    resource_kind: str | None
+
+    @classmethod
+    def from_related_node(cls, related: RelatedNode) -> RelatedNodeResponse:
+        return cls(
+            edge_id=related.edge_id,
+            direction=related.direction,
+            edge_type_name=related.edge_type_name,
+            node_id=related.node_id,
+            target_domain=related.target_domain,
+            target_entity_id=related.target_entity_id,
+            node_title=related.node_title,
+            resource_kind=related.resource_kind,
+        )
+
+
+class RelatedDocumentResponse(BaseModel):
+    document_id: str
+    title: str
+    kind: str
+
+    @classmethod
+    def from_related_document(cls, related: RelatedDocument) -> RelatedDocumentResponse:
+        return cls(document_id=related.document_id, title=related.title, kind=related.kind)
+
+
+class ProvenanceResponse(BaseModel):
+    ingestion_job_id: str
+    source: str
+    stage: str
+    status: str
+    created_at: datetime
+
+    @classmethod
+    def from_ingestion_job(cls, job: IngestionJob) -> ProvenanceResponse:
+        return cls(
+            ingestion_job_id=job.id,
+            source=job.source,
+            stage=job.stage.value,
+            status=job.status.value,
+            created_at=job.created_at,
+        )
+
+
+class ResourceDetailResponse(BaseModel):
+    resource: ResourceResponse
+    enrichment: ResourceEnrichmentProfileVersion | None
+    relations: list[RelatedNodeResponse]
+    related_documents: list[RelatedDocumentResponse]
+    provenance: ProvenanceResponse | None
+
+    @classmethod
+    def from_detail(cls, detail: ResourceDetail, node: Node) -> ResourceDetailResponse:
+        return cls(
+            resource=ResourceResponse.from_resource_and_node(detail.resource, node),
+            enrichment=detail.enrichment,
+            relations=[RelatedNodeResponse.from_related_node(r) for r in detail.relations],
+            related_documents=[
+                RelatedDocumentResponse.from_related_document(d) for d in detail.related_documents
+            ],
+            provenance=(
+                ProvenanceResponse.from_ingestion_job(detail.provenance)
+                if detail.provenance is not None
+                else None
+            ),
         )
 
 

@@ -172,6 +172,14 @@ test.describe('ST-09.2 accessibility acceptance (real server, real build)', () =
     await navigateTo(page, 'Research')
     await assertNoSeriousOrCriticalViolations(page, 'research view')
 
+    // ST-06 review finding S6-F02/F03 follow-up: the Research filter bar and workflow-bucket
+    // chips are new interactive controls in this same view, scanned as part of the same state.
+    await page.getByRole('button', { name: /^all$/i }).click()
+    await assertNoSeriousOrCriticalViolations(page, 'research view (all bucket filter)')
+
+    await navigateTo(page, 'Repositories')
+    await assertNoSeriousOrCriticalViolations(page, 'repositories view')
+
     await navigateTo(page, 'Discovery')
     await assertNoSeriousOrCriticalViolations(page, 'discovery view')
 

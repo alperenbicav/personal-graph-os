@@ -1,25 +1,31 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
 from personal_graph_os.domain.enrichment import (
+    MAX_AUTHOR_LENGTH,
+    MAX_AUTHORS,
     MAX_LIST_ITEMS,
     MAX_PROPOSED_RELATIONS,
     MAX_SUMMARY_LENGTH,
     MAX_TAGS,
     ArticleEnrichmentPayload,
+    CitedEvidenceReference,
     EnrichmentResult,
     PaperEnrichmentPayload,
     ProposedRelation,
     ProposedRelationKind,
     RelationProposal,
     RelationProposalStatus,
+    RepositoryEnrichmentPayload,
     ResourceEnrichmentProfile,
     ResourceEnrichmentProfileVersion,
     UnsupportedResourceKindForEnrichmentError,
     payload_type_for_kind,
+    truncate_authors,
 )
 from personal_graph_os.domain.errors import InvariantViolationError
 from personal_graph_os.domain.identifiers import (
@@ -207,3 +213,111 @@ def test_enrichment_result_rejects_more_proposed_relations_than_the_persisted_bo
                 for i in range(MAX_PROPOSED_RELATIONS + 1)
             ),
         )
+
+
+def test_repository_payload_accepts_stack_license_and_activity_summary() -> None:
+    payload = RepositoryEnrichmentPayload(
+        summary="a repository",
+        tech_stack=("Python", "FastAPI"),
+        license_name="MIT",
+        activity_summary="actively maintained, weekly commits",
+    )
+    assert payload.tech_stack == ("Python", "FastAPI")
+    assert payload.license_name == "MIT"
+    assert payload.activity_summary == "actively maintained, weekly commits"
+
+
+def test_repository_payload_defaults_stack_license_and_activity_summary_to_unset() -> None:
+    payload = RepositoryEnrichmentPayload(summary="a repository")
+    assert payload.tech_stack == ()
+    assert payload.license_name is None
+    assert payload.activity_summary is None
+
+
+def test_repository_payload_rejects_more_tech_stack_entries_than_the_persisted_bound() -> None:
+    with pytest.raises(InvariantViolationError):
+        RepositoryEnrichmentPayload(
+            summary="a repository",
+            tech_stack=tuple(f"lang{i}" for i in range(MAX_LIST_ITEMS + 1)),
+        )
+
+
+def _cited_evidence(**overrides: Any) -> CitedEvidenceReference:
+    defaults: dict[str, Any] = {
+        "adapter_name": "html_article_parser",
+        "source_reference": "https://example.com/a",
+        "content_hash": "a" * 64,
+        "retrieved_at": datetime.now(UTC),
+    }
+    defaults.update(overrides)
+    return CitedEvidenceReference(**defaults)
+
+
+def test_version_accepts_authors_published_at_and_abstract() -> None:
+    profile = _profile()
+    version = _version(
+        profile.id,
+        authors=("Jane Doe",),
+        published_at=datetime(2024, 1, 1, tzinfo=UTC),
+        abstract="An abstract.",
+    )
+    assert version.authors == ("Jane Doe",)
+    assert version.published_at == datetime(2024, 1, 1, tzinfo=UTC)
+    assert version.abstract == "An abstract."
+
+
+def test_version_defaults_authors_published_at_and_abstract_to_unset() -> None:
+    profile = _profile()
+    version = _version(profile.id)
+    assert version.authors == ()
+    assert version.published_at is None
+    assert version.abstract is None
+
+
+def test_version_rejects_more_authors_than_the_persisted_bound() -> None:
+    profile = _profile()
+    with pytest.raises(InvariantViolationError):
+        _version(profile.id, authors=tuple(f"author{i}" for i in range(MAX_AUTHORS + 1)))
+
+
+def test_version_accepts_cited_evidence_matching_its_hashes() -> None:
+    profile = _profile()
+    version = _version(
+        profile.id,
+        evidence_content_hashes=("a" * 64,),
+        cited_evidence=(_cited_evidence(content_hash="a" * 64),),
+    )
+    assert len(version.cited_evidence) == 1
+
+
+def test_version_rejects_cited_evidence_not_matching_its_hashes() -> None:
+    profile = _profile()
+    with pytest.raises(InvariantViolationError):
+        _version(
+            profile.id,
+            evidence_content_hashes=("a" * 64,),
+            cited_evidence=(_cited_evidence(content_hash="b" * 64),),
+        )
+
+
+def test_version_accepts_empty_cited_evidence_regardless_of_hashes() -> None:
+    profile = _profile()
+    version = _version(profile.id, evidence_content_hashes=("a" * 64,), cited_evidence=())
+    assert version.cited_evidence == ()
+
+
+def test_truncate_authors_bounds_the_author_count() -> None:
+    authors = tuple(f"Author {i}" for i in range(MAX_AUTHORS + 10))
+    truncated = truncate_authors(authors)
+    assert len(truncated) == MAX_AUTHORS
+    assert truncated == authors[:MAX_AUTHORS]
+
+
+def test_truncate_authors_bounds_each_author_name_length() -> None:
+    truncated = truncate_authors(("x" * (MAX_AUTHOR_LENGTH + 50),))
+    assert truncated == ("x" * MAX_AUTHOR_LENGTH,)
+
+
+def test_truncate_authors_leaves_an_in_bounds_list_untouched() -> None:
+    authors = ("Jane Doe", "John Smith")
+    assert truncate_authors(authors) == authors

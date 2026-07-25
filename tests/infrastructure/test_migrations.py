@@ -65,6 +65,9 @@ _ALL_MIGRATION_NAMES = (
     "0010_enrichment.sql",
     "0011_edge_uniqueness.sql",
     "0012_work_planning_receipts.sql",
+    "0013_repository_label.sql",
+    "0014_enrichment_bibliographic_evidence.sql",
+    "0015_ingestion_job_result_entity_index.sql",
 )
 
 
@@ -120,6 +123,9 @@ def test_upgrading_an_existing_0001_database_preserves_ids_and_data() -> None:
         "0010_enrichment.sql",
         "0011_edge_uniqueness.sql",
         "0012_work_planning_receipts.sql",
+        "0013_repository_label.sql",
+        "0014_enrichment_bibliographic_evidence.sql",
+        "0015_ingestion_job_result_entity_index.sql",
     )
 
     resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()
@@ -333,6 +339,9 @@ def test_upgrading_an_existing_0007_database_preserves_resources_and_nodes() -> 
         "0010_enrichment.sql",
         "0011_edge_uniqueness.sql",
         "0012_work_planning_receipts.sql",
+        "0013_repository_label.sql",
+        "0014_enrichment_bibliographic_evidence.sql",
+        "0015_ingestion_job_result_entity_index.sql",
     )
 
     resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()
@@ -386,7 +395,13 @@ def test_upgrading_a_pre_0011_database_with_duplicate_edges_keeps_one_canonical_
     connection.commit()
 
     newly_applied = run_migrations(connection)
-    assert newly_applied == ("0011_edge_uniqueness.sql", "0012_work_planning_receipts.sql")
+    assert newly_applied == (
+        "0011_edge_uniqueness.sql",
+        "0012_work_planning_receipts.sql",
+        "0013_repository_label.sql",
+        "0014_enrichment_bibliographic_evidence.sql",
+        "0015_ingestion_job_result_entity_index.sql",
+    )
 
     rows = connection.execute(
         "SELECT id FROM edges WHERE workspace_id = 'ws-1' AND edge_type_id = 'et-1' "
@@ -466,3 +481,34 @@ def test_resources_uniqueness_is_workspace_and_identifier_independent_of_kind() 
             "(id, workspace_id, node_id, kind, canonical_identifier, last_activity_at) "
             "VALUES ('res-2', 'ws-1', 'node-2', 'github_repository', 'shared-id', 't0')"
         )
+
+
+def test_0015_adds_a_result_entity_lookup_index_covering_the_selected_query() -> None:
+    """Review finding S6-R02 (delta round 2): `get_by_result_entity()` filters by
+    `(workspace_id, result_entity_type, result_entity_id)` and orders by `(created_at, id)`; an
+    index must actually cover those columns, not just the pre-existing `(workspace_id, status)`
+    one, or every lookup scans the whole workspace's ingestion history."""
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    run_migrations(connection)
+
+    index_row = connection.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type = 'index' AND tbl_name = 'ingestion_jobs' "
+        "AND name = 'idx_ingestion_jobs_result_entity'"
+    ).fetchone()
+    assert index_row is not None
+
+    indexed_columns = [
+        row["name"]
+        for row in connection.execute(
+            "PRAGMA index_info('idx_ingestion_jobs_result_entity')"
+        ).fetchall()
+    ]
+    assert indexed_columns == [
+        "workspace_id",
+        "result_entity_type",
+        "result_entity_id",
+        "created_at",
+        "id",
+    ]

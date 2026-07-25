@@ -7,7 +7,12 @@ from pydantic import ValidationError
 
 from personal_graph_os.domain.errors import InvariantViolationError
 from personal_graph_os.domain.identifiers import NodeId, WorkspaceId, new_id
-from personal_graph_os.domain.resource import Resource, ResourceKind, ResourceLifecycleStatus
+from personal_graph_os.domain.resource import (
+    RepositoryLabel,
+    Resource,
+    ResourceKind,
+    ResourceLifecycleStatus,
+)
 
 
 def _resource(
@@ -119,3 +124,35 @@ def test_resource_does_not_resurface_before_inactivity_threshold() -> None:
     now = datetime.now(UTC)
     resource = _resource(last_activity_at=now - timedelta(days=1))
     assert not resource.is_due_for_resurfacing(as_of=now, stale_after_days=14)
+
+
+def test_repository_label_is_accepted_for_a_github_repository() -> None:
+    resource = Resource(
+        workspace_id=WorkspaceId(new_id()),
+        node_id=NodeId(new_id()),
+        kind=ResourceKind.GITHUB_REPOSITORY,
+        canonical_identifier="github:acme/widgets",
+        repository_label=RepositoryLabel.PERSONAL,
+    )
+    assert resource.repository_label is RepositoryLabel.PERSONAL
+
+
+def test_repository_label_rejects_a_non_github_repository_kind() -> None:
+    with pytest.raises(InvariantViolationError):
+        Resource(
+            workspace_id=WorkspaceId(new_id()),
+            node_id=NodeId(new_id()),
+            kind=ResourceKind.PAPER,
+            canonical_identifier="arxiv:2401.00001",
+            repository_label=RepositoryLabel.APILEX,
+        )
+
+
+def test_repository_label_defaults_to_none_for_a_github_repository() -> None:
+    resource = Resource(
+        workspace_id=WorkspaceId(new_id()),
+        node_id=NodeId(new_id()),
+        kind=ResourceKind.GITHUB_REPOSITORY,
+        canonical_identifier="github:acme/widgets",
+    )
+    assert resource.repository_label is None

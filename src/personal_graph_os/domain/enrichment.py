@@ -49,6 +49,15 @@ MAX_TAGS = 25
 MAX_EXPLANATION_LENGTH = 500
 MAX_CANDIDATE_LABEL_LENGTH = 500
 MAX_PROPOSED_RELATIONS = 20
+# Bibliographic/evidence bounds (review finding S6-R01): authors/abstract are copied verbatim
+# from the resource's own `ExtractedContent` (deterministic adapter output), never asked of or
+# trusted from the classifier, so they get their own bounds independent of the LLM-facing ones
+# above. `MAX_ABSTRACT_LENGTH` matches `domain.extraction`'s own bound on the same field.
+MAX_AUTHORS = 25
+MAX_AUTHOR_LENGTH = 300
+MAX_ABSTRACT_LENGTH = 20_000
+_CONTENT_HASH_LENGTH = 64
+_CONTENT_HASH_ALPHABET = frozenset("0123456789abcdef")
 
 
 class EnrichmentError(DomainError):
@@ -117,6 +126,17 @@ def _validate_bounded_collection(
     for entry in value:
         _validate_bounded_text(entry, max_item_length, f"{field_label} entry")
     return value
+
+
+def truncate_authors(authors: tuple[str, ...]) -> tuple[str, ...]:
+    """Deterministically bound a source-derived author list to what
+    `ResourceEnrichmentProfileVersion.authors` accepts (review finding S6-R04):
+    `domain.extraction.ExtractedContent.authors` places no upper bound on author count or name
+    length, since real consortium papers can list hundreds of authors, but a faulty/adversarial
+    count must never fail persistence and discard an otherwise-successful enrichment outright.
+    Mirrors the existing truncate-before-construction pattern (`domain.extraction`'s
+    `truncate_body_markdown`/`truncate_abstract`, review finding S3-R03) rather than rejecting."""
+    return tuple(author[:MAX_AUTHOR_LENGTH] for author in authors[:MAX_AUTHORS])
 
 
 class PaperEnrichmentPayload(BaseModel):
@@ -192,13 +212,22 @@ class ArticleEnrichmentPayload(BaseModel):
 
 
 class RepositoryEnrichmentPayload(BaseModel):
-    """Typed enrichment fields for `ResourceKind.GITHUB_REPOSITORY`."""
+    """Typed enrichment fields for `ResourceKind.GITHUB_REPOSITORY`.
+
+    `tech_stack`/`license_name`/`activity_summary` (EP-2026-012 ST-06) fill the Repositories
+    workspace's stack/license/activity acceptance fields; both are optional and additive to the
+    ST-04 shape, so an existing `ResourceEnrichmentProfileVersion` row (JSON-serialized, no
+    schema migration involved) still deserializes with them defaulting to unset.
+    """
 
     summary: str
     capabilities: tuple[str, ...] = ()
     architecture_summary: str | None = None
     risks: tuple[str, ...] = ()
     applicability: str | None = None
+    tech_stack: tuple[str, ...] = ()
+    license_name: str | None = None
+    activity_summary: str | None = None
 
     @field_validator("summary")
     @classmethod
@@ -209,7 +238,7 @@ class RepositoryEnrichmentPayload(BaseModel):
             "RepositoryEnrichmentPayload.summary",
         )
 
-    @field_validator("capabilities", "risks")
+    @field_validator("capabilities", "risks", "tech_stack")
     @classmethod
     def _validate_lists(cls, value: tuple[str, ...], info: object) -> tuple[str, ...]:
         field_name = getattr(info, "field_name", "RepositoryEnrichmentPayload field")
@@ -220,7 +249,7 @@ class RepositoryEnrichmentPayload(BaseModel):
             field_label=f"RepositoryEnrichmentPayload.{field_name}",
         )
 
-    @field_validator("architecture_summary", "applicability")
+    @field_validator("architecture_summary", "applicability", "license_name", "activity_summary")
     @classmethod
     def _validate_optional_text(cls, value: str | None, info: object) -> str | None:
         field_name = getattr(info, "field_name", "RepositoryEnrichmentPayload field")
@@ -311,8 +340,47 @@ class ResourceEnrichmentProfile(BaseModel):
         )
 
 
+class CitedEvidenceReference(BaseModel):
+    """A copyright-safe, inspectable record of one cited evidence entry (review finding
+    S6-R01): adapter identity, source reference, content hash, and retrieval time -- mirroring
+    `domain.extraction.ExtractionEvidence`'s own shape but declared independently here (this
+    module never imports the extraction domain) -- never the raw fetched bytes/response body,
+    so a persisted profile version can prove *what was read* without redistributing it."""
+
+    adapter_name: str
+    source_reference: str
+    content_hash: str
+    retrieved_at: datetime
+
+    @field_validator("adapter_name", "source_reference")
+    @classmethod
+    def _validate_non_empty(cls, value: str, info: object) -> str:
+        field_name = getattr(info, "field_name", "CitedEvidenceReference field")
+        return _non_empty(value, f"CitedEvidenceReference.{field_name}")
+
+    @field_validator("content_hash")
+    @classmethod
+    def _validate_content_hash(cls, value: str) -> str:
+        if len(value) != _CONTENT_HASH_LENGTH or any(
+            character not in _CONTENT_HASH_ALPHABET for character in value
+        ):
+            raise InvariantViolationError(
+                "CitedEvidenceReference.content_hash must be 64 lowercase hex characters"
+            )
+        return value
+
+
 class ResourceEnrichmentProfileVersion(BaseModel):
-    """One immutable, numbered enrichment result for a `ResourceEnrichmentProfile`."""
+    """One immutable, numbered enrichment result for a `ResourceEnrichmentProfile`.
+
+    `authors`/`published_at`/`abstract` (review finding S6-R01) are copied verbatim from the
+    resource's own `ExtractedContent` by `EnrichmentService` itself, never asked of or trusted
+    from the classifier -- deterministic bibliographic facts are not something an LLM should be
+    able to assert or alter. `cited_evidence` is the inspectable counterpart to
+    `evidence_content_hashes` (kept for the existing cite-validation contract): the same hashes,
+    with adapter/source/retrieval provenance attached, so a UI can show what was actually read
+    without exposing raw content.
+    """
 
     id: ResourceEnrichmentProfileVersionId = Field(
         default_factory=lambda: ResourceEnrichmentProfileVersionId(new_id())
@@ -323,6 +391,10 @@ class ResourceEnrichmentProfileVersion(BaseModel):
     payload: EnrichmentPayload
     tags: tuple[str, ...] = ()
     evidence_content_hashes: tuple[str, ...]
+    cited_evidence: tuple[CitedEvidenceReference, ...] = ()
+    authors: tuple[str, ...] = ()
+    published_at: datetime | None = None
+    abstract: str | None = None
     provider_name: str
     model_name: str | None = None
     confidence: float
@@ -366,6 +438,25 @@ class ResourceEnrichmentProfileVersion(BaseModel):
             )
         return value
 
+    @field_validator("authors")
+    @classmethod
+    def _validate_authors(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for entry in value:
+            _non_empty(entry, "ResourceEnrichmentProfileVersion.authors entry")
+        return _validate_bounded_collection(
+            value,
+            max_items=MAX_AUTHORS,
+            max_item_length=MAX_AUTHOR_LENGTH,
+            field_label="ResourceEnrichmentProfileVersion.authors",
+        )
+
+    @field_validator("abstract")
+    @classmethod
+    def _validate_abstract(cls, value: str | None) -> str | None:
+        return _validate_bounded_optional_text(
+            value, MAX_ABSTRACT_LENGTH, "ResourceEnrichmentProfileVersion.abstract"
+        )
+
     @field_validator("confidence")
     @classmethod
     def _validate_confidence(cls, value: float) -> float:
@@ -379,6 +470,19 @@ class ResourceEnrichmentProfileVersion(BaseModel):
                 f"ResourceEnrichmentProfileVersion {self.id} declares resource_kind "
                 f"{self.resource_kind} but payload is {type(self.payload).__name__}, "
                 f"expected {expected_type.__name__}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_cited_evidence_matches_hashes(self) -> ResourceEnrichmentProfileVersion:
+        if not self.cited_evidence:
+            return self
+        cited_hashes = {reference.content_hash for reference in self.cited_evidence}
+        if cited_hashes != set(self.evidence_content_hashes):
+            raise InvariantViolationError(
+                f"ResourceEnrichmentProfileVersion {self.id}'s cited_evidence hashes "
+                f"{sorted(cited_hashes)} must exactly match evidence_content_hashes "
+                f"{sorted(self.evidence_content_hashes)} when cited_evidence is populated"
             )
         return self
 

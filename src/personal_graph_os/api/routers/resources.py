@@ -5,18 +5,31 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, Response
 
-from personal_graph_os.api.dependencies import get_node_repository, get_resource_service
+from personal_graph_os.api.dependencies import (
+    get_node_repository,
+    get_resource_detail_service,
+    get_resource_service,
+)
 from personal_graph_os.api.schemas import (
     CreateOrReuseResourceRequest,
+    ResourceDetailResponse,
     ResourceResponse,
     UpdateResourceRequest,
 )
 from personal_graph_os.application.repositories import NodeRepository
+from personal_graph_os.application.resource_detail_service import ResourceDetailService
 from personal_graph_os.application.services import NodeNotFoundError, ResourceService
 from personal_graph_os.domain.identifiers import ResourceId, WorkspaceId
-from personal_graph_os.domain.resource import Resource
+from personal_graph_os.domain.resource import (
+    RepositoryLabel,
+    Resource,
+    ResourceKind,
+    ResourceLifecycleStatus,
+)
 
 router = APIRouter(prefix="/resources", tags=["resources"])
 
@@ -33,10 +46,22 @@ def _combine(resource: Resource, nodes: NodeRepository) -> ResourceResponse:
 @router.get("", response_model=list[ResourceResponse])
 def list_resources(
     workspace_id: str,
+    kind: ResourceKind | None = None,
+    lifecycle_status: ResourceLifecycleStatus | None = None,
+    repository_label: RepositoryLabel | None = None,
+    last_activity_since: datetime | None = None,
+    last_activity_until: datetime | None = None,
     resource_service: ResourceService = Depends(get_resource_service),
     nodes: NodeRepository = Depends(get_node_repository),
 ) -> list[ResourceResponse]:
-    resources = resource_service.list_by_workspace(WorkspaceId(workspace_id))
+    resources = resource_service.list_by_workspace(
+        WorkspaceId(workspace_id),
+        kind=kind,
+        lifecycle_status=lifecycle_status,
+        repository_label=repository_label,
+        last_activity_since=last_activity_since,
+        last_activity_until=last_activity_until,
+    )
     return [_combine(resource, nodes) for resource in resources]
 
 
@@ -48,6 +73,24 @@ def get_resource(
 ) -> ResourceResponse:
     resource = resource_service.get(ResourceId(resource_id))
     return _combine(resource, nodes)
+
+
+@router.get("/{resource_id}/detail", response_model=ResourceDetailResponse)
+def get_resource_detail(
+    resource_id: str,
+    detail_service: ResourceDetailService = Depends(get_resource_detail_service),
+    nodes: NodeRepository = Depends(get_node_repository),
+) -> ResourceDetailResponse:
+    """Everything the Research/Repositories master-detail panel needs in one round trip
+    (EP-2026-012 ST-06): the resource's own fields plus its current enrichment, graph
+    relations, related Wiki documents, and ingestion-job provenance."""
+    detail = detail_service.get_detail(ResourceId(resource_id))
+    node = nodes.get(detail.resource.node_id)
+    if node is None:
+        raise NodeNotFoundError(
+            f"resource {detail.resource.id}'s backing node {detail.resource.node_id} is missing"
+        )
+    return ResourceDetailResponse.from_detail(detail, node)
 
 
 @router.post("", response_model=ResourceResponse)
@@ -89,6 +132,8 @@ def update_resource(
         clear_progress_percent=payload.clear_progress_percent,
         review_at=payload.review_at,
         clear_review_at=payload.clear_review_at,
+        repository_label=payload.repository_label,
+        clear_repository_label=payload.clear_repository_label,
     )
     return _combine(resource, nodes)
 
