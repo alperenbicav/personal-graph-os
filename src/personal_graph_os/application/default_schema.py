@@ -23,6 +23,7 @@ from personal_graph_os.application.semantic_keys import (
     TAKEAWAY_NODE_TYPE_KEY,
     TASK_IMPLEMENTED_BY_EDGE_KEY,
     TASK_NODE_TYPE_KEY,
+    WORK_ITEM_NODE_TYPE_KEY,
 )
 from personal_graph_os.domain.schema import (
     EdgeType,
@@ -154,6 +155,23 @@ def _resource_node_type() -> NodeType:
     )
 
 
+def _work_item_node_type() -> NodeType:
+    """The single backing node type for every `WorkItem` (Epic/Story/Task) -- EP-2026-012 ST-05,
+    mirroring how one 'Resource' node type already covers paper/article/repository kinds.
+
+    Deliberately declares no field/status definitions: `WorkItem` itself already carries typed
+    `kind`, `work_type`, `status`, `parent_id`, and `repository_node_id` as its own canonical
+    fields (ST-01 selected approach), so a parallel `Node.status_id`/custom-field copy here would
+    only risk the same kind of dual representation review finding R02 closed for Wiki links.
+    """
+    return NodeType(
+        name="Work Item",
+        icon="list-checks",
+        color_hex="#4338ca",
+        system_key=WORK_ITEM_NODE_TYPE_KEY,
+    )
+
+
 def _repository_node_type() -> NodeType:
     """An internally owned repository/codebase, distinct from an external Resource link."""
     return NodeType(
@@ -228,6 +246,7 @@ def seed_default_schema(workspace: Workspace) -> Workspace:
                 _repository_node_type(),
                 _takeaway_node_type(),
                 _implementation_node_type(),
+                _work_item_node_type(),
             ),
             "edge_types": (*_default_edge_types(), *_workflow_edge_types()),
         }

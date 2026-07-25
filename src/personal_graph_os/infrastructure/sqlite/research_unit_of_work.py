@@ -34,6 +34,8 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteResourceEnrichmentProfileVersionRepository,
     SqliteResourceRepository,
     SqliteSavedViewRepository,
+    SqliteWorkItemRepository,
+    SqliteWorkPlanningReceiptRepository,
     SqliteWorkspaceRepository,
 )
 
@@ -64,6 +66,8 @@ class SqliteResearchUnitOfWork:
             SqliteResourceEnrichmentProfileVersionRepository(connection)
         )
         self.relation_proposals = SqliteRelationProposalRepository(connection)
+        self.work_items = SqliteWorkItemRepository(connection)
+        self.work_planning_receipts = SqliteWorkPlanningReceiptRepository(connection)
         self._savepoint_count = 0
 
     def __enter__(self) -> SqliteResearchUnitOfWork:

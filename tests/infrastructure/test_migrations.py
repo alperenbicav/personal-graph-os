@@ -40,6 +40,7 @@ _EXPECTED_TABLES = {
     "document_links",
     "ingestion_jobs",
     "work_items",
+    "work_planning_receipts",
 }
 
 
@@ -63,6 +64,7 @@ _ALL_MIGRATION_NAMES = (
     "0009_document_source_reference.sql",
     "0010_enrichment.sql",
     "0011_edge_uniqueness.sql",
+    "0012_work_planning_receipts.sql",
 )
 
 
@@ -117,6 +119,7 @@ def test_upgrading_an_existing_0001_database_preserves_ids_and_data() -> None:
         "0009_document_source_reference.sql",
         "0010_enrichment.sql",
         "0011_edge_uniqueness.sql",
+        "0012_work_planning_receipts.sql",
     )
 
     resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()
@@ -329,6 +332,7 @@ def test_upgrading_an_existing_0007_database_preserves_resources_and_nodes() -> 
         "0009_document_source_reference.sql",
         "0010_enrichment.sql",
         "0011_edge_uniqueness.sql",
+        "0012_work_planning_receipts.sql",
     )
 
     resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()
@@ -382,7 +386,7 @@ def test_upgrading_a_pre_0011_database_with_duplicate_edges_keeps_one_canonical_
     connection.commit()
 
     newly_applied = run_migrations(connection)
-    assert newly_applied == ("0011_edge_uniqueness.sql",)
+    assert newly_applied == ("0011_edge_uniqueness.sql", "0012_work_planning_receipts.sql")
 
     rows = connection.execute(
         "SELECT id FROM edges WHERE workspace_id = 'ws-1' AND edge_type_id = 'et-1' "

@@ -6,6 +6,7 @@ from personal_graph_os.application.semantic_keys import (
     RESOURCE_NODE_TYPE_KEY,
     RESOURCE_YIELDS_TAKEAWAY_EDGE_KEY,
     TASK_NODE_TYPE_KEY,
+    WORK_ITEM_NODE_TYPE_KEY,
 )
 from personal_graph_os.application.semantic_schema import ensure_semantic_schema
 from personal_graph_os.application.services import new_workspace
@@ -19,7 +20,7 @@ def test_ensure_semantic_schema_creates_every_missing_role_on_a_bare_workspace()
     ensured = ensure_semantic_schema(workspace)
 
     keys = {nt.system_key for nt in ensured.node_types}
-    assert {"resource", "takeaway", "decision", "task", "implementation"} <= keys
+    assert {"resource", "takeaway", "decision", "task", "implementation", "work_item"} <= keys
     edge_keys = {et.system_key for et in ensured.edge_types}
     assert {
         "resource_yields_takeaway",
@@ -81,6 +82,21 @@ def test_ensure_semantic_schema_reports_a_genuine_role_collision() -> None:
 
     with pytest.raises(SchemaEditConflictError):
         ensure_semantic_schema(workspace)
+
+
+def test_ensure_semantic_schema_adopts_a_pre_st05_work_item_node_type_by_name() -> None:
+    """A workspace created before ST-05's `Work Item` node type existed but that already has a
+    same-named user node type must adopt the role in place rather than creating a duplicate."""
+    user_edited = NodeType(name="Work Item", icon="briefcase", color_hex="#123abc")
+    workspace = new_workspace("Personal").model_copy(update={"node_types": (user_edited,)})
+
+    ensured = ensure_semantic_schema(workspace)
+
+    adopted = ensured.node_type_by_system_key(WORK_ITEM_NODE_TYPE_KEY)
+    assert adopted is not None
+    assert adopted.id == user_edited.id
+    assert adopted.icon == "briefcase"
+    assert adopted.color_hex == "#123abc"
 
 
 def test_ensure_semantic_schema_adopts_a_pre_st04_edge_type_by_name() -> None:

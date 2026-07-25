@@ -19,6 +19,7 @@ from personal_graph_os.application.default_schema import (
     _resource_node_type,
     _takeaway_node_type,
     _task_node_type,
+    _work_item_node_type,
     _workflow_edge_types,
 )
 from personal_graph_os.application.semantic_keys import (
@@ -27,6 +28,7 @@ from personal_graph_os.application.semantic_keys import (
     RESOURCE_NODE_TYPE_KEY,
     TAKEAWAY_NODE_TYPE_KEY,
     TASK_NODE_TYPE_KEY,
+    WORK_ITEM_NODE_TYPE_KEY,
 )
 from personal_graph_os.domain.errors import SchemaEditConflictError
 from personal_graph_os.domain.schema import EdgeType, NodeType, Workspace
@@ -53,6 +55,7 @@ def _node_type_roles() -> tuple[_NodeTypeRole, ...]:
         _NodeTypeRole(DECISION_NODE_TYPE_KEY, "Decision", _decision_node_type),
         _NodeTypeRole(TASK_NODE_TYPE_KEY, "Task", _task_node_type),
         _NodeTypeRole(IMPLEMENTATION_NODE_TYPE_KEY, "Implementation", _implementation_node_type),
+        _NodeTypeRole(WORK_ITEM_NODE_TYPE_KEY, "Work Item", _work_item_node_type),
     )
 
 

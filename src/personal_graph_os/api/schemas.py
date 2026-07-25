@@ -18,10 +18,14 @@ from pydantic import BaseModel, Field, StrictInt
 
 from personal_graph_os.application.activity_recording import undo_disabled_reason
 from personal_graph_os.application.activity_service import ActivityEventPage
+from personal_graph_os.application.capture_service import CaptureOutcome
 from personal_graph_os.application.enrichment_service import EnrichmentOutcome
 from personal_graph_os.application.projections import ProjectionItem
+from personal_graph_os.application.work_planning_service import WorkPlanOutcome
 from personal_graph_os.application.workflow_chain import WorkflowChainStep
 from personal_graph_os.domain.activity import ActivityEvent
+from personal_graph_os.domain.capture import CaptureIntent, CapturePayloadKind
+from personal_graph_os.domain.documents import Document, DocumentVersion
 from personal_graph_os.domain.enrichment import (
     RelationProposal,
     ResourceEnrichmentProfile,
@@ -32,6 +36,7 @@ from personal_graph_os.domain.identifiers import ActivityEventId
 from personal_graph_os.domain.resource import Resource, ResourceKind, ResourceLifecycleStatus
 from personal_graph_os.domain.schema import FieldType
 from personal_graph_os.domain.views import FilterField, ProjectionQuery, ViewKind
+from personal_graph_os.domain.work_items import WorkItem
 
 _MAX_DISCOVERY_CANDIDATES = 50
 _MAX_DISCOVERY_TEXT_LENGTH = 4000
@@ -226,6 +231,69 @@ class EnrichmentOutcomeResponse(BaseModel):
             version=outcome.version,
             relation_proposals=list(outcome.relation_proposals),
         )
+
+
+class CaptureRequest(BaseModel):
+    workspace_id: str
+    source: str
+    request_id: str
+    actor_name: str
+    payload_kind: CapturePayloadKind
+    url: str | None = None
+    file_reference_id: str | None = None
+    external_item_id: str | None = None
+    text: str | None = None
+    intent: CaptureIntent = CaptureIntent.SAVE_RAW
+    title: str | None = None
+    # Caller-supplied, already-resolved repository association (review finding S5-R02): the
+    # classifier never proposes or resolves this itself, so it is only ever accepted here as an
+    # explicit, typed reference, validated against the workspace before any provider call.
+    repository_node_id: str | None = None
+
+
+class CaptureOutcomeResponse(BaseModel):
+    ingestion_job_id: str
+    resource_id: str | None
+    document_id: str | None
+    pending_operations: list[str]
+    needs_clarification: bool
+    clarification_reason: str | None
+    was_replayed: bool
+
+    @classmethod
+    def from_outcome(cls, outcome: CaptureOutcome) -> CaptureOutcomeResponse:
+        return cls(
+            ingestion_job_id=outcome.job.id,
+            resource_id=outcome.resource_id,
+            document_id=outcome.document_id,
+            pending_operations=[operation.kind.value for operation in outcome.pending_operations],
+            needs_clarification=outcome.needs_clarification,
+            clarification_reason=outcome.clarification_reason,
+            was_replayed=outcome.was_replayed,
+        )
+
+
+class WorkPlanOutcomeResponse(BaseModel):
+    epic: WorkItem
+    stories: list[WorkItem]
+    tasks: list[WorkItem]
+    plan_document: Document
+    plan_version: DocumentVersion
+
+    @classmethod
+    def from_outcome(cls, outcome: WorkPlanOutcome) -> WorkPlanOutcomeResponse:
+        return cls(
+            epic=outcome.epic,
+            stories=list(outcome.stories),
+            tasks=list(outcome.tasks),
+            plan_document=outcome.plan_document,
+            plan_version=outcome.plan_version,
+        )
+
+
+class CaptureAndPlanResponse(BaseModel):
+    capture: CaptureOutcomeResponse
+    plan: WorkPlanOutcomeResponse | None
 
 
 class CreateSavedViewRequest(BaseModel):

@@ -64,6 +64,7 @@ from personal_graph_os.domain.identifiers import (
     SavedViewId,
     TagId,
     WorkItemId,
+    WorkPlanningReceiptId,
     WorkspaceId,
     new_id,
 )
@@ -85,6 +86,7 @@ from personal_graph_os.domain.work_items import (
     WorkItemStatus,
     WorkItemType,
 )
+from personal_graph_os.domain.work_planning import WorkPlanningReceipt, WorkPlanOutcomeStatus
 
 
 class SqliteWorkspaceRepository:
@@ -1954,4 +1956,56 @@ class SqliteRelationProposalRepository:
             ),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+
+class SqliteWorkPlanningReceiptRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get_by_ingestion_job(self, ingestion_job_id: IngestionJobId) -> WorkPlanningReceipt | None:
+        row = self._connection.execute(
+            "SELECT * FROM work_planning_receipts WHERE ingestion_job_id = ?",
+            (ingestion_job_id,),
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def save_without_commit(self, receipt: WorkPlanningReceipt) -> None:
+        self._connection.execute(
+            "INSERT INTO work_planning_receipts "
+            "(id, workspace_id, ingestion_job_id, status, epic_work_item_id, plan_document_id, "
+            " plan_document_version_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                receipt.id,
+                receipt.workspace_id,
+                receipt.ingestion_job_id,
+                receipt.status.value,
+                receipt.epic_work_item_id,
+                receipt.plan_document_id,
+                receipt.plan_document_version_id,
+                receipt.created_at.isoformat(),
+            ),
+        )
+
+    def _hydrate(self, row: sqlite3.Row) -> WorkPlanningReceipt:
+        return WorkPlanningReceipt(
+            id=WorkPlanningReceiptId(row["id"]),
+            workspace_id=row["workspace_id"],
+            ingestion_job_id=IngestionJobId(row["ingestion_job_id"]),
+            status=WorkPlanOutcomeStatus(row["status"]),
+            epic_work_item_id=(
+                WorkItemId(row["epic_work_item_id"])
+                if row["epic_work_item_id"] is not None
+                else None
+            ),
+            plan_document_id=(
+                DocumentId(row["plan_document_id"]) if row["plan_document_id"] is not None else None
+            ),
+            plan_document_version_id=(
+                DocumentVersionId(row["plan_document_version_id"])
+                if row["plan_document_version_id"] is not None
+                else None
+            ),
+            created_at=datetime.fromisoformat(row["created_at"]),
         )

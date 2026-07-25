@@ -51,6 +51,8 @@ from personal_graph_os.application.repositories import (
     ResourceEnrichmentProfileVersionRepository,
     ResourceRepository,
     SavedViewRepository,
+    WorkItemRepository,
+    WorkPlanningReceiptRepository,
     WorkspaceRepository,
 )
 
@@ -123,6 +125,12 @@ class ResearchUnitOfWork(Protocol):
 
     @property
     def relation_proposals(self) -> RelationProposalRepository: ...
+
+    @property
+    def work_items(self) -> WorkItemRepository: ...
+
+    @property
+    def work_planning_receipts(self) -> WorkPlanningReceiptRepository: ...
 
     def __enter__(self) -> ResearchUnitOfWork: ...
 

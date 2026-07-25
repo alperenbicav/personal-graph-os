@@ -23,6 +23,7 @@ from personal_graph_os.api.auth import TOKEN_FILE_NAME, get_or_create_api_token,
 from personal_graph_os.api.routers import (
     activity,
     canvases,
+    capture,
     discovery,
     edges,
     enrichment,
@@ -49,6 +50,10 @@ from personal_graph_os.application.bootstrap import (
     get_or_create_default_canvas,
     get_or_create_default_workspace,
 )
+from personal_graph_os.application.capture_planning_orchestrator import (
+    CapturePlanningOrchestrator,
+)
+from personal_graph_os.application.capture_service import CaptureService
 from personal_graph_os.application.context_pack_service import ContextPackService
 from personal_graph_os.application.discovery import DiscoveryService
 from personal_graph_os.application.enrichment_service import (
@@ -88,10 +93,13 @@ from personal_graph_os.application.services import (
     WorkspaceNotFoundError,
 )
 from personal_graph_os.application.undo_service import UndoConflictError, UndoService
+from personal_graph_os.application.work_item_service import WorkItemService
+from personal_graph_os.application.work_planning_service import WorkPlanningService
 from personal_graph_os.application.workflow_chain import (
     WorkflowChainService,
     WorkflowStepNodeTypeMissingError,
 )
+from personal_graph_os.domain.capture import CaptureIdempotencyConflictError
 from personal_graph_os.domain.errors import (
     AttachmentContentCorruptedError,
     AttachmentContentMissingError,
@@ -124,16 +132,22 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteDiscoveryRunRepository,
     SqliteEdgeRepository,
     SqliteFileReferenceRepository,
+    SqliteIdempotencyReceiptRepository,
+    SqliteIngestionJobRepository,
     SqliteNodeRepository,
     SqlitePendingFileOperationRepository,
     SqliteResearchSettingsRepository,
     SqliteResourceRepository,
     SqliteSavedViewRepository,
     SqliteSearchIndexRepository,
+    SqliteWorkItemRepository,
     SqliteWorkspaceRepository,
 )
 from personal_graph_os.infrastructure.sqlite.research_unit_of_work import (
     SqliteResearchUnitOfWork,
+)
+from personal_graph_os.infrastructure.work_planning.provider_factory import (
+    build_work_planning_provider_from_env,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -173,6 +187,7 @@ def create_app(
     cors_origins: list[str] | None = None,
     static_dir: Path | str | None = None,
     enrichment_provider_transport: httpx.BaseTransport | None = None,
+    work_planning_provider_transport: httpx.BaseTransport | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Personal Graph OS API")
 
@@ -221,6 +236,9 @@ def create_app(
     file_reference_repository = SqliteFileReferenceRepository(connection)
     pending_file_operation_repository = SqlitePendingFileOperationRepository(connection)
     activity_event_repository = SqliteActivityEventRepository(connection)
+    ingestion_job_repository = SqliteIngestionJobRepository(connection)
+    idempotency_receipt_repository = SqliteIdempotencyReceiptRepository(connection)
+    work_item_repository = SqliteWorkItemRepository(connection)
     managed_file_store = LocalManagedFileStore(workspace_dir / MANAGED_FILES_DIR_NAME)
 
     default_workspace = get_or_create_default_workspace(workspace_repository)
@@ -345,6 +363,32 @@ def create_app(
         else None
     )
 
+    capture_service = CaptureService(
+        workspace_repository,
+        ingestion_job_repository,
+        idempotency_receipt_repository,
+        app.state.resource_service,
+        lambda: SqliteResearchUnitOfWork(connection),
+    )
+    work_item_service = WorkItemService(
+        workspace_repository, work_item_repository, lambda: SqliteResearchUnitOfWork(connection)
+    )
+    work_planning_provider = build_work_planning_provider_from_env(
+        os.environ, transport=work_planning_provider_transport
+    )
+    work_planning_service = (
+        WorkPlanningService(
+            work_item_service,
+            work_planning_provider,
+            lambda: SqliteResearchUnitOfWork(connection),
+        )
+        if work_planning_provider is not None
+        else None
+    )
+    app.state.capture_planning_orchestrator = CapturePlanningOrchestrator(
+        capture_service, work_planning_service, lambda: SqliteResearchUnitOfWork(connection)
+    )
+
     app.state.export_service = ExportService(
         workspace_repository,
         node_repository,
@@ -461,6 +505,7 @@ def create_app(
     app.include_router(activity.router, dependencies=auth_dependency)
     app.include_router(export.router, dependencies=auth_dependency)
     app.include_router(enrichment.router, dependencies=auth_dependency)
+    app.include_router(capture.router, dependencies=auth_dependency)
 
     if static_dir is not None:
         # A distinct `/app` prefix, mounted after every API router: it cannot shadow `/mcp`
@@ -496,6 +541,7 @@ def create_app(
 
     app.add_exception_handler(UploadTooLargeError, _too_large)
     app.add_exception_handler(AttachmentContentCorruptedError, _conflict)
+    app.add_exception_handler(CaptureIdempotencyConflictError, _conflict)
     app.add_exception_handler(UndoConflictError, _undo_conflict)
     app.add_exception_handler(InvalidActivityCursorError, _unprocessable)
     app.add_exception_handler(EnrichmentNotConfiguredError, _enrichment_not_configured)

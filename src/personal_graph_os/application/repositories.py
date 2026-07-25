@@ -56,6 +56,7 @@ from personal_graph_os.domain.schema import Workspace
 from personal_graph_os.domain.search import SearchEntityType, SearchHit
 from personal_graph_os.domain.views import ContextPack, SavedView
 from personal_graph_os.domain.work_items import WorkItem
+from personal_graph_os.domain.work_planning import WorkPlanningReceipt
 
 
 class WorkspaceRepository(Protocol):
@@ -296,6 +297,13 @@ class RelationProposalRepository(Protocol):
         self, workspace_id: WorkspaceId, *, status: RelationProposalStatus | None = None
     ) -> tuple[RelationProposal, ...]: ...
     def save_without_commit(self, proposal: RelationProposal) -> None: ...
+
+
+class WorkPlanningReceiptRepository(Protocol):
+    def get_by_ingestion_job(
+        self, ingestion_job_id: IngestionJobId
+    ) -> WorkPlanningReceipt | None: ...
+    def save_without_commit(self, receipt: WorkPlanningReceipt) -> None: ...
 
 
 class SearchIndexRepository(Protocol):

@@ -9,6 +9,9 @@ from __future__ import annotations
 from fastapi import Request
 
 from personal_graph_os.application.activity_service import ActivityService
+from personal_graph_os.application.capture_planning_orchestrator import (
+    CapturePlanningOrchestrator,
+)
 from personal_graph_os.application.discovery import DiscoveryService
 from personal_graph_os.application.enrichment_service import EnrichmentService
 from personal_graph_os.application.export_service import ExportService
@@ -143,6 +146,10 @@ def get_extraction_service(request: Request) -> ExtractionService:
 
 def get_enrichment_service(request: Request) -> EnrichmentService | None:
     return request.app.state.enrichment_service
+
+
+def get_capture_planning_orchestrator(request: Request) -> CapturePlanningOrchestrator:
+    return request.app.state.capture_planning_orchestrator
 
 
 def get_default_workspace_id(request: Request) -> WorkspaceId:

@@ -37,6 +37,7 @@ WorkItemId = NewType("WorkItemId", str)
 ResourceEnrichmentProfileId = NewType("ResourceEnrichmentProfileId", str)
 ResourceEnrichmentProfileVersionId = NewType("ResourceEnrichmentProfileVersionId", str)
 RelationProposalId = NewType("RelationProposalId", str)
+WorkPlanningReceiptId = NewType("WorkPlanningReceiptId", str)
 
 
 def new_id() -> str:
