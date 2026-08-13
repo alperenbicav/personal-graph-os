@@ -105,6 +105,7 @@ def test_real_client_lists_all_tools(running_server: _RunningServer) -> None:
         "pgos_archive_node",
         "pgos_connect_nodes",
         "pgos_create_or_reuse_resource",
+        "pgos_upsert_document",
         "pgos_update_resource",
         "pgos_archive_resource",
         "pgos_advance_workflow",

@@ -20,6 +20,7 @@ import { TableView } from './components/TableView'
 import { TimelineView } from './components/TimelineView'
 import { TopBar } from './components/TopBar'
 import { UnlockScreen } from './components/UnlockScreen'
+import { WikiView } from './components/WikiView'
 import { onSessionUnauthorized, restoreSession } from './api/session'
 import {
   WorkflowChainPanel,
@@ -40,6 +41,7 @@ import type {
   RepositoryLabel,
   ResearchDashboard,
   Resource,
+  ResourceKind,
   StatusDefinition,
   WorkflowChainStep,
   Workspace,
@@ -439,6 +441,23 @@ function App() {
     [],
   )
 
+  // Research/Repositories' own typed create forms (ST-07): a create-or-reuse call identical to
+  // Discovery's single-candidate path, but invoked directly by the owning tab instead of routed
+  // through an import batch.
+  const handleCreateResource = useCallback(
+    async (title: string, rawSource: string, kind: ResourceKind): Promise<Resource> => {
+      if (!workspace) throw new Error('No active workspace')
+      const resource = await api.createOrReuseResource(workspace.id, title, rawSource, kind)
+      setResources((current) =>
+        current.some((existing) => existing.id === resource.id)
+          ? current.map((existing) => (existing.id === resource.id ? resource : existing))
+          : [...current, resource],
+      )
+      return resource
+    },
+    [workspace],
+  )
+
   // A relation points at another domain's resource by node id; jumping to its owning tab
   // (Research for papers/articles, Repositories for GitHub repos) mirrors the design gate's
   // "Go to" navigation for projected nodes. Work-item/generic-node targets have no owning tab
@@ -648,7 +667,7 @@ function App() {
         className={
           activeView === 'canvas'
             ? 'workbench'
-            : activeView === 'discovery' || activeView === 'activity'
+            : activeView === 'discovery' || activeView === 'activity' || activeView === 'wiki'
               ? 'workbench workbench-full'
               : 'workbench workbench-no-rail'
         }
@@ -770,6 +789,30 @@ function App() {
           </div>
         )}
 
+        {activeView === 'wiki' && workspace && (
+          <div className="view-frame">
+            <WikiView
+              workspaceId={workspace.id}
+              onLoadDocuments={(collectionId) => api.listDocuments(workspace.id, { collectionId })}
+              onLoadDetail={(documentId) => api.getDocumentDetail(documentId)}
+              onLoadVersions={(documentId) => api.listDocumentVersions(documentId)}
+              onCreateDocument={(input) =>
+                api.createDocument({ ...input, workspace_id: workspace.id })
+              }
+              onUpdateMetadata={(documentId, patch) => api.updateDocumentMetadata(documentId, patch)}
+              onEditBody={(documentId, bodyMarkdown) =>
+                api.editDocumentBody(documentId, bodyMarkdown, 'human/local-user/rest')
+              }
+              onLoadCollections={() => api.listCollections(workspace.id)}
+              onCreateCollection={(name) => api.createCollection(workspace.id, name)}
+              onLoadTags={() => api.listTags(workspace.id)}
+              onAddDocumentLink={(documentId, targetDocumentId) =>
+                api.addDocumentLink(documentId, 'document', targetDocumentId)
+              }
+            />
+          </div>
+        )}
+
         {activeView === 'research' && (
           <div className="view-frame">
             <ResearchView
@@ -777,6 +820,7 @@ function App() {
               resources={resources}
               selectedNodeId={selectedNodeId}
               onSelectNode={setSelectedNodeId}
+              onCreateResource={handleCreateResource}
             />
           </div>
         )}
@@ -788,6 +832,9 @@ function App() {
               selectedNodeId={selectedNodeId}
               onSelectNode={setSelectedNodeId}
               onSetLabel={handleSetRepositoryLabel}
+              onCreateResource={(title, rawSource) =>
+                handleCreateResource(title, rawSource, 'github_repository')
+              }
             />
           </div>
         )}
@@ -819,7 +866,7 @@ function App() {
           </div>
         )}
 
-        {activeView !== 'discovery' && activeView !== 'activity' && (
+        {activeView !== 'discovery' && activeView !== 'activity' && activeView !== 'wiki' && (
           <div className="inspector-column">
             <Inspector
               node={selectedNode}

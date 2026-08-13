@@ -27,6 +27,7 @@ from personal_graph_os.application.context_pack_service import (
     ContextPackTokenBudgetError,
 )
 from personal_graph_os.application.discovery import DiscoveryCandidateInput, DiscoveryService
+from personal_graph_os.application.document_service import DocumentService
 from personal_graph_os.application.file_service import FileService
 from personal_graph_os.application.repositories import (
     EdgeRepository,
@@ -39,9 +40,12 @@ from personal_graph_os.application.search_service import SearchService
 from personal_graph_os.application.services import EdgeService, NodeService, ResourceService
 from personal_graph_os.application.workflow_chain import WorkflowChainService, WorkflowChainStep
 from personal_graph_os.domain.activity import IdempotencyReceipt, MutationAction
+from personal_graph_os.domain.documents import DocumentKind
 from personal_graph_os.domain.identifiers import (
     ActivityEventId,
+    CollectionId,
     ContextPackId,
+    DocumentId,
     EdgeId,
     EdgeTypeId,
     NodeId,
@@ -58,6 +62,8 @@ from personal_graph_os.infrastructure.mcp.dto import (
     ContextPackDTO,
     DiscoveryPreviewDTO,
     DiscoveryRunDTO,
+    DocumentDTO,
+    DocumentVersionDTO,
     EdgeDTO,
     EvidencePointerDTO,
     MaterializedContextPackDTO,
@@ -89,6 +95,8 @@ MAX_EVIDENCE_POINTER_LENGTH = 500
 MAX_SOURCES_SEARCHED = 50
 MAX_RESOURCE_TEXT_LIST_ITEMS = 50
 MAX_INCLUSION_REASON_LENGTH = 1_000
+MAX_DOCUMENT_TAG_NAMES = 20
+MAX_DOCUMENT_TAG_NAME_LENGTH = 100
 
 _MCP_SOURCE = "mcp"
 
@@ -171,6 +179,7 @@ class AgentGatewayService:
         discovery_service: DiscoveryService,
         context_pack_service: ContextPackService,
         activity_service: ActivityService,
+        document_service: DocumentService,
         unit_of_work_factory: Callable[[], ResearchUnitOfWork],
     ) -> None:
         self._workspaces = workspaces
@@ -186,6 +195,7 @@ class AgentGatewayService:
         self._discovery_service = discovery_service
         self._context_pack_service = context_pack_service
         self._activity_service = activity_service
+        self._document_service = document_service
         self._unit_of_work_factory = unit_of_work_factory
 
     def _require_workspace(self, workspace_id: WorkspaceId) -> None:
@@ -724,6 +734,92 @@ class AgentGatewayService:
             )
         if was_created and node is not None:
             self._resource_service.index_created_resource(resource, node)
+        return {**result_payload, "replayed": False}
+
+    def upsert_document(
+        self,
+        workspace_id: WorkspaceId,
+        title: str,
+        body_markdown: str,
+        *,
+        kind: DocumentKind,
+        document_id: DocumentId | None,
+        collection_id: CollectionId | None,
+        tag_names: Sequence[str],
+        actor_name: str,
+        reason: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """Create a new Wiki document or, when `document_id` is given, or an exact title match
+        already exists, append a new version to it instead (ST-07 agent upsert)."""
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        title = _validate_bounded_text(title, field_name="title", maximum=MAX_TITLE_LENGTH)
+        body_markdown = _validate_bounded_bytes(
+            body_markdown, field_name="body_markdown", maximum_bytes=MAX_SERIALIZED_FIELD_BYTES
+        )
+        tag_names = _validate_bounded_text_sequence(
+            tag_names,
+            field_name="tag_names",
+            max_items=MAX_DOCUMENT_TAG_NAMES,
+            max_item_length=MAX_DOCUMENT_TAG_NAME_LENGTH,
+        )
+        self._require_workspace(workspace_id)
+        payload = {
+            "title": title,
+            "body_markdown": body_markdown,
+            "kind": kind.value,
+            "document_id": document_id,
+            "collection_id": collection_id,
+            "tag_names": tag_names,
+            "reason": reason,
+        }
+        with self._unit_of_work_factory() as unit_of_work:
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="upsert_document",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            document, version, was_created = self._document_service.upsert_for_agent_within(
+                unit_of_work,
+                workspace_id,
+                title=title,
+                body_markdown=body_markdown,
+                actor=actor_name,
+                kind=kind,
+                document_id=document_id,
+                collection_id=collection_id,
+                tag_names=tag_names,
+            )
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="document",
+                entity_id=document.id,
+                action=MutationAction.CREATED if was_created else MutationAction.UPDATED,
+                after_state=document.model_dump(mode="json"),
+            )
+            result_payload: dict[str, Any] = {
+                "document": DocumentDTO.from_domain(document).model_dump(mode="json"),
+                "version": DocumentVersionDTO.from_domain(version).model_dump(mode="json"),
+                "was_created": was_created,
+            }
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="upsert_document",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
         return {**result_payload, "replayed": False}
 
     def update_resource(

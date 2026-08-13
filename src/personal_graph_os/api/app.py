@@ -37,6 +37,7 @@ from personal_graph_os.api.routers import (
     schema,
     search,
     views,
+    wiki,
     workflow_chain,
     workspace,
 )
@@ -56,6 +57,14 @@ from personal_graph_os.application.capture_planning_orchestrator import (
 from personal_graph_os.application.capture_service import CaptureService
 from personal_graph_os.application.context_pack_service import ContextPackService
 from personal_graph_os.application.discovery import DiscoveryService
+from personal_graph_os.application.document_service import (
+    CollectionNotFoundError,
+    DocumentLinkNotFoundError,
+    DocumentLinkTargetNotFoundError,
+    DocumentNotFoundError,
+    DocumentService,
+    TagNotFoundError,
+)
 from personal_graph_os.application.enrichment_service import (
     EnrichmentNotConfiguredError,
     EnrichmentService,
@@ -129,10 +138,12 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteAttachmentRepository,
     SqliteCanvasPlacementRepository,
     SqliteCanvasRepository,
+    SqliteCollectionRepository,
     SqliteContextPackRepository,
     SqliteDiscoveryRunRepository,
     SqliteDocumentLinkRepository,
     SqliteDocumentRepository,
+    SqliteDocumentVersionRepository,
     SqliteEdgeRepository,
     SqliteFileReferenceRepository,
     SqliteIdempotencyReceiptRepository,
@@ -145,6 +156,7 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteResourceRepository,
     SqliteSavedViewRepository,
     SqliteSearchIndexRepository,
+    SqliteTagRepository,
     SqliteWorkItemRepository,
     SqliteWorkspaceRepository,
 )
@@ -245,7 +257,10 @@ def create_app(
     idempotency_receipt_repository = SqliteIdempotencyReceiptRepository(connection)
     work_item_repository = SqliteWorkItemRepository(connection)
     document_repository = SqliteDocumentRepository(connection)
+    document_version_repository = SqliteDocumentVersionRepository(connection)
     document_link_repository = SqliteDocumentLinkRepository(connection)
+    collection_repository = SqliteCollectionRepository(connection)
+    tag_repository = SqliteTagRepository(connection)
     resource_enrichment_profile_repository = SqliteResourceEnrichmentProfileRepository(connection)
     resource_enrichment_profile_version_repository = (
         SqliteResourceEnrichmentProfileVersionRepository(connection)
@@ -308,6 +323,16 @@ def create_app(
         resource_repository,
         lambda: SqliteResearchUnitOfWork(connection),
         search_index=search_index_repository,
+    )
+    app.state.document_service = DocumentService(
+        workspace_repository,
+        document_repository,
+        document_version_repository,
+        document_link_repository,
+        collection_repository,
+        tag_repository,
+        node_repository,
+        lambda: SqliteResearchUnitOfWork(connection),
     )
     app.state.resource_detail_service = ResourceDetailService(
         workspace_repository,
@@ -482,6 +507,7 @@ def create_app(
         discovery_service=app.state.discovery_service,
         context_pack_service=app.state.context_pack_service,
         activity_service=app.state.activity_service,
+        document_service=app.state.document_service,
         unit_of_work_factory=lambda: SqliteResearchUnitOfWork(connection),
     )
     mcp_asgi_app, mcp_session_manager, app.state.mcp_telemetry = create_mcp_asgi_app(
@@ -529,6 +555,7 @@ def create_app(
     app.include_router(export.router, dependencies=auth_dependency)
     app.include_router(enrichment.router, dependencies=auth_dependency)
     app.include_router(capture.router, dependencies=auth_dependency)
+    app.include_router(wiki.router, dependencies=auth_dependency)
 
     if static_dir is not None:
         # A distinct `/app` prefix, mounted after every API router: it cannot shadow `/mcp`
@@ -586,6 +613,11 @@ def create_app(
         FileReferenceNotFoundError,
         AttachmentContentMissingError,
         ActivityEventNotFoundError,
+        DocumentNotFoundError,
+        CollectionNotFoundError,
+        TagNotFoundError,
+        DocumentLinkNotFoundError,
+        DocumentLinkTargetNotFoundError,
     ):
         app.add_exception_handler(not_found_error_type, _not_found)
     app.add_exception_handler(DomainError, _unprocessable)

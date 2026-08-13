@@ -26,9 +26,12 @@ from starlette.types import Receive, Scope, Send
 
 from personal_graph_os.application.discovery import DiscoveryCandidateInput
 from personal_graph_os.application.workflow_chain import WorkflowChainStep
+from personal_graph_os.domain.documents import DocumentKind
 from personal_graph_os.domain.identifiers import (
     ActivityEventId,
+    CollectionId,
     ContextPackId,
+    DocumentId,
     EdgeId,
     EdgeTypeId,
     NodeId,
@@ -287,6 +290,26 @@ _TOOLS = (
             "body": {"type": "string", "maxLength": MAX_SERIALIZED_FIELD_BYTES},
         },
         required=("workspace_id", "title", "raw_source"),
+    ),
+    _mutating_tool(
+        "pgos_upsert_document",
+        "Create a new Wiki document, or append a new version to the one given by "
+        "document_id (or the workspace's existing document with an exact matching title). "
+        "Attributed and idempotent by request_id.",
+        properties={
+            "workspace_id": {"type": "string"},
+            "title": {"type": "string", "maxLength": 300},
+            "body_markdown": {"type": "string", "maxLength": MAX_SERIALIZED_FIELD_BYTES},
+            "kind": {"type": "string", "enum": [kind.value for kind in DocumentKind]},
+            "document_id": {"type": "string"},
+            "collection_id": {"type": "string"},
+            "tag_names": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 100},
+                "maxItems": 20,
+            },
+        },
+        required=("workspace_id", "title", "body_markdown"),
     ),
     _mutating_tool(
         "pgos_update_resource",
@@ -689,6 +712,27 @@ def _create_or_reuse_resource(
     )
 
 
+def _upsert_document(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    kind = _optional_str_arg(arguments, "kind")
+    document_id = _optional_str_arg(arguments, "document_id")
+    collection_id = _optional_str_arg(arguments, "collection_id")
+    return gateway.upsert_document(
+        WorkspaceId(_str_arg(arguments, "workspace_id")),
+        _str_arg(arguments, "title"),
+        _str_arg(arguments, "body_markdown"),
+        kind=DocumentKind(kind) if kind is not None else DocumentKind.NOTE,
+        document_id=DocumentId(document_id) if document_id is not None else None,
+        collection_id=CollectionId(collection_id) if collection_id is not None else None,
+        tag_names=_optional_str_tuple_arg(arguments, "tag_names") or (),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
 def _update_resource(
     gateway: AgentGatewayService, arguments: dict[str, object]
 ) -> dict[str, object]:
@@ -890,6 +934,7 @@ _HANDLERS: dict[str, _ToolHandler] = {
     "pgos_archive_node": _archive_node,
     "pgos_connect_nodes": _connect_nodes,
     "pgos_create_or_reuse_resource": _create_or_reuse_resource,
+    "pgos_upsert_document": _upsert_document,
     "pgos_update_resource": _update_resource,
     "pgos_archive_resource": _archive_resource,
     "pgos_advance_workflow": _advance_workflow,

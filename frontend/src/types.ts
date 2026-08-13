@@ -240,6 +240,66 @@ export interface ResourceDetail {
   provenance: ResourceProvenance | null
 }
 
+export type DocumentKind = 'note' | 'lesson' | 'documentation' | 'plan'
+
+export type DocumentLinkTargetType = 'node' | 'document'
+
+export interface WikiDocument {
+  id: string
+  workspace_id: string
+  kind: DocumentKind
+  title: string
+  collection_id: string | null
+  tag_ids: string[]
+  is_archived: boolean
+  source: string
+  source_reference: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface DocumentVersion {
+  id: string
+  document_id: string
+  version_number: number
+  body_markdown: string
+  created_by: string
+  created_at: string
+}
+
+export interface DocumentLink {
+  id: string
+  document_id: string
+  target_type: DocumentLinkTargetType
+  target_id: string
+  created_at: string
+}
+
+export interface Collection {
+  id: string
+  workspace_id: string
+  name: string
+  parent_id: string | null
+  created_at: string
+}
+
+export interface Tag {
+  id: string
+  workspace_id: string
+  name: string
+  created_at: string
+}
+
+export interface DocumentDetail {
+  document: WikiDocument
+  latest_version: DocumentVersion
+  collection: Collection | null
+  tags: Tag[]
+  outbound_links: DocumentLink[]
+  backlinks: WikiDocument[]
+  version_count: number
+}
+
 export type ViewKind = 'table' | 'kanban' | 'timeline' | 'canvas' | 'search' | 'activity'
 
 export type FilterField =

@@ -6,6 +6,7 @@ export type AppView =
   | 'kanban'
   | 'timeline'
   | 'search'
+  | 'wiki'
   | 'research'
   | 'repositories'
   | 'discovery'
@@ -43,6 +44,12 @@ const TABS: TabDefinition[] = [
     id: 'search',
     label: 'Search',
     description: 'Full-text search across every node and research resource.',
+  },
+  {
+    id: 'wiki',
+    label: 'Wiki',
+    description:
+      'An independent Markdown knowledge store for standalone notes, lessons, documentation, and generated plans — organized by collection and tags, with version history and optional links to repositories, work items, papers, or other pages.',
   },
   {
     id: 'research',

@@ -35,6 +35,7 @@ from personal_graph_os.application.repositories import (
     AttachmentRepository,
     CanvasPlacementRepository,
     CanvasRepository,
+    CollectionRepository,
     ContextPackRepository,
     DiscoveryRunRepository,
     DocumentLinkRepository,
@@ -51,6 +52,7 @@ from personal_graph_os.application.repositories import (
     ResourceEnrichmentProfileVersionRepository,
     ResourceRepository,
     SavedViewRepository,
+    TagRepository,
     WorkItemRepository,
     WorkPlanningReceiptRepository,
     WorkspaceRepository,
@@ -102,6 +104,12 @@ class ResearchUnitOfWork(Protocol):
 
     @property
     def context_packs(self) -> ContextPackRepository: ...
+
+    @property
+    def collections(self) -> CollectionRepository: ...
+
+    @property
+    def tags(self) -> TagRepository: ...
 
     @property
     def documents(self) -> DocumentRepository: ...

@@ -6,6 +6,90 @@ interface ResearchViewProps {
   resources: Resource[]
   selectedNodeId: string | null
   onSelectNode: (nodeId: string) => void
+  onCreateResource: (title: string, rawSource: string, kind: ResourceKind) => Promise<Resource>
+}
+
+function CreatePaperOrArticleForm({
+  onCreateResource,
+}: {
+  onCreateResource: ResearchViewProps['onCreateResource']
+}) {
+  const [isOpen, setIsOpen] = useState(false)
+  const [title, setTitle] = useState('')
+  const [rawSource, setRawSource] = useState('')
+  const [kind, setKind] = useState<Extract<ResourceKind, 'paper' | 'article'>>('paper')
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  if (!isOpen) {
+    return (
+      <button type="button" className="wiki-new-page" onClick={() => setIsOpen(true)}>
+        + New paper/article
+      </button>
+    )
+  }
+
+  async function submit() {
+    const trimmedTitle = title.trim()
+    const trimmedSource = rawSource.trim()
+    if (!trimmedTitle || !trimmedSource) return
+    setIsSubmitting(true)
+    setError(null)
+    try {
+      await onCreateResource(trimmedTitle, trimmedSource, kind)
+      setIsOpen(false)
+      setTitle('')
+      setRawSource('')
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : String(submitError))
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="research-create-form" role="form" aria-label="Create paper or article">
+      <label className="sr-only" htmlFor="research-create-title">
+        Title
+      </label>
+      <input
+        id="research-create-title"
+        type="text"
+        placeholder="Title"
+        value={title}
+        onChange={(event) => setTitle(event.target.value)}
+      />
+      <label className="sr-only" htmlFor="research-create-source">
+        Source URL
+      </label>
+      <input
+        id="research-create-source"
+        type="text"
+        placeholder="Source URL (arXiv, DOI, article link…)"
+        value={rawSource}
+        onChange={(event) => setRawSource(event.target.value)}
+      />
+      <select
+        aria-label="Kind"
+        value={kind}
+        onChange={(event) => setKind(event.target.value as 'paper' | 'article')}
+      >
+        <option value="paper">Paper</option>
+        <option value="article">Article</option>
+      </select>
+      <button type="button" onClick={submit} disabled={isSubmitting || !title.trim() || !rawSource.trim()}>
+        {isSubmitting ? 'Adding…' : 'Add'}
+      </button>
+      <button type="button" onClick={() => setIsOpen(false)}>
+        Cancel
+      </button>
+      {error && (
+        <p className="view-error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  )
 }
 
 type BucketKey = 'all' | keyof ResearchDashboard
@@ -76,7 +160,13 @@ function ResourceRow({
   )
 }
 
-export function ResearchView({ dashboard, resources, selectedNodeId, onSelectNode }: ResearchViewProps) {
+export function ResearchView({
+  dashboard,
+  resources,
+  selectedNodeId,
+  onSelectNode,
+  onCreateResource,
+}: ResearchViewProps) {
   const [bucket, setBucket] = useState<BucketKey>('all')
   const [kindFilter, setKindFilter] = useState<'' | ResourceKind>('')
   const [readStateFilter, setReadStateFilter] = useState<'' | ResourceLifecycleStatus>('')
@@ -104,6 +194,8 @@ export function ResearchView({ dashboard, resources, selectedNodeId, onSelectNod
 
   return (
     <div className="research-view" aria-label="Research dashboard">
+      <CreatePaperOrArticleForm onCreateResource={onCreateResource} />
+
       <div className="research-filter-bar" role="group" aria-label="Filter by workflow bucket">
         {BUCKETS.map((option) => (
           <button

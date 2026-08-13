@@ -37,7 +37,7 @@ const emptyDashboard: ResearchDashboard = {
 describe('ResearchView', () => {
   it('shows a loading message when the dashboard has not loaded yet', () => {
     render(
-      <ResearchView dashboard={null} resources={[]} selectedNodeId={null} onSelectNode={vi.fn()} />,
+      <ResearchView dashboard={null} resources={[]} selectedNodeId={null} onSelectNode={vi.fn()} onCreateResource={vi.fn()} />,
     )
     expect(screen.getByText(/loading research dashboard/i)).toBeInTheDocument()
   })
@@ -51,6 +51,7 @@ describe('ResearchView', () => {
         resources={[paper]}
         selectedNodeId={null}
         onSelectNode={vi.fn()}
+        onCreateResource={vi.fn()}
       />,
     )
 
@@ -73,6 +74,7 @@ describe('ResearchView', () => {
         resources={[paper]}
         selectedNodeId={null}
         onSelectNode={onSelectNode}
+        onCreateResource={vi.fn()}
       />,
     )
 
@@ -96,6 +98,7 @@ describe('ResearchView', () => {
         resources={[paper]}
         selectedNodeId={null}
         onSelectNode={vi.fn()}
+        onCreateResource={vi.fn()}
       />,
     )
 
@@ -116,6 +119,7 @@ describe('ResearchView', () => {
         resources={[inboxPaper, readingArticle]}
         selectedNodeId={null}
         onSelectNode={vi.fn()}
+        onCreateResource={vi.fn()}
       />,
     )
 
@@ -146,6 +150,7 @@ describe('ResearchView', () => {
         resources={[paper, repository, documentation]}
         selectedNodeId={null}
         onSelectNode={vi.fn()}
+        onCreateResource={vi.fn()}
       />,
     )
 
@@ -165,6 +170,7 @@ describe('ResearchView', () => {
         resources={[paper]}
         selectedNodeId={null}
         onSelectNode={vi.fn()}
+        onCreateResource={vi.fn()}
       />,
     )
 
@@ -172,5 +178,55 @@ describe('ResearchView', () => {
     const sourceLink = screen.getByRole('link', { name: /source/i })
     expect(selectButton.contains(sourceLink)).toBe(false)
     expect(sourceLink.closest('button')).toBeNull()
+  })
+
+  it('creates a paper or article through its own typed create form', async () => {
+    const onCreateResource = vi.fn().mockResolvedValue(makeResource('r2', 'n2', 'New paper'))
+    render(
+      <ResearchView
+        dashboard={emptyDashboard}
+        resources={[]}
+        selectedNodeId={null}
+        onSelectNode={vi.fn()}
+        onCreateResource={onCreateResource}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '+ New paper/article' }))
+    fireEvent.change(screen.getByPlaceholderText('Title'), { target: { value: 'New paper' } })
+    fireEvent.change(screen.getByPlaceholderText(/source url/i), {
+      target: { value: 'https://arxiv.org/abs/2401.00001' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /^add$/i }))
+
+    await Promise.resolve()
+    expect(onCreateResource).toHaveBeenCalledWith(
+      'New paper',
+      'https://arxiv.org/abs/2401.00001',
+      'paper',
+    )
+  })
+
+  it('disables add until title and source are both entered', () => {
+    render(
+      <ResearchView
+        dashboard={emptyDashboard}
+        resources={[]}
+        selectedNodeId={null}
+        onSelectNode={vi.fn()}
+        onCreateResource={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '+ New paper/article' }))
+    expect(screen.getByRole('button', { name: /^add$/i })).toBeDisabled()
+
+    fireEvent.change(screen.getByPlaceholderText('Title'), { target: { value: 'New paper' } })
+    expect(screen.getByRole('button', { name: /^add$/i })).toBeDisabled()
+
+    fireEvent.change(screen.getByPlaceholderText(/source url/i), {
+      target: { value: 'https://arxiv.org/abs/2401.00001' },
+    })
+    expect(screen.getByRole('button', { name: /^add$/i })).not.toBeDisabled()
   })
 })

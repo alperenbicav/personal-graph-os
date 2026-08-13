@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, StrictInt
 from personal_graph_os.application.activity_recording import undo_disabled_reason
 from personal_graph_os.application.activity_service import ActivityEventPage
 from personal_graph_os.application.capture_service import CaptureOutcome
+from personal_graph_os.application.document_service import DocumentDetail
 from personal_graph_os.application.enrichment_service import EnrichmentOutcome
 from personal_graph_os.application.projections import ProjectionItem
 from personal_graph_os.application.resource_detail_service import (
@@ -30,7 +31,15 @@ from personal_graph_os.application.work_planning_service import WorkPlanOutcome
 from personal_graph_os.application.workflow_chain import WorkflowChainStep
 from personal_graph_os.domain.activity import ActivityEvent
 from personal_graph_os.domain.capture import CaptureIntent, CapturePayloadKind
-from personal_graph_os.domain.documents import Document, DocumentVersion
+from personal_graph_os.domain.documents import (
+    Collection,
+    Document,
+    DocumentKind,
+    DocumentLink,
+    DocumentLinkTargetType,
+    DocumentVersion,
+    Tag,
+)
 from personal_graph_os.domain.enrichment import (
     RelationProposal,
     ResourceEnrichmentProfile,
@@ -538,6 +547,68 @@ class ActivityEventDetail(ActivityEventSummary):
             before_state=event.before_state,
             after_state=event.after_state,
             request_id=event.request_id,
+        )
+
+
+class CreateDocumentRequest(BaseModel):
+    workspace_id: str
+    title: str
+    kind: DocumentKind
+    source: str
+    body_markdown: str = ""
+    collection_id: str | None = None
+    tag_names: list[str] = Field(default_factory=list)
+
+
+class UpdateDocumentMetadataRequest(BaseModel):
+    title: str | None = None
+    kind: DocumentKind | None = None
+    collection_id: str | None = None
+    clear_collection: bool = False
+    tag_names: list[str] | None = None
+    is_archived: bool | None = None
+
+
+class EditDocumentBodyRequest(BaseModel):
+    body_markdown: str
+    actor: str
+
+
+class CreateCollectionRequest(BaseModel):
+    workspace_id: str
+    name: str
+    parent_id: str | None = None
+
+
+class CreateTagRequest(BaseModel):
+    workspace_id: str
+    name: str
+
+
+class AddDocumentLinkRequest(BaseModel):
+    target_type: DocumentLinkTargetType
+    target_id: str
+
+
+class DocumentDetailResponse(BaseModel):
+    document: Document
+    latest_version: DocumentVersion
+    collection: Collection | None
+    tags: list[Tag]
+    outbound_links: list[DocumentLink]
+    backlinks: list[Document]
+    version_count: int
+
+    @classmethod
+    def from_detail(cls, detail: DocumentDetail) -> DocumentDetailResponse:
+        return cls(
+            document=detail.document,
+            latest_version=detail.latest_version,
+            collection=detail.collection,
+            tags=list(detail.tags),
+            outbound_links=list(detail.outbound_links),
+            backlinks=list(detail.backlinks),
+            version_count=detail.version_count,
         )
 
 

@@ -12,6 +12,7 @@ import pytest
 from personal_graph_os.application.activity_service import ActivityService
 from personal_graph_os.application.context_pack_service import ContextPackService
 from personal_graph_os.application.discovery import DiscoveryCandidateInput, DiscoveryService
+from personal_graph_os.application.document_service import DocumentService
 from personal_graph_os.application.file_service import FileService
 from personal_graph_os.application.search_service import SearchService
 from personal_graph_os.application.semantic_schema import ensure_semantic_schema
@@ -24,6 +25,7 @@ from personal_graph_os.application.services import (
 from personal_graph_os.application.undo_service import UndoConflictError, UndoService
 from personal_graph_os.application.workflow_chain import WorkflowChainService, WorkflowChainStep
 from personal_graph_os.domain.activity import IdempotencyReceipt
+from personal_graph_os.domain.documents import DocumentKind
 from personal_graph_os.domain.errors import UnknownSchemaReferenceError
 from personal_graph_os.domain.identifiers import ContextPackId, NodeId, NodeTypeId
 from personal_graph_os.domain.resource import ResourceKind, ResourceLifecycleStatus
@@ -39,7 +41,11 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteActivityEventRepository,
     SqliteAttachmentRepository,
     SqliteCanvasPlacementRepository,
+    SqliteCollectionRepository,
     SqliteContextPackRepository,
+    SqliteDocumentLinkRepository,
+    SqliteDocumentRepository,
+    SqliteDocumentVersionRepository,
     SqliteEdgeRepository,
     SqliteFileReferenceRepository,
     SqliteNodeRepository,
@@ -48,6 +54,7 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteResourceRepository,
     SqliteSavedViewRepository,
     SqliteSearchIndexRepository,
+    SqliteTagRepository,
     SqliteWorkspaceRepository,
 )
 from personal_graph_os.infrastructure.sqlite.research_unit_of_work import SqliteResearchUnitOfWork
@@ -144,6 +151,16 @@ def _build_gateway(sqlite_connection: sqlite3.Connection, tmp_path: Path):
         context_pack_repository,
     )
     activity_service = ActivityService(SqliteActivityEventRepository(sqlite_connection))
+    document_service = DocumentService(
+        workspace_repository,
+        SqliteDocumentRepository(sqlite_connection),
+        SqliteDocumentVersionRepository(sqlite_connection),
+        SqliteDocumentLinkRepository(sqlite_connection),
+        SqliteCollectionRepository(sqlite_connection),
+        SqliteTagRepository(sqlite_connection),
+        node_repository,
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
+    )
 
     gateway = AgentGatewayService(
         workspace_repository,
@@ -159,6 +176,7 @@ def _build_gateway(sqlite_connection: sqlite3.Connection, tmp_path: Path):
         discovery_service=discovery_service,
         context_pack_service=context_pack_service,
         activity_service=activity_service,
+        document_service=document_service,
         unit_of_work_factory=lambda: SqliteResearchUnitOfWork(sqlite_connection),
     )
     return {
@@ -596,6 +614,81 @@ def test_create_or_reuse_resource_reuse_is_not_a_replay_and_never_duplicates(
     assert reused["was_created"] is False
     assert reused["replayed"] is False
     assert reused["resource"]["id"] == first["resource"]["id"]
+
+
+def test_upsert_document_creates_then_appends_a_version_on_matching_title(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    ctx = _fixture(sqlite_connection, tmp_path)
+    gateway: AgentGatewayService = ctx["gateway"]
+
+    created = gateway.upsert_document(
+        ctx["workspace_id"],
+        "Agent note",
+        "draft",
+        kind=DocumentKind.NOTE,
+        document_id=None,
+        collection_id=None,
+        tag_names=(),
+        actor_name="agent-1",
+        reason="capture",
+        request_id="req-1",
+    )
+    updated = gateway.upsert_document(
+        ctx["workspace_id"],
+        "Agent note",
+        "final",
+        kind=DocumentKind.NOTE,
+        document_id=None,
+        collection_id=None,
+        tag_names=(),
+        actor_name="agent-1",
+        reason="revise",
+        request_id="req-2",
+    )
+
+    assert created["was_created"] is True
+    assert created["version"]["version_number"] == 1
+    assert updated["was_created"] is False
+    assert updated["document"]["id"] == created["document"]["id"]
+    assert updated["version"]["version_number"] == 2
+    assert updated["version"]["body_markdown"] == "final"
+
+
+def test_upsert_document_replay_by_request_id_does_not_append_twice(
+    sqlite_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    ctx = _fixture(sqlite_connection, tmp_path)
+    gateway: AgentGatewayService = ctx["gateway"]
+
+    first = gateway.upsert_document(
+        ctx["workspace_id"],
+        "Agent note",
+        "draft",
+        kind=DocumentKind.NOTE,
+        document_id=None,
+        collection_id=None,
+        tag_names=(),
+        actor_name="agent-1",
+        reason="capture",
+        request_id="req-1",
+    )
+    replayed = gateway.upsert_document(
+        ctx["workspace_id"],
+        "Agent note",
+        "draft",
+        kind=DocumentKind.NOTE,
+        document_id=None,
+        collection_id=None,
+        tag_names=(),
+        actor_name="agent-1",
+        reason="capture",
+        request_id="req-1",
+    )
+
+    assert first["replayed"] is False
+    assert replayed["replayed"] is True
+    assert replayed["version"]["version_number"] == 1
 
 
 def test_update_resource_no_op_is_reported_and_not_replayed(

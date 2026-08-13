@@ -13,6 +13,7 @@ from personal_graph_os.application.capture_planning_orchestrator import (
     CapturePlanningOrchestrator,
 )
 from personal_graph_os.application.discovery import DiscoveryService
+from personal_graph_os.application.document_service import DocumentService
 from personal_graph_os.application.enrichment_service import EnrichmentService
 from personal_graph_os.application.export_service import ExportService
 from personal_graph_os.application.extraction_service import ExtractionService
@@ -127,6 +128,10 @@ def get_workflow_chain_service(request: Request) -> WorkflowChainService:
 
 def get_discovery_service(request: Request) -> DiscoveryService:
     return request.app.state.discovery_service
+
+
+def get_document_service(request: Request) -> DocumentService:
+    return request.app.state.document_service
 
 
 def get_file_service(request: Request) -> FileService:

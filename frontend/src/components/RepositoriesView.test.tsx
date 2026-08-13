@@ -42,6 +42,7 @@ describe('RepositoriesView', () => {
         selectedNodeId={null}
         onSelectNode={vi.fn()}
         onSetLabel={vi.fn()}
+        onCreateResource={vi.fn()}
       />,
     )
 
@@ -60,6 +61,7 @@ describe('RepositoriesView', () => {
         selectedNodeId={null}
         onSelectNode={vi.fn()}
         onSetLabel={vi.fn()}
+        onCreateResource={vi.fn()}
       />,
     )
 
@@ -77,6 +79,7 @@ describe('RepositoriesView', () => {
         selectedNodeId={null}
         onSelectNode={onSelectNode}
         onSetLabel={vi.fn()}
+        onCreateResource={vi.fn()}
       />,
     )
 
@@ -93,6 +96,7 @@ describe('RepositoriesView', () => {
         selectedNodeId={null}
         onSelectNode={vi.fn()}
         onSetLabel={onSetLabel}
+        onCreateResource={vi.fn()}
       />,
     )
 
@@ -100,5 +104,28 @@ describe('RepositoriesView', () => {
       target: { value: 'liked_external' },
     })
     expect(onSetLabel).toHaveBeenCalledWith('r1', 'liked_external')
+  })
+
+  it('creates a repository through its own typed create form', async () => {
+    const onCreateResource = vi.fn().mockResolvedValue(makeRepository('r2', 'n2', 'new-repo'))
+    render(
+      <RepositoriesView
+        resources={[]}
+        selectedNodeId={null}
+        onSelectNode={vi.fn()}
+        onSetLabel={vi.fn()}
+        onCreateResource={onCreateResource}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '+ New repository' }))
+    fireEvent.change(screen.getByPlaceholderText('Title'), { target: { value: 'new-repo' } })
+    fireEvent.change(screen.getByLabelText('GitHub URL'), {
+      target: { value: 'https://github.com/acme/new-repo' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /^add$/i }))
+
+    await Promise.resolve()
+    expect(onCreateResource).toHaveBeenCalledWith('new-repo', 'https://github.com/acme/new-repo')
   })
 })

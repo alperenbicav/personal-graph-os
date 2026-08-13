@@ -4,9 +4,14 @@ import type {
   Attachment,
   Canvas,
   CanvasPlacement,
+  Collection,
   DiscoveryCandidateInput,
   DiscoveryPreview,
   DiscoveryRun,
+  DocumentDetail,
+  DocumentKind,
+  DocumentLinkTargetType,
+  DocumentVersion,
   EdgeType,
   FieldDefinition,
   FieldType,
@@ -24,7 +29,9 @@ import type {
   SavedView,
   SearchResult,
   StatusDefinition,
+  Tag,
   ViewKind,
+  WikiDocument,
   WorkflowChainStep,
   Workspace,
   WorkspaceResearchSettings,
@@ -411,6 +418,110 @@ export function updateResource(resourceId: string, patch: UpdateResourcePatch): 
 
 export function archiveResource(resourceId: string): Promise<Resource> {
   return request(`/resources/${encodeURIComponent(resourceId)}`, { method: 'DELETE' })
+}
+
+export function listDocuments(
+  workspaceId: string,
+  filters?: { collectionId?: string; includeArchived?: boolean },
+): Promise<WikiDocument[]> {
+  const params = new URLSearchParams({ workspace_id: workspaceId })
+  if (filters?.collectionId) params.set('collection_id', filters.collectionId)
+  if (filters?.includeArchived) params.set('include_archived', 'true')
+  return request(`/documents?${params.toString()}`)
+}
+
+export function getDocument(documentId: string): Promise<WikiDocument> {
+  return request(`/documents/${encodeURIComponent(documentId)}`)
+}
+
+export function getDocumentDetail(documentId: string): Promise<DocumentDetail> {
+  return request(`/documents/${encodeURIComponent(documentId)}/detail`)
+}
+
+export function listDocumentVersions(documentId: string): Promise<DocumentVersion[]> {
+  return request(`/documents/${encodeURIComponent(documentId)}/versions`)
+}
+
+export interface CreateDocumentInput {
+  workspace_id: string
+  title: string
+  kind: DocumentKind
+  source: string
+  body_markdown?: string
+  collection_id?: string | null
+  tag_names?: string[]
+}
+
+export function createDocument(payload: CreateDocumentInput): Promise<WikiDocument> {
+  return request('/documents', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+export interface UpdateDocumentMetadataPatch {
+  title?: string
+  kind?: DocumentKind
+  collection_id?: string | null
+  clear_collection?: boolean
+  tag_names?: string[]
+  is_archived?: boolean
+}
+
+export function updateDocumentMetadata(
+  documentId: string,
+  patch: UpdateDocumentMetadataPatch,
+): Promise<WikiDocument> {
+  return request(`/documents/${encodeURIComponent(documentId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  })
+}
+
+export function editDocumentBody(
+  documentId: string,
+  bodyMarkdown: string,
+  actor: string,
+): Promise<DocumentVersion> {
+  return request(`/documents/${encodeURIComponent(documentId)}/versions`, {
+    method: 'POST',
+    body: JSON.stringify({ body_markdown: bodyMarkdown, actor }),
+  })
+}
+
+export function addDocumentLink(
+  documentId: string,
+  targetType: DocumentLinkTargetType,
+  targetId: string,
+): Promise<void> {
+  return request(`/documents/${encodeURIComponent(documentId)}/links`, {
+    method: 'POST',
+    body: JSON.stringify({ target_type: targetType, target_id: targetId }),
+  })
+}
+
+export function removeDocumentLink(documentLinkId: string): Promise<void> {
+  return request(`/document-links/${encodeURIComponent(documentLinkId)}`, { method: 'DELETE' })
+}
+
+export function listCollections(workspaceId: string): Promise<Collection[]> {
+  return request(`/collections?workspace_id=${encodeURIComponent(workspaceId)}`)
+}
+
+export function createCollection(
+  workspaceId: string,
+  name: string,
+  parentId?: string,
+): Promise<Collection> {
+  return request('/collections', {
+    method: 'POST',
+    body: JSON.stringify({ workspace_id: workspaceId, name, parent_id: parentId }),
+  })
+}
+
+export function listTags(workspaceId: string): Promise<Tag[]> {
+  return request(`/tags?workspace_id=${encodeURIComponent(workspaceId)}`)
+}
+
+export function createTag(workspaceId: string, name: string): Promise<Tag> {
+  return request('/tags', { method: 'POST', body: JSON.stringify({ workspace_id: workspaceId, name }) })
 }
 
 export function search(

@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from personal_graph_os.application.context_pack_service import ContextPackMaterialization
 from personal_graph_os.application.discovery import DiscoveryCandidatePreview, DiscoveryPreview
 from personal_graph_os.domain.activity import ActivityEvent, DiscoveredCandidate, DiscoveryRun
+from personal_graph_os.domain.documents import Document, DocumentVersion
 from personal_graph_os.domain.files import Attachment, FileReference
 from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.resource import Resource
@@ -258,6 +259,52 @@ class ResourceDTO(BaseModel):
             progress_percent=resource.progress_percent,
             review_at=resource.review_at,
             last_activity_at=resource.last_activity_at,
+        )
+
+
+class DocumentDTO(BaseModel):
+    id: str
+    workspace_id: str
+    kind: str
+    title: str
+    collection_id: str | None
+    tag_ids: tuple[str, ...]
+    is_archived: bool
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_domain(cls, document: Document) -> DocumentDTO:
+        return cls(
+            id=document.id,
+            workspace_id=document.workspace_id,
+            kind=document.kind.value,
+            title=_bounded_text(document.title),
+            collection_id=document.collection_id,
+            tag_ids=tuple(document.tag_ids),
+            is_archived=document.is_archived,
+            created_at=document.created_at,
+            updated_at=document.updated_at,
+        )
+
+
+class DocumentVersionDTO(BaseModel):
+    id: str
+    document_id: str
+    version_number: int
+    body_markdown: str
+    created_by: str
+    created_at: datetime
+
+    @classmethod
+    def from_domain(cls, version: DocumentVersion) -> DocumentVersionDTO:
+        return cls(
+            id=version.id,
+            document_id=version.document_id,
+            version_number=version.version_number,
+            body_markdown=_bounded_text(version.body_markdown),
+            created_by=version.created_by,
+            created_at=version.created_at,
         )
 
 
