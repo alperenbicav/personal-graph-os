@@ -123,12 +123,36 @@ def _create_work_item_tool() -> AgentTool:
     )
 
 
+def _capture_url_tool() -> AgentTool:
+    return AgentTool(
+        name="capture_url",
+        description=(
+            "Capture a URL (e.g. a paper, article, or repository) into the user's graph. Use it "
+            "when the user sends a link or asks to save/study a source; the content is enriched "
+            "(summary + key findings) before you answer."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "The URL to capture"},
+                "title": {"type": "string", "description": "Optional human title"},
+                "summarize": {
+                    "type": "boolean",
+                    "description": "Also produce an enrichment summary (default true)",
+                },
+            },
+            "required": ["url"],
+        },
+    )
+
+
 BOT_TOOLS: tuple[AgentTool, ...] = (
     _search_tool(),
     _get_workspace_tool(),
     _get_node_tool(),
     _list_work_items_tool(),
     _create_work_item_tool(),
+    _capture_url_tool(),
 )
 
 _TOOL_BY_NAME = {tool.name: tool for tool in BOT_TOOLS}
@@ -249,6 +273,23 @@ class AgentLoopService:
                     actor_name=actor_name,
                     reason=f"telegram agent request {request_id}",
                     request_id=f"tg-{request_id}",
+                )
+            elif call.name == "capture_url":
+                summarize = call.arguments.get("summarize", True)
+                operations = ("summarize", "extract_key_findings") if summarize is not False else ()
+                result = self._gateway.capture(
+                    self._workspace_id,
+                    source="telegram",
+                    request_id=f"tg-{request_id}",
+                    actor_name=actor_name,
+                    payload_kind="url",
+                    url=_str_arg(call.arguments, "url", ""),
+                    text=None,
+                    intent="enrich" if summarize is not False else "save_raw",
+                    title=_str_arg(call.arguments, "title", "") or None,
+                    repository_node_id=None,
+                    reason=f"telegram agent request {request_id}",
+                    operations=operations,
                 )
             else:  # pragma: no cover - guarded by handler lookup above
                 result = f"error: unhandled tool {call.name!r}"

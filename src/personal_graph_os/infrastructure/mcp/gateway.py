@@ -2906,6 +2906,7 @@ class AgentGatewayService:
         title: str | None,
         repository_node_id: NodeId | None,
         reason: str,
+        operations: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
         if self._capture_planning_orchestrator is None:
@@ -2913,6 +2914,8 @@ class AgentGatewayService:
         from personal_graph_os.domain.capture import (
             CaptureEnvelope,
             CaptureIntent,
+            CaptureOperation,
+            CaptureOperationKind,
             CapturePayloadKind,
         )
 
@@ -2926,6 +2929,9 @@ class AgentGatewayService:
             text=text,
             intent=CaptureIntent(intent),
             title=title,
+            operations=tuple(
+                CaptureOperation(kind=CaptureOperationKind(value)) for value in operations
+            ),
         )
         outcome, _ = self._capture_planning_orchestrator.submit(
             envelope, repository_node_id=repository_node_id

@@ -31,6 +31,7 @@ class StubGateway:
     def __init__(self) -> None:
         self.searches: list[tuple[str, str, int]] = []
         self.created: list[dict[str, object]] = []
+        self.captures: list[dict[str, object]] = []
 
     def search(self, workspace_id, query_text, *, include_archived=False, scope="all", limit=8):
         self.searches.append((workspace_id, query_text, limit))
@@ -44,6 +45,41 @@ class StubGateway:
 
     def list_work_items(self, workspace_id, *, include_archived=False):
         return (_Json({"id": "w1", "title": "Existing task"}),)
+
+    def capture(
+        self,
+        workspace_id,
+        *,
+        source,
+        request_id,
+        actor_name,
+        payload_kind,
+        url,
+        text,
+        intent,
+        title,
+        repository_node_id,
+        reason,
+        operations=(),
+    ):
+        self.captures.append(
+            {
+                "workspace_id": workspace_id,
+                "source": source,
+                "request_id": request_id,
+                "actor_name": actor_name,
+                "url": url,
+                "intent": intent,
+                "title": title,
+                "operations": list(operations),
+            }
+        )
+        return {
+            "ingestion_job_id": "job-1",
+            "resource_id": "res-1",
+            "needs_clarification": False,
+            "was_replayed": False,
+        }
 
     def create_work_item(
         self,
@@ -206,6 +242,40 @@ def test_unknown_tool_is_rejected_without_calling_gateway() -> None:
         item.get("type") == "function_call_output" and "unknown tool" in str(item.get("output"))
         for item in second_input
     )
+
+
+def test_capture_url_calls_gateway_with_enrichment_operations() -> None:
+    gateway = StubGateway()
+    provider = ScriptedProvider(
+        [
+            _turn_with_call(
+                "capture_url",
+                {"url": "https://arxiv.org/abs/2607.18261", "title": "A paper"},
+            ),
+            AgentChatTurn(final_text="Captured and summarized the paper."),
+        ]
+    )
+    loop = _make_loop(provider, gateway)
+
+    answer = loop.run(
+        user_message="save this paper and summarize it https://arxiv.org/abs/2607.18261",
+        actor_name="alperen",
+        request_id="7",
+    )
+
+    assert answer == "Captured and summarized the paper."
+    assert gateway.captures == [
+        {
+            "workspace_id": "ws-1",
+            "source": "telegram",
+            "request_id": "tg-7",
+            "actor_name": "alperen",
+            "url": "https://arxiv.org/abs/2607.18261",
+            "intent": "enrich",
+            "title": "A paper",
+            "operations": ["summarize", "extract_key_findings"],
+        }
+    ]
 
 
 def test_loop_budget_is_bounded() -> None:

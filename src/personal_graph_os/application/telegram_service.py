@@ -140,6 +140,11 @@ class TelegramService:
             self._advance_cursor(update.update_id)
             return TelegramUpdateOutcome.SKIPPED_NO_URL
         if parsed.unrecognized_segments:
+            # A URL plus free-form intent (e.g. "save this and summarize it"): with an agent
+            # configured the natural-language intent is handled by the agent (it can capture the
+            # URL and answer); without one the bounded vocabulary clarification stays.
+            if self._agent_loop is not None:
+                return self._answer_via_agent(client, message, content, update.update_id)
             client.send_message(
                 message.chat.id,
                 f"I could not interpret: {'; '.join(parsed.unrecognized_segments)}. "

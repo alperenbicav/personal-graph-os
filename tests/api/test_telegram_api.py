@@ -171,6 +171,106 @@ def test_the_poller_answers_a_non_url_message_via_the_agent_loop(
     assert sent[0].get("chat_id") == 1
 
 
+def test_the_agent_captures_a_url_with_free_form_intent_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A URL plus natural-language intent text is handled by the agent (which captures the URL
+    and replies) instead of the bounded-vocabulary clarification."""
+    monkeypatch.setenv("PGOS_TELEGRAM_ENABLED", "1")
+    monkeypatch.setenv("PGOS_TELEGRAM_API_TOKEN", "test-token")
+    monkeypatch.setenv("PGOS_TELEGRAM_ALLOWED_CHAT_IDS", "1")
+    monkeypatch.setenv("PGOS_AGENT_CHAT_PROVIDER", "http_chat")
+    monkeypatch.setenv("PGOS_AGENT_CHAT_BASE_URL", "https://agent.example/v1")
+    monkeypatch.setenv("PGOS_AGENT_CHAT_API_KEY", "agent-key")
+    monkeypatch.setenv("PGOS_AGENT_CHAT_MODEL", "gpt-5.6-luna")
+
+    update_payload = {
+        "update_id": 13,
+        "message": {
+            "message_id": 13,
+            "date": 1720000000,
+            "chat": {"id": 1},
+            "from": {"id": 99, "is_bot": False},
+            "text": "okay, https://arxiv.org/abs/2607.18261 bu paper'ı incele ve özetle",
+        },
+    }
+    sent: list[dict[str, object]] = []
+    calls = {"count": 0}
+    agent_calls = {"count": 0}
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/getUpdates"):
+            calls["count"] += 1
+            result = [update_payload] if calls["count"] == 1 else []
+            return httpx.Response(200, json={"ok": True, "result": result})
+        if request.url.path.endswith("/sendMessage"):
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"ok": True, "result": {}})
+        return httpx.Response(200, json={"ok": True, "result": {}})
+
+    def agent_handler(request: httpx.Request) -> httpx.Response:
+        agent_calls["count"] += 1
+        if agent_calls["count"] == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "id": "fc_1",
+                            "call_id": "call_1",
+                            "name": "capture_url",
+                            "arguments": json.dumps({"url": "https://arxiv.org/abs/2607.18261"}),
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": "Saved and summarized the paper."}
+                        ],
+                    }
+                ]
+            },
+        )
+
+    database_path = tmp_path / "telegram-url-intent.db"
+    app = create_app(
+        database_path,
+        telegram_transport=httpx.MockTransport(telegram_handler),
+        agent_chat_transport=httpx.MockTransport(agent_handler),
+    )
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as _client:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            connection = sqlite3.connect(database_path)
+            cursor = connection.execute(
+                "SELECT cursor_value FROM channel_sync_state WHERE channel = 'telegram'"
+            ).fetchone()
+            connection.close()
+            if cursor is not None and cursor[0] == "00000000000000000013":
+                break
+            time.sleep(0.1)
+
+    assert cursor is not None
+    assert cursor[0] == "00000000000000000013"
+    assert sent, "the bot should have replied instead of clarifying"
+    assert "Saved and summarized" in str(sent[0].get("text"))
+    connection = sqlite3.connect(database_path)
+    job = connection.execute(
+        "SELECT source_identifier FROM ingestion_jobs WHERE source = 'telegram'"
+    ).fetchone()
+    connection.close()
+    assert job is not None and job[0] == "tg-13"
+
+
 def test_the_agent_bot_is_fail_closed_without_a_provider(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
