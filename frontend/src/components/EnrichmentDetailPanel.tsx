@@ -39,33 +39,78 @@ function EnrichmentPayloadSection({ detail }: { detail: ResourceDetail }) {
     return <p className="view-empty">No enrichment yet.</p>
   }
   const payload = enrichment.payload as unknown as Record<string, unknown>
+  const summary = (payload.summary as string) ?? null
+  const keyFindings = (payload.key_findings as string[]) ?? []
+  const capabilities = (payload.capabilities as string[]) ?? []
 
   return (
     <div className="enrichment-payload">
-      <TextField label="Summary" value={(payload.summary as string) ?? null} />
-      <ListField label="Key findings" values={(payload.key_findings as string[]) ?? []} />
-      <ListField label="Capabilities" values={(payload.capabilities as string[]) ?? []} />
-      <TextField
-        label="Architecture"
-        value={(payload.architecture_summary as string | null) ?? null}
-      />
+      <div className="enrichment-heading">
+        {enrichment.tags.length > 0 && (
+          <span className="enrichment-tags">
+            {enrichment.tags.map((tag) => (
+              <span key={tag} className="enrichment-tag">
+                {tag}
+              </span>
+            ))}
+          </span>
+        )}
+        {(enrichment.authors.length > 0 ||
+          enrichment.published_at ||
+          typeof payload.license_name === 'string') && (
+          <p className="enrichment-byline">
+            {enrichment.authors.length > 0 && <span>{enrichment.authors.join(', ')}</span>}
+            {enrichment.published_at && (
+              <span>Published {enrichment.published_at.slice(0, 10)}</span>
+            )}
+            {typeof payload.license_name === 'string' && <span>{payload.license_name}</span>}
+          </p>
+        )}
+      </div>
+
+      {summary && (
+        <section className="enrichment-section">
+          <h3 className="enrichment-section-title">Summary</h3>
+          <p className="enrichment-paragraph">{summary}</p>
+        </section>
+      )}
+
+      {keyFindings.length > 0 && (
+        <section className="enrichment-section">
+          <h3 className="enrichment-section-title">Key findings</h3>
+          <ul className="enrichment-findings">
+            {keyFindings.map((finding, index) => (
+              <li key={index}>{finding}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {capabilities.length > 0 && (
+        <section className="enrichment-section">
+          <h3 className="enrichment-section-title">Capabilities</h3>
+          <ul className="enrichment-findings">
+            {capabilities.map((capability, index) => (
+              <li key={index}>{capability}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {enrichment.abstract && (
+        <section className="enrichment-section">
+          <h3 className="enrichment-section-title">Abstract</h3>
+          <p className="enrichment-paragraph">{enrichment.abstract}</p>
+        </section>
+      )}
+
+      <TextField label="Architecture" value={(payload.architecture_summary as string | null) ?? null} />
       <TextField label="Methodology" value={(payload.methodology as string | null) ?? null} />
       <ListField label="Limitations" values={(payload.limitations as string[]) ?? []} />
       <ListField label="Risks" values={(payload.risks as string[]) ?? []} />
       <TextField label="Applicability" value={(payload.applicability as string | null) ?? null} />
       <ListField label="Tech stack" values={(payload.tech_stack as string[]) ?? []} />
-      <TextField label="License" value={(payload.license_name as string | null) ?? null} />
       <TextField label="Activity" value={(payload.activity_summary as string | null) ?? null} />
-      <ListField label="Tags" values={[...enrichment.tags]} />
-
-      {enrichment.authors.length > 0 && (
-        <TextField label="Authors" value={enrichment.authors.join(', ')} />
-      )}
-      <TextField
-        label="Published"
-        value={enrichment.published_at ? enrichment.published_at.slice(0, 10) : null}
-      />
-      <TextField label="Abstract" value={enrichment.abstract} />
 
       {enrichment.cited_evidence.length > 0 && (
         <div className="field">

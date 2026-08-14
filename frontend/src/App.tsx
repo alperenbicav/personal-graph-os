@@ -772,7 +772,9 @@ function App() {
             ? 'workbench'
             : activeView === 'tasks' || activeView === 'activity' || activeView === 'wiki'
               ? 'workbench workbench-full'
-              : 'workbench workbench-no-rail'
+              : activeView === 'research'
+                ? 'workbench workbench-no-rail workbench-research'
+                : 'workbench workbench-no-rail'
         }
       >
         {activeView === 'graph' && (
