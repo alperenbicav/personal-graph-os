@@ -132,6 +132,10 @@ from personal_graph_os.domain.errors import (
     DomainError,
     UploadTooLargeError,
 )
+from personal_graph_os.infrastructure.agent.agent_loop import AgentLoopService
+from personal_graph_os.infrastructure.agent.provider_factory import (
+    build_agent_chat_provider_from_env,
+)
 from personal_graph_os.infrastructure.clickup.builder import build_clickup_client_from_env
 from personal_graph_os.infrastructure.enrichment.provider_factory import (
     build_enrichment_provider_from_env,
@@ -230,6 +234,7 @@ def create_app(
     work_planning_provider_transport: httpx.BaseTransport | None = None,
     clickup_transport: httpx.BaseTransport | None = None,
     telegram_transport: httpx.BaseTransport | None = None,
+    agent_chat_transport: httpx.BaseTransport | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Personal Graph OS API")
 
@@ -487,16 +492,12 @@ def create_app(
         lambda: SqliteResearchUnitOfWork(connection),
     )
     telegram_client = build_telegram_client_from_env(os.environ, transport=telegram_transport)
+    app.state.telegram_poller = None
     app.state.telegram_service = TelegramService(
         telegram_client,
         app.state.capture_planning_orchestrator,
         default_workspace.id,
         lambda: SqliteResearchUnitOfWork(connection),
-    )
-    app.state.telegram_poller = (
-        TelegramPoller(telegram_client, app.state.telegram_service)
-        if telegram_client is not None
-        else None
     )
 
     app.state.export_service = ExportService(
@@ -576,6 +577,34 @@ def create_app(
         capture_planning_orchestrator=app.state.capture_planning_orchestrator,
         clickup_service=app.state.clickup_service,
         unit_of_work_factory=lambda: SqliteResearchUnitOfWork(connection),
+    )
+
+    # The Telegram agent bot (EP-2026-012 follow-up): a tool-calling chat provider wired into
+    # the same `AgentGatewayService` the MCP server exposes. Fail-closed -- without a configured
+    # provider the channel keeps its plain URL-capture behavior (agent_loop stays None).
+    agent_chat_provider = build_agent_chat_provider_from_env(
+        os.environ, transport=agent_chat_transport
+    )
+    agent_loop = (
+        AgentLoopService(
+            provider=agent_chat_provider,
+            gateway=agent_gateway,
+            workspace_id=default_workspace.id,
+        )
+        if agent_chat_provider is not None
+        else None
+    )
+    app.state.telegram_service = TelegramService(
+        telegram_client,
+        app.state.capture_planning_orchestrator,
+        default_workspace.id,
+        lambda: SqliteResearchUnitOfWork(connection),
+        agent_loop=agent_loop,
+    )
+    app.state.telegram_poller = (
+        TelegramPoller(telegram_client, app.state.telegram_service)
+        if telegram_client is not None
+        else None
     )
     mcp_asgi_app, mcp_session_manager, app.state.mcp_telemetry = create_mcp_asgi_app(
         agent_gateway, db_lock=app.state.db_lock, connection=connection

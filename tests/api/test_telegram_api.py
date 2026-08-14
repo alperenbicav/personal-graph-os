@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from pathlib import Path
@@ -92,3 +93,133 @@ def test_the_poller_captures_a_telegram_message_end_to_end(
     connection.close()
     assert cursor is not None
     assert cursor[0] == "00000000000000000007"
+
+
+def test_the_poller_answers_a_non_url_message_via_the_agent_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With an agent chat provider configured, a free-form message is answered by the bounded
+    graph agent (tool-calling loop) instead of the 'send a URL' fallback."""
+    monkeypatch.setenv("PGOS_TELEGRAM_ENABLED", "1")
+    monkeypatch.setenv("PGOS_TELEGRAM_API_TOKEN", "test-token")
+    monkeypatch.setenv("PGOS_TELEGRAM_ALLOWED_CHAT_IDS", "1")
+    monkeypatch.setenv("PGOS_AGENT_CHAT_PROVIDER", "http_chat")
+    monkeypatch.setenv("PGOS_AGENT_CHAT_BASE_URL", "https://agent.example/v1")
+    monkeypatch.setenv("PGOS_AGENT_CHAT_API_KEY", "agent-key")
+    monkeypatch.setenv("PGOS_AGENT_CHAT_MODEL", "gpt-5.6-luna")
+
+    update_payload = {
+        "update_id": 9,
+        "message": {
+            "message_id": 9,
+            "date": 1720000000,
+            "chat": {"id": 1},
+            "from": {"id": 99, "is_bot": False},
+            "text": "what is stored in my graph?",
+        },
+    }
+    sent: list[dict[str, object]] = []
+    calls = {"count": 0}
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/getUpdates"):
+            calls["count"] += 1
+            result = [update_payload] if calls["count"] == 1 else []
+            return httpx.Response(200, json={"ok": True, "result": result})
+        if request.url.path.endswith("/sendMessage"):
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"ok": True, "result": {}})
+        return httpx.Response(200, json={"ok": True, "result": {}})
+
+    def agent_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "You have 2 papers stored."}],
+                    }
+                ]
+            },
+        )
+
+    database_path = tmp_path / "telegram-agent.db"
+    app = create_app(
+        database_path,
+        telegram_transport=httpx.MockTransport(telegram_handler),
+        agent_chat_transport=httpx.MockTransport(agent_handler),
+    )
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as _client:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            connection = sqlite3.connect(database_path)
+            cursor = connection.execute(
+                "SELECT cursor_value FROM channel_sync_state WHERE channel = 'telegram'"
+            ).fetchone()
+            connection.close()
+            if cursor is not None and cursor[0] == "00000000000000000009":
+                break
+            time.sleep(0.1)
+
+    assert cursor is not None
+    assert cursor[0] == "00000000000000000009"
+    assert sent, "the bot should have replied to the free-form message"
+    assert "2 papers stored" in str(sent[0].get("text"))
+    assert sent[0].get("chat_id") == 1
+
+
+def test_the_agent_bot_is_fail_closed_without_a_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without PGOS_AGENT_CHAT_PROVIDER the channel keeps the 'send a URL' fallback for a
+    non-URL message."""
+    monkeypatch.setenv("PGOS_TELEGRAM_ENABLED", "1")
+    monkeypatch.setenv("PGOS_TELEGRAM_API_TOKEN", "test-token")
+    monkeypatch.setenv("PGOS_TELEGRAM_ALLOWED_CHAT_IDS", "1")
+
+    update_payload = {
+        "update_id": 11,
+        "message": {
+            "message_id": 11,
+            "date": 1720000000,
+            "chat": {"id": 1},
+            "from": {"id": 99, "is_bot": False},
+            "text": "hello",
+        },
+    }
+    sent: list[dict[str, object]] = []
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/getUpdates"):
+            calls["count"] += 1
+            result = [update_payload] if calls["count"] == 1 else []
+            return httpx.Response(200, json={"ok": True, "result": result})
+        if request.url.path.endswith("/sendMessage"):
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"ok": True, "result": {}})
+        return httpx.Response(200, json={"ok": True, "result": {}})
+
+    database_path = tmp_path / "telegram-failclosed.db"
+    app = create_app(database_path, telegram_transport=httpx.MockTransport(handler))
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as _client:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            connection = sqlite3.connect(database_path)
+            cursor = connection.execute(
+                "SELECT cursor_value FROM channel_sync_state WHERE channel = 'telegram'"
+            ).fetchone()
+            connection.close()
+            if cursor is not None and cursor[0] == "00000000000000000011":
+                break
+            time.sleep(0.1)
+
+    assert cursor is not None
+    assert cursor[0] == "00000000000000000011"
+    assert sent
+    assert "could not find a link" in str(sent[0].get("text"))

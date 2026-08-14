@@ -22,6 +22,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from enum import StrEnum
 
+from personal_graph_os.application.agent_adapters import GraphAgent
 from personal_graph_os.application.capture_planning_orchestrator import (
     CapturePlanningOrchestrator,
 )
@@ -29,6 +30,7 @@ from personal_graph_os.application.capture_service import CaptureOutcome
 from personal_graph_os.application.research_unit_of_work import ResearchUnitOfWork
 from personal_graph_os.application.telegram_adapters import (
     TelegramClient,
+    TelegramMessage,
     TelegramNotConfiguredError,
     TelegramUpdate,
 )
@@ -67,6 +69,7 @@ class TelegramUpdateOutcome(StrEnum):
     PROCESSED = "processed"
     CONFLICTED = "conflicted"
     CLARIFIED = "clarified"
+    AGENT_ANSWERED = "agent_answered"
     SKIPPED_NO_MESSAGE = "skipped_no_message"
     SKIPPED_BOT = "skipped_bot"
     SKIPPED_DISALLOWED = "skipped_disallowed"
@@ -80,11 +83,13 @@ class TelegramService:
         capture_planning_orchestrator: CapturePlanningOrchestrator,
         workspace_id: WorkspaceId,
         unit_of_work_factory: Callable[[], ResearchUnitOfWork],
+        agent_loop: GraphAgent | None = None,
     ) -> None:
         self._telegram_client = telegram_client
         self._capture_planning_orchestrator = capture_planning_orchestrator
         self._workspace_id = workspace_id
         self._unit_of_work_factory = unit_of_work_factory
+        self._agent_loop = agent_loop
 
     def current_offset(self) -> int | None:
         """The next `getUpdates` offset: one past the last confirmed `update_id`, or `None` on a
@@ -125,6 +130,8 @@ class TelegramService:
 
         parsed = parse_capture_text(content)
         if parsed.detected_url is None:
+            if self._agent_loop is not None:
+                return self._answer_via_agent(client, message, content, update.update_id)
             # Ack first, then advance (S11-F03): a failed ack must leave the update pending so
             # the next poll retries it instead of silently dropping the clarification.
             client.send_message(
@@ -155,6 +162,33 @@ class TelegramService:
         client.send_message(message.chat.id, self._result_text(outcome, plan_outcome))
         self._advance_cursor(update.update_id)
         return TelegramUpdateOutcome.PROCESSED
+
+    def _answer_via_agent(
+        self,
+        client: TelegramClient,
+        message: TelegramMessage,
+        content: str,
+        update_id: int,
+    ) -> TelegramUpdateOutcome:
+        """Free-form (non-URL) message with an agent configured: run the bounded graph agent
+        and reply with its final text. A failed agent run must leave the update pending so the
+        next poll retries it instead of silently dropping the user's question."""
+        loop = self._agent_loop
+        if loop is None:  # pragma: no cover - guarded by caller
+            raise AssertionError("agent loop must be configured")
+        actor_name = (
+            message.from_.username
+            if message.from_ and message.from_.username
+            else TELEGRAM_ACTOR_NAME
+        )
+        answer = loop.run(
+            user_message=content,
+            actor_name=actor_name,
+            request_id=str(update_id),
+        )
+        client.send_message(message.chat.id, answer)
+        self._advance_cursor(update_id)
+        return TelegramUpdateOutcome.AGENT_ANSWERED
 
     def _acknowledge_intent(
         self, client: TelegramClient, chat_id: int, parsed: ParsedCaptureText
