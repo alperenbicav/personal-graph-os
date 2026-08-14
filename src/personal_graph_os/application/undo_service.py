@@ -274,10 +274,12 @@ class UndoService:
                 code="snapshot_omitted_oversized",
             )
         if entity_type == _NODE:
-            self._node_service.restore_within(unit_of_work, Node.model_validate(before_state))
+            self._node_service.restore_snapshot_within(
+                unit_of_work, Node.model_validate(before_state)
+            )
             return
         if entity_type == _RESOURCE:
-            self._resource_service.restore_within(
+            self._resource_service.restore_snapshot_within(
                 unit_of_work, Resource.model_validate(before_state)
             )
             return

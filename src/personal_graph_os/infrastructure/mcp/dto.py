@@ -15,13 +15,16 @@ from pydantic import BaseModel
 from personal_graph_os.application.context_pack_service import ContextPackMaterialization
 from personal_graph_os.application.discovery import DiscoveryCandidatePreview, DiscoveryPreview
 from personal_graph_os.domain.activity import ActivityEvent, DiscoveredCandidate, DiscoveryRun
-from personal_graph_os.domain.documents import Document, DocumentVersion
+from personal_graph_os.domain.documents import Collection, Document, DocumentVersion, Tag
+from personal_graph_os.domain.enrichment import RelationProposal
 from personal_graph_os.domain.files import Attachment, FileReference
 from personal_graph_os.domain.graph import Edge, Node
+from personal_graph_os.domain.ingestion import IngestionJob
 from personal_graph_os.domain.resource import Resource
 from personal_graph_os.domain.schema import Workspace
 from personal_graph_os.domain.search import SearchResult
 from personal_graph_os.domain.views import ContextPack
+from personal_graph_os.domain.work_items import WorkItem, WorkItemChecklistItem
 
 # Kept in sync with `gateway.MAX_SERIALIZED_FIELD_BYTES`: a read must honor the same bound a
 # write enforces, so a row created before this bound existed (or written directly via REST)
@@ -288,6 +291,40 @@ class DocumentDTO(BaseModel):
         )
 
 
+class CollectionDTO(BaseModel):
+    id: str
+    workspace_id: str
+    name: str
+    parent_id: str | None
+    created_at: datetime
+
+    @classmethod
+    def from_domain(cls, collection: Collection) -> CollectionDTO:
+        return cls(
+            id=collection.id,
+            workspace_id=collection.workspace_id,
+            name=_bounded_text(collection.name),
+            parent_id=collection.parent_id,
+            created_at=collection.created_at,
+        )
+
+
+class TagDTO(BaseModel):
+    id: str
+    workspace_id: str
+    name: str
+    created_at: datetime
+
+    @classmethod
+    def from_domain(cls, tag: Tag) -> TagDTO:
+        return cls(
+            id=tag.id,
+            workspace_id=tag.workspace_id,
+            name=_bounded_text(tag.name),
+            created_at=tag.created_at,
+        )
+
+
 class DocumentVersionDTO(BaseModel):
     id: str
     document_id: str
@@ -308,17 +345,157 @@ class DocumentVersionDTO(BaseModel):
         )
 
 
+class WorkItemDTO(BaseModel):
+    id: str
+    workspace_id: str
+    node_id: str
+    kind: str
+    work_type: str
+    status: str
+    parent_id: str | None
+    repository_node_id: str | None
+    priority: str | None
+    due_date: str | None
+    assignee: str | None
+    blockers: str | None
+    progress_percent: int | None
+    is_archived: bool
+    source: str
+    title: str
+    body: str
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_work_item_and_node(cls, work_item: WorkItem, node: Node) -> WorkItemDTO:
+        return cls(
+            id=work_item.id,
+            workspace_id=work_item.workspace_id,
+            node_id=work_item.node_id,
+            kind=work_item.kind.value,
+            work_type=work_item.work_type.value,
+            status=work_item.status.value,
+            parent_id=work_item.parent_id,
+            repository_node_id=work_item.repository_node_id,
+            priority=work_item.priority.value if work_item.priority is not None else None,
+            due_date=work_item.due_date.isoformat() if work_item.due_date is not None else None,
+            assignee=work_item.assignee,
+            blockers=work_item.blockers,
+            progress_percent=work_item.progress_percent,
+            is_archived=work_item.is_archived,
+            source=work_item.source,
+            title=_bounded_text(node.title),
+            body=_bounded_text(node.body),
+            created_at=work_item.created_at,
+            updated_at=work_item.updated_at,
+        )
+
+
+class WorkItemChecklistItemDTO(BaseModel):
+    id: str
+    work_item_id: str
+    position: int
+    label: str
+    is_completed: bool
+    created_at: datetime
+
+    @classmethod
+    def from_domain(cls, item: WorkItemChecklistItem) -> WorkItemChecklistItemDTO:
+        return cls(
+            id=item.id,
+            work_item_id=item.work_item_id,
+            position=item.position,
+            label=_bounded_text(item.label),
+            is_completed=item.is_completed,
+            created_at=item.created_at,
+        )
+
+
+class IngestionJobDTO(BaseModel):
+    id: str
+    workspace_id: str
+    source: str
+    source_identifier: str
+    stage: str
+    status: str
+    result_entity_type: str | None
+    result_entity_id: str | None
+    error_message: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_domain(cls, job: IngestionJob) -> IngestionJobDTO:
+        return cls(
+            id=job.id,
+            workspace_id=job.workspace_id,
+            source=job.source,
+            source_identifier=job.source_identifier,
+            stage=job.stage.value,
+            status=job.status.value,
+            result_entity_type=job.result_entity_type,
+            result_entity_id=job.result_entity_id,
+            error_message=job.error_message,
+            created_at=job.created_at,
+            updated_at=job.updated_at,
+        )
+
+
+class RelationProposalDTO(BaseModel):
+    id: str
+    workspace_id: str
+    profile_version_id: str
+    source_node_id: str
+    relation_kind: str
+    candidate_label: str
+    confidence: float
+    explanation: str
+    status: str
+    resolved_target_node_id: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_domain(cls, proposal: RelationProposal) -> RelationProposalDTO:
+        return cls(
+            id=proposal.id,
+            workspace_id=proposal.workspace_id,
+            profile_version_id=proposal.profile_version_id,
+            source_node_id=proposal.source_node_id,
+            relation_kind=proposal.relation_kind.value,
+            candidate_label=proposal.candidate_label,
+            confidence=proposal.confidence,
+            explanation=proposal.explanation,
+            status=proposal.status.value,
+            resolved_target_node_id=proposal.resolved_target_node_id,
+            created_at=proposal.created_at,
+            updated_at=proposal.updated_at,
+        )
+
+
 class SearchHitDTO(BaseModel):
-    node: NodeDTO
+    node: NodeDTO | None
     resource: ResourceDTO | None
+    document: DocumentDTO | None
     snippet: str
+    score: float
+    scope: str
+    entity_type: str
+    source: str | None
+    goto: str | None
 
     @classmethod
     def from_domain(cls, result: SearchResult) -> SearchHitDTO:
         return cls(
-            node=NodeDTO.from_domain(result.node),
+            node=NodeDTO.from_domain(result.node) if result.node else None,
             resource=ResourceDTO.from_domain(result.resource) if result.resource else None,
+            document=DocumentDTO.from_domain(result.document) if result.document else None,
             snippet=result.snippet,
+            score=result.score,
+            scope=result.scope.value,
+            entity_type=result.entity_type.value,
+            source=result.source,
+            goto=result.goto,
         )
 
 

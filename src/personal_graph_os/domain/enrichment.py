@@ -607,6 +607,9 @@ class EnrichmentResult(BaseModel):
 class RelationProposalStatus(StrEnum):
     NEEDS_REVIEW = "needs_review"
     AUTO_APPLIED = "auto_applied"
+    # Additive ST-09 value: a proposal the user explicitly declined stays a durable, queryable
+    # record rather than being deleted. The SQL column stores TEXT, so no migration is needed.
+    REJECTED = "rejected"
 
 
 class RelationProposal(BaseModel):

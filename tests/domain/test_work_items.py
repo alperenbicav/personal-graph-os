@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import pytest
 
 from personal_graph_os.domain.errors import InvariantViolationError
-from personal_graph_os.domain.identifiers import NodeId, WorkItemId, WorkspaceId, new_id
+from personal_graph_os.domain.identifiers import (
+    NodeId,
+    WorkItemId,
+    WorkspaceId,
+    new_id,
+)
 from personal_graph_os.domain.work_items import (
     WorkItem,
+    WorkItemChecklistItem,
     WorkItemKind,
+    WorkItemPriority,
     WorkItemStatus,
     WorkItemType,
 )
@@ -80,3 +88,58 @@ def test_repository_association_is_a_stable_node_reference() -> None:
     work_item = _work_item(repository_node_id=repository_node_id)
     assert work_item.repository_node_id == repository_node_id
     assert not hasattr(work_item, "repository_name")
+
+
+def test_work_item_carries_the_planning_fields() -> None:
+    work_item = _work_item(
+        priority=WorkItemPriority.HIGH,
+        due_date=date(2026, 9, 1),
+        assignee="Ada",
+        blockers="Waiting on the corpus refresh",
+        progress_percent=40,
+    )
+    assert work_item.priority is WorkItemPriority.HIGH
+    assert work_item.due_date == date(2026, 9, 1)
+    assert work_item.assignee == "Ada"
+    assert work_item.blockers == "Waiting on the corpus refresh"
+    assert work_item.progress_percent == 40
+
+
+def test_planning_fields_default_to_unset() -> None:
+    work_item = _work_item()
+    assert work_item.priority is None
+    assert work_item.due_date is None
+    assert work_item.assignee is None
+    assert work_item.blockers is None
+    assert work_item.progress_percent is None
+
+
+def test_work_item_rejects_out_of_range_progress() -> None:
+    for invalid in (-1, 101):
+        with pytest.raises(InvariantViolationError):
+            _work_item(progress_percent=invalid)
+
+
+def test_work_item_rejects_blank_assignee_or_blockers() -> None:
+    with pytest.raises(InvariantViolationError):
+        _work_item(assignee="  ")
+    with pytest.raises(InvariantViolationError):
+        _work_item(blockers="  ")
+
+
+def test_checklist_item_requires_a_non_empty_label() -> None:
+    with pytest.raises(InvariantViolationError):
+        WorkItemChecklistItem(work_item_id=WorkItemId(new_id()), position=0, label=" ")
+
+
+def test_checklist_item_rejects_a_negative_position() -> None:
+    with pytest.raises(InvariantViolationError):
+        WorkItemChecklistItem(work_item_id=WorkItemId(new_id()), position=-1, label="x")
+
+
+def test_checklist_item_defaults_to_uncompleted_and_assigns_an_id() -> None:
+    item = WorkItemChecklistItem(work_item_id=WorkItemId(new_id()), position=3, label="Review")
+    assert item.id is not None
+    assert isinstance(item.id, str)
+    assert item.position == 3
+    assert item.is_completed is False

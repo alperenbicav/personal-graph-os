@@ -116,6 +116,42 @@ def test_real_client_lists_all_tools(running_server: _RunningServer) -> None:
         "pgos_get_context_pack",
         "pgos_materialize_context_pack",
         "pgos_delete_context_pack",
+        "pgos_list_work_items",
+        "pgos_get_work_item",
+        "pgos_create_work_item",
+        "pgos_update_work_item",
+        "pgos_reparent_work_item",
+        "pgos_archive_work_item",
+        "pgos_restore_work_item",
+        "pgos_delete_work_item",
+        "pgos_add_checklist_item",
+        "pgos_update_checklist_item",
+        "pgos_remove_checklist_item",
+        "pgos_reorder_checklist_items",
+        "pgos_attach_document",
+        "pgos_detach_document",
+        "pgos_list_documents",
+        "pgos_get_document",
+        "pgos_list_document_versions",
+        "pgos_get_document_version",
+        "pgos_archive_document",
+        "pgos_restore_document",
+        "pgos_delete_document",
+        "pgos_list_collections",
+        "pgos_list_tags",
+        "pgos_restore_resource",
+        "pgos_delete_resource",
+        "pgos_restore_node",
+        "pgos_delete_node",
+        "pgos_disconnect_nodes",
+        "pgos_enrich_resource",
+        "pgos_list_ingestion_jobs",
+        "pgos_get_ingestion_job",
+        "pgos_list_relation_proposals",
+        "pgos_accept_relation_proposal",
+        "pgos_reject_relation_proposal",
+        "pgos_capture",
+        "pgos_import_clickup_item",
     }
 
 
@@ -545,3 +581,113 @@ def test_real_client_is_rejected_before_initialize_with_wrong_token(
 ) -> None:
     with pytest.raises(Exception):  # noqa: B017 - transport surface raises varied client errors
         asyncio.run(_initialize_with_wrong_token(running_server))
+
+
+async def _call_work_item_lifecycle(server: _RunningServer) -> list[types.CallToolResult]:
+    async with _session(server.url, server.token) as session:
+        create = await session.call_tool(
+            "pgos_create_work_item",
+            {
+                "workspace_id": server.workspace_id,
+                "kind": "epic",
+                "work_type": "feature",
+                "title": "Agentic epic via MCP",
+                "body": "Epic body",
+                "status": "backlog",
+                "actor_name": "acceptance-test-agent",
+                "reason": "parity",
+                "request_id": "wi-req-1",
+            },
+        )
+        work_item_id = create.structuredContent["work_item"]["id"]
+        update = await session.call_tool(
+            "pgos_update_work_item",
+            {
+                "work_item_id": work_item_id,
+                "status": "in_progress",
+                "priority": "high",
+                "assignee": "Ada",
+                "progress_percent": 40,
+                "actor_name": "acceptance-test-agent",
+                "reason": "parity",
+                "request_id": "wi-req-2",
+            },
+        )
+        archive = await session.call_tool(
+            "pgos_archive_work_item",
+            {
+                "work_item_id": work_item_id,
+                "actor_name": "acceptance-test-agent",
+                "reason": "parity",
+                "request_id": "wi-req-3",
+            },
+        )
+        listed = await session.call_tool(
+            "pgos_list_work_items", {"workspace_id": server.workspace_id}
+        )
+        delete = await session.call_tool(
+            "pgos_delete_work_item",
+            {
+                "work_item_id": work_item_id,
+                "destructive": True,
+                "confirm_id": work_item_id,
+                "actor_name": "acceptance-test-agent",
+                "reason": "parity",
+                "request_id": "wi-req-4",
+            },
+        )
+        return [create, update, archive, listed, delete]
+
+
+def test_real_client_work_item_lifecycle_is_attributed_and_replay_safe(
+    running_server: _RunningServer,
+) -> None:
+    create, update, archive, listed, delete = asyncio.run(_call_work_item_lifecycle(running_server))
+
+    assert create.isError is False
+    assert create.structuredContent["replayed"] is False
+    work_item_id = create.structuredContent["work_item"]["id"]
+
+    assert update.structuredContent["work_item"]["status"] == "in_progress"
+    assert update.structuredContent["work_item"]["priority"] == "high"
+
+    assert archive.structuredContent["recoverable"] is True
+    assert archive.structuredContent["work_item"]["is_archived"] is True
+
+    assert listed.structuredContent is not None
+    assert all(item["id"] != work_item_id for item in listed.structuredContent["work_items"])
+
+    assert delete.structuredContent["recoverable"] is False
+
+
+def test_real_client_hard_delete_requires_confirmation(running_server: _RunningServer) -> None:
+    async def call_without_confirm(server: _RunningServer) -> types.CallToolResult:
+        async with _session(server.url, server.token) as session:
+            create = await session.call_tool(
+                "pgos_create_work_item",
+                {
+                    "workspace_id": server.workspace_id,
+                    "kind": "task",
+                    "work_type": "fix",
+                    "title": "Delete-guard task",
+                    "actor_name": "acceptance-test-agent",
+                    "reason": "parity",
+                    "request_id": "wi-guard-1",
+                },
+            )
+            work_item_id = create.structuredContent["work_item"]["id"]
+            return await session.call_tool(
+                "pgos_delete_work_item",
+                {
+                    "work_item_id": work_item_id,
+                    "destructive": False,
+                    "confirm_id": work_item_id,
+                    "actor_name": "acceptance-test-agent",
+                    "reason": "parity",
+                    "request_id": "wi-guard-2",
+                },
+            )
+
+    result = asyncio.run(call_without_confirm(running_server))
+    assert result.isError is True
+    assert "destructive" in result.content[0].text

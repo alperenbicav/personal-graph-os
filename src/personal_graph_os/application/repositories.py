@@ -11,6 +11,7 @@ from typing import Protocol
 
 from personal_graph_os.domain.activity import ActivityEvent, DiscoveryRun, IdempotencyReceipt
 from personal_graph_os.domain.canvas import Canvas, CanvasPlacement
+from personal_graph_os.domain.channel_sync import ChannelSyncState
 from personal_graph_os.domain.documents import (
     Collection,
     Document,
@@ -48,6 +49,7 @@ from personal_graph_os.domain.identifiers import (
     ResourceId,
     SavedViewId,
     TagId,
+    WorkItemChecklistItemId,
     WorkItemId,
     WorkspaceId,
 )
@@ -60,9 +62,9 @@ from personal_graph_os.domain.resource import (
     ResourceLifecycleStatus,
 )
 from personal_graph_os.domain.schema import Workspace
-from personal_graph_os.domain.search import SearchEntityType, SearchHit
+from personal_graph_os.domain.search import SearchEntityType, SearchHit, SearchScope
 from personal_graph_os.domain.views import ContextPack, SavedView
-from personal_graph_os.domain.work_items import WorkItem
+from personal_graph_os.domain.work_items import WorkItem, WorkItemChecklistItem
 from personal_graph_os.domain.work_planning import WorkPlanningReceipt
 
 
@@ -81,6 +83,7 @@ class NodeRepository(Protocol):
         self, workspace_id: WorkspaceId, *, include_archived: bool = False
     ) -> tuple[Node, ...]: ...
     def delete(self, node_id: NodeId) -> None: ...
+    def delete_without_commit(self, node_id: NodeId) -> None: ...
 
 
 class EdgeRepository(Protocol):
@@ -134,6 +137,7 @@ class ResourceRepository(Protocol):
         last_activity_since: datetime | None = None,
         last_activity_until: datetime | None = None,
     ) -> tuple[Resource, ...]: ...
+    def delete_without_commit(self, resource_id: ResourceId) -> None: ...
 
 
 class SavedViewRepository(Protocol):
@@ -242,6 +246,7 @@ class DocumentRepository(Protocol):
     def list_by_collection(self, collection_id: CollectionId) -> tuple[Document, ...]: ...
     def save(self, document: Document) -> None: ...
     def save_without_commit(self, document: Document) -> None: ...
+    def delete_without_commit(self, document_id: DocumentId) -> None: ...
 
 
 class DocumentVersionRepository(Protocol):
@@ -282,6 +287,19 @@ class IngestionJobRepository(Protocol):
     def save_without_commit(self, ingestion_job: IngestionJob) -> None: ...
 
 
+class ChannelSyncStateRepository(Protocol):
+    """Per-channel ingress cursor, one row per `(workspace_id, channel)` (EP-2026-012 ST-10/11).
+
+    The upsert is the production write contract (`ClickupService`/`TelegramService` advance the
+    cursor only after a successful import, monotonic `MAX` -- S10-F02). `get` is the resume read:
+    `TelegramPoller` starts each poll at `int(cursor) + 1` (ST-11), so a restart continues from
+    the last confirmed update instead of re-reading the whole backlog.
+    """
+
+    def get(self, workspace_id: WorkspaceId, channel: str) -> ChannelSyncState | None: ...
+    def save_without_commit(self, state: ChannelSyncState) -> None: ...
+
+
 class WorkItemRepository(Protocol):
     def get(self, work_item_id: WorkItemId) -> WorkItem | None: ...
     def get_by_node(self, node_id: NodeId) -> WorkItem | None: ...
@@ -289,6 +307,16 @@ class WorkItemRepository(Protocol):
     def list_by_parent(self, parent_id: WorkItemId) -> tuple[WorkItem, ...]: ...
     def save(self, work_item: WorkItem) -> None: ...
     def save_without_commit(self, work_item: WorkItem) -> None: ...
+    def delete_without_commit(self, work_item_id: WorkItemId) -> None: ...
+
+
+class WorkItemChecklistItemRepository(Protocol):
+    def get(self, item_id: WorkItemChecklistItemId) -> WorkItemChecklistItem | None: ...
+    def list_by_work_item(self, work_item_id: WorkItemId) -> tuple[WorkItemChecklistItem, ...]: ...
+    def save(self, item: WorkItemChecklistItem) -> None: ...
+    def save_without_commit(self, item: WorkItemChecklistItem) -> None: ...
+    def delete(self, item_id: WorkItemChecklistItemId) -> None: ...
+    def delete_without_commit(self, item_id: WorkItemChecklistItemId) -> None: ...
 
 
 class ResourceEnrichmentProfileRepository(Protocol):
@@ -343,6 +371,7 @@ class SearchIndexRepository(Protocol):
         entity_type: SearchEntityType,
         entity_id: str,
         text: str,
+        scope: SearchScope = SearchScope.GRAPH,
     ) -> None: ...
     def remove_document(self, *, entity_type: SearchEntityType, entity_id: str) -> None: ...
     def search(

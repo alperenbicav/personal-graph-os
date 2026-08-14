@@ -115,7 +115,7 @@ def test_an_edit_is_immediately_consistent_across_every_projection(client: TestC
 
     search_results = client.get(
         "/search", params={"workspace_id": workspace["id"], "q": "published"}
-    ).json()
+    ).json()["results"]
     assert [r["node"]["title"] for r in search_results] == ["Published"]
 
     table_rows = client.post(

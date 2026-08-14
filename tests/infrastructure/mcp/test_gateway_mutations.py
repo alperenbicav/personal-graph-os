@@ -23,6 +23,7 @@ from personal_graph_os.application.services import (
     new_workspace,
 )
 from personal_graph_os.application.undo_service import UndoConflictError, UndoService
+from personal_graph_os.application.work_item_service import WorkItemService
 from personal_graph_os.application.workflow_chain import WorkflowChainService, WorkflowChainStep
 from personal_graph_os.domain.activity import IdempotencyReceipt
 from personal_graph_os.domain.documents import DocumentKind
@@ -40,6 +41,7 @@ from personal_graph_os.infrastructure.mcp.gateway import (
 from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteActivityEventRepository,
     SqliteAttachmentRepository,
+    SqliteBm25SearchEngine,
     SqliteCanvasPlacementRepository,
     SqliteCollectionRepository,
     SqliteContextPackRepository,
@@ -55,6 +57,8 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteSavedViewRepository,
     SqliteSearchIndexRepository,
     SqliteTagRepository,
+    SqliteWorkItemChecklistItemRepository,
+    SqliteWorkItemRepository,
     SqliteWorkspaceRepository,
 )
 from personal_graph_os.infrastructure.sqlite.research_unit_of_work import SqliteResearchUnitOfWork
@@ -122,7 +126,12 @@ def _build_gateway(sqlite_connection: sqlite3.Connection, tmp_path: Path):
         lambda: SqliteResearchUnitOfWork(sqlite_connection),
         search_index=search_index_repository,
     )
-    search_service = SearchService(node_repository, resource_repository, search_index_repository)
+    search_service = SearchService(
+        node_repository,
+        resource_repository,
+        SqliteDocumentRepository(sqlite_connection),
+        SqliteBm25SearchEngine(sqlite_connection),
+    )
     file_service = FileService(
         node_repository,
         attachment_repository,
@@ -151,6 +160,12 @@ def _build_gateway(sqlite_connection: sqlite3.Connection, tmp_path: Path):
         context_pack_repository,
     )
     activity_service = ActivityService(SqliteActivityEventRepository(sqlite_connection))
+    work_item_service = WorkItemService(
+        workspace_repository,
+        SqliteWorkItemRepository(sqlite_connection),
+        SqliteWorkItemChecklistItemRepository(sqlite_connection),
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
+    )
     document_service = DocumentService(
         workspace_repository,
         SqliteDocumentRepository(sqlite_connection),
@@ -177,6 +192,10 @@ def _build_gateway(sqlite_connection: sqlite3.Connection, tmp_path: Path):
         context_pack_service=context_pack_service,
         activity_service=activity_service,
         document_service=document_service,
+        work_item_service=work_item_service,
+        enrichment_service=None,
+        extraction_service=None,
+        capture_planning_orchestrator=None,
         unit_of_work_factory=lambda: SqliteResearchUnitOfWork(sqlite_connection),
     )
     return {

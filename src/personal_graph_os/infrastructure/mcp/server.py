@@ -13,6 +13,7 @@ import json
 import sqlite3
 import threading
 from collections.abc import Awaitable, Callable
+from datetime import date
 from typing import TypeVar
 
 import anyio
@@ -27,6 +28,7 @@ from starlette.types import Receive, Scope, Send
 from personal_graph_os.application.discovery import DiscoveryCandidateInput
 from personal_graph_os.application.workflow_chain import WorkflowChainStep
 from personal_graph_os.domain.documents import DocumentKind
+from personal_graph_os.domain.enrichment import RelationProposalStatus
 from personal_graph_os.domain.identifiers import (
     ActivityEventId,
     CollectionId,
@@ -34,13 +36,23 @@ from personal_graph_os.domain.identifiers import (
     DocumentId,
     EdgeId,
     EdgeTypeId,
+    IngestionJobId,
     NodeId,
     NodeTypeId,
+    RelationProposalId,
     ResourceId,
     StatusDefinitionId,
+    WorkItemChecklistItemId,
+    WorkItemId,
     WorkspaceId,
 )
 from personal_graph_os.domain.resource import ResourceKind, ResourceLifecycleStatus
+from personal_graph_os.domain.work_items import (
+    WorkItemKind,
+    WorkItemPriority,
+    WorkItemStatus,
+    WorkItemType,
+)
 from personal_graph_os.infrastructure.mcp.gateway import (
     MAX_CONTEXT_PACK_OBJECTS,
     MAX_CONTEXT_PACK_TOKEN_LIMIT,
@@ -149,12 +161,18 @@ _TOOLS = (
     ),
     Tool(
         name="pgos_search",
-        description="Full-text search over a workspace's nodes and resources.",
+        description="Full-text search over a workspace's nodes, resources, and wiki documents, "
+        "optionally scoped to one tab (all/wiki/tasks/research/repositories/graph).",
         inputSchema={
             "type": "object",
             "properties": {
                 "workspace_id": {"type": "string"},
                 "query_text": {"type": "string"},
+                "scope": {
+                    "type": "string",
+                    "enum": ["all", "wiki", "tasks", "research", "repositories", "graph"],
+                    "default": "all",
+                },
                 "include_archived": {"type": "boolean", "default": False},
                 "limit": {
                     "type": "integer",
@@ -513,6 +531,417 @@ _CONTEXT_PACK_TOOLS = (
 
 _TOOLS = _TOOLS + _CONTEXT_PACK_TOOLS
 
+_WORK_ITEM_KIND_VALUES = ("epic", "story", "task")
+_WORK_ITEM_TYPE_VALUES = ("feature", "fix", "refactor", "research", "ops", "docs")
+_WORK_ITEM_STATUS_VALUES = (
+    "backlog",
+    "planned",
+    "in_progress",
+    "in_review",
+    "done",
+    "production",
+    "blocked",
+    "cancelled",
+)
+_WORK_ITEM_PRIORITY_VALUES = ("low", "medium", "high", "critical")
+
+_ST09_TOOLS = (
+    Tool(
+        name="pgos_list_work_items",
+        description="List a workspace's work items (Epics/Stories/Tasks), archived-aware, bounded.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string"},
+                "include_archived": {"type": "boolean", "default": False},
+                "limit": _limit_property(MAX_LIST_LIMIT),
+            },
+            "required": ["workspace_id"],
+            "additionalProperties": False,
+        },
+    ),
+    Tool(
+        name="pgos_get_work_item",
+        description="Get one work item by id, with its title/body.",
+        inputSchema={
+            "type": "object",
+            "properties": {"work_item_id": {"type": "string"}},
+            "required": ["work_item_id"],
+            "additionalProperties": False,
+        },
+    ),
+    _mutating_tool(
+        "pgos_create_work_item",
+        "Create a work item (Epic/Story/Task) with its backing node. Attributed, idempotent.",
+        properties={
+            "workspace_id": {"type": "string"},
+            "kind": {"type": "string", "enum": list(_WORK_ITEM_KIND_VALUES)},
+            "work_type": {"type": "string", "enum": list(_WORK_ITEM_TYPE_VALUES)},
+            "title": {"type": "string", "maxLength": 300},
+            "body": {"type": "string", "maxLength": MAX_SERIALIZED_FIELD_BYTES},
+            "status": {
+                "type": "string",
+                "enum": list(_WORK_ITEM_STATUS_VALUES),
+                "default": "backlog",
+            },
+            "parent_id": {"type": "string"},
+            "repository_node_id": {"type": "string"},
+        },
+        required=("workspace_id", "kind", "work_type", "title"),
+    ),
+    _mutating_tool(
+        "pgos_update_work_item",
+        "Update a work item's type/status/priority/due date/assignee/blockers/progress/repository. "
+        "Attributed and idempotent by request_id.",
+        properties={
+            "work_item_id": {"type": "string"},
+            "work_type": {"type": "string", "enum": list(_WORK_ITEM_TYPE_VALUES)},
+            "status": {"type": "string", "enum": list(_WORK_ITEM_STATUS_VALUES)},
+            "priority": {"type": "string", "enum": list(_WORK_ITEM_PRIORITY_VALUES)},
+            "due_date": {"type": "string", "format": "date"},
+            "assignee": {"type": "string", "maxLength": 300},
+            "blockers": {"type": "string", "maxLength": 1000},
+            "progress_percent": {"type": "integer", "minimum": 0, "maximum": 100},
+            "repository_node_id": {"type": "string"},
+            "clear_priority": {"type": "boolean", "default": False},
+            "clear_due_date": {"type": "boolean", "default": False},
+            "clear_assignee": {"type": "boolean", "default": False},
+            "clear_blockers": {"type": "boolean", "default": False},
+            "clear_progress_percent": {"type": "boolean", "default": False},
+            "clear_repository_node_id": {"type": "boolean", "default": False},
+        },
+        required=("work_item_id",),
+    ),
+    _mutating_tool(
+        "pgos_reparent_work_item",
+        "Move a work item under a new parent (or the hierarchy root with parent_id omitted). "
+        "The child kind must be legal for the new parent. Attributed and idempotent by request_id.",
+        properties={
+            "work_item_id": {"type": "string"},
+            "parent_id": {"type": "string"},
+        },
+        required=("work_item_id",),
+    ),
+    _mutating_tool(
+        "pgos_archive_work_item",
+        "Soft-archive a work item (recoverable). Attributed and idempotent by request_id.",
+        properties={"work_item_id": {"type": "string"}},
+        required=("work_item_id",),
+    ),
+    _mutating_tool(
+        "pgos_restore_work_item",
+        "Un-archive a work item. Attributed and idempotent by request_id.",
+        properties={"work_item_id": {"type": "string"}},
+        required=("work_item_id",),
+    ),
+    _mutating_tool(
+        "pgos_delete_work_item",
+        "Hard-delete a work item and its backing node (irrecoverable). Requires destructive: true "
+        "and confirm_id equal to the work item id. Attributed and idempotent by request_id.",
+        properties={
+            "work_item_id": {"type": "string"},
+            "destructive": {"type": "boolean"},
+            "confirm_id": {"type": "string"},
+        },
+        required=("work_item_id", "destructive", "confirm_id"),
+    ),
+    _mutating_tool(
+        "pgos_add_checklist_item",
+        "Append a checklist item to a work item. Attributed and idempotent by request_id.",
+        properties={
+            "work_item_id": {"type": "string"},
+            "label": {"type": "string", "maxLength": 300},
+        },
+        required=("work_item_id", "label"),
+    ),
+    _mutating_tool(
+        "pgos_update_checklist_item",
+        "Edit a checklist item's label and/or completion flag. Attributed, idempotent.",
+        properties={
+            "checklist_item_id": {"type": "string"},
+            "label": {"type": "string", "maxLength": 300},
+            "is_completed": {"type": "boolean"},
+        },
+        required=("checklist_item_id",),
+    ),
+    _mutating_tool(
+        "pgos_remove_checklist_item",
+        "Delete a checklist item and renumber the rest. Attributed and idempotent by request_id.",
+        properties={"checklist_item_id": {"type": "string"}},
+        required=("checklist_item_id",),
+    ),
+    _mutating_tool(
+        "pgos_reorder_checklist_items",
+        "Reposition a work item.s checklist items to the given dense order.",
+        properties={
+            "work_item_id": {"type": "string"},
+            "ordered_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": 200,
+            },
+        },
+        required=("work_item_id", "ordered_ids"),
+    ),
+    _mutating_tool(
+        "pgos_attach_document",
+        "Link a Wiki document to a work item. Idempotent; attributed by request_id.",
+        properties={
+            "work_item_id": {"type": "string"},
+            "document_id": {"type": "string"},
+        },
+        required=("work_item_id", "document_id"),
+    ),
+    _mutating_tool(
+        "pgos_detach_document",
+        "Unlink a Wiki document from a work item. Idempotent; attributed by request_id.",
+        properties={
+            "work_item_id": {"type": "string"},
+            "document_id": {"type": "string"},
+        },
+        required=("work_item_id", "document_id"),
+    ),
+    Tool(
+        name="pgos_list_documents",
+        description="List a workspace's Wiki documents, archived-aware, bounded.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string"},
+                "include_archived": {"type": "boolean", "default": False},
+                "limit": _limit_property(MAX_LIST_LIMIT),
+            },
+            "required": ["workspace_id"],
+            "additionalProperties": False,
+        },
+    ),
+    Tool(
+        name="pgos_get_document",
+        description="Get one Wiki document by id.",
+        inputSchema={
+            "type": "object",
+            "properties": {"document_id": {"type": "string"}},
+            "required": ["document_id"],
+            "additionalProperties": False,
+        },
+    ),
+    Tool(
+        name="pgos_list_document_versions",
+        description="List a Wiki document's immutable versions.",
+        inputSchema={
+            "type": "object",
+            "properties": {"document_id": {"type": "string"}},
+            "required": ["document_id"],
+            "additionalProperties": False,
+        },
+    ),
+    Tool(
+        name="pgos_get_document_version",
+        description="Get one Wiki document version by number.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string"},
+                "version_number": {"type": "integer", "minimum": 1},
+            },
+            "required": ["document_id", "version_number"],
+            "additionalProperties": False,
+        },
+    ),
+    _mutating_tool(
+        "pgos_archive_document",
+        "Soft-archive a Wiki document (recoverable). Attributed and idempotent by request_id.",
+        properties={"document_id": {"type": "string"}},
+        required=("document_id",),
+    ),
+    _mutating_tool(
+        "pgos_restore_document",
+        "Un-archive a Wiki document. Attributed and idempotent by request_id.",
+        properties={"document_id": {"type": "string"}},
+        required=("document_id",),
+    ),
+    _mutating_tool(
+        "pgos_delete_document",
+        "Hard-delete a Wiki document (irrecoverable). Requires destructive: true and confirm_id "
+        "equal to the document id. Attributed and idempotent by request_id.",
+        properties={
+            "document_id": {"type": "string"},
+            "destructive": {"type": "boolean"},
+            "confirm_id": {"type": "string"},
+        },
+        required=("document_id", "destructive", "confirm_id"),
+    ),
+    Tool(
+        name="pgos_list_collections",
+        description="List a workspace's Wiki collections.",
+        inputSchema={
+            "type": "object",
+            "properties": {"workspace_id": {"type": "string"}},
+            "required": ["workspace_id"],
+            "additionalProperties": False,
+        },
+    ),
+    Tool(
+        name="pgos_list_tags",
+        description="List a workspace's Wiki tags.",
+        inputSchema={
+            "type": "object",
+            "properties": {"workspace_id": {"type": "string"}},
+            "required": ["workspace_id"],
+            "additionalProperties": False,
+        },
+    ),
+    _mutating_tool(
+        "pgos_restore_resource",
+        "Un-archive a research resource (returns it to the inbox flow). Attributed, idempotent.",
+        properties={"resource_id": {"type": "string"}},
+        required=("resource_id",),
+    ),
+    _mutating_tool(
+        "pgos_delete_resource",
+        "Hard-delete a research resource and its backing node (irrecoverable). Requires "
+        "destructive: true and confirm_id equal to the resource id. Attributed and idempotent.",
+        properties={
+            "resource_id": {"type": "string"},
+            "destructive": {"type": "boolean"},
+            "confirm_id": {"type": "string"},
+        },
+        required=("resource_id", "destructive", "confirm_id"),
+    ),
+    _mutating_tool(
+        "pgos_restore_node",
+        "Un-archive a node. Attributed and idempotent by request_id.",
+        properties={"node_id": {"type": "string"}},
+        required=("node_id",),
+    ),
+    _mutating_tool(
+        "pgos_delete_node",
+        "Hard-delete a node and everything cascading from it (irrecoverable). Requires "
+        "destructive: true and confirm_id equal to the node id. Attributed and idempotent.",
+        properties={
+            "node_id": {"type": "string"},
+            "destructive": {"type": "boolean"},
+            "confirm_id": {"type": "string"},
+        },
+        required=("node_id", "destructive", "confirm_id"),
+    ),
+    _mutating_tool(
+        "pgos_disconnect_nodes",
+        "Hard-delete one edge between two nodes (irrecoverable). Attributed, idempotent.",
+        properties={"edge_id": {"type": "string"}},
+        required=("edge_id",),
+    ),
+    _mutating_tool(
+        "pgos_enrich_resource",
+        "Run extraction + enrichment on a resource, persisting a profile version and relation "
+        "proposals. Fails closed when no provider is configured. Attributed and idempotent.",
+        properties={"resource_id": {"type": "string"}},
+        required=("resource_id",),
+    ),
+    Tool(
+        name="pgos_list_ingestion_jobs",
+        description="List a workspace's ingestion/capture jobs, most recent first, bounded.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string"},
+                "limit": _limit_property(MAX_LIST_LIMIT),
+            },
+            "required": ["workspace_id"],
+            "additionalProperties": False,
+        },
+    ),
+    Tool(
+        name="pgos_get_ingestion_job",
+        description="Get one ingestion/capture job by id.",
+        inputSchema={
+            "type": "object",
+            "properties": {"job_id": {"type": "string"}},
+            "required": ["job_id"],
+            "additionalProperties": False,
+        },
+    ),
+    Tool(
+        name="pgos_list_relation_proposals",
+        description="List a workspace's relation-review proposals (needs_review by default).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string"},
+                "status": {
+                    "type": "string",
+                    "enum": ["needs_review", "auto_applied", "rejected"],
+                },
+                "limit": _limit_property(MAX_LIST_LIMIT),
+            },
+            "required": ["workspace_id"],
+            "additionalProperties": False,
+        },
+    ),
+    _mutating_tool(
+        "pgos_accept_relation_proposal",
+        "Accept a relation proposal: connect its source node to the given target node and mark "
+        "it applied. Attributed and idempotent by request_id.",
+        properties={
+            "proposal_id": {"type": "string"},
+            "target_node_id": {"type": "string"},
+        },
+        required=("proposal_id", "target_node_id"),
+    ),
+    _mutating_tool(
+        "pgos_reject_relation_proposal",
+        "Reject a relation proposal (kept as a durable rejected record). Attributed, idempotent.",
+        properties={"proposal_id": {"type": "string"}},
+        required=("proposal_id",),
+    ),
+    _mutating_tool(
+        "pgos_capture",
+        "Capture a URL/text/external item as a resource or document (save_raw never plans; "
+        "plan_work plans only when a provider is configured). Attributed; request_id is the "
+        "idempotency key the capture service also uses.",
+        properties={
+            "workspace_id": {"type": "string"},
+            "source": {"type": "string", "maxLength": 200},
+            "payload_kind": {
+                "type": "string",
+                "enum": ["url", "file_reference", "external_item", "text"],
+            },
+            "url": {"type": "string", "maxLength": 2000},
+            "text": {"type": "string", "maxLength": 40000},
+            "intent": {
+                "type": "string",
+                "enum": ["save_raw", "plan_work", "enrich"],
+                "default": "save_raw",
+            },
+            "title": {"type": "string", "maxLength": 300},
+            "repository_node_id": {"type": "string"},
+        },
+        required=("workspace_id", "source", "payload_kind"),
+    ),
+)
+
+_ST10_TOOLS = (
+    _mutating_tool(
+        "pgos_import_clickup_item",
+        "Import one user-selected ClickUp task through the shared capture pipeline (raw or "
+        "planned, identically to pgos_capture). task_id is the idempotency key. Attributed; "
+        "no write is ever sent back to ClickUp.",
+        properties={
+            "workspace_id": {"type": "string"},
+            "task_id": {"type": "string", "maxLength": 200},
+            "intent": {
+                "type": "string",
+                "enum": ["save_raw", "plan_work"],
+                "default": "save_raw",
+            },
+            "repository_node_id": {"type": "string"},
+        },
+        required=("workspace_id", "task_id"),
+    ),
+)
+
+_TOOLS = _TOOLS + _ST09_TOOLS + _ST10_TOOLS
+
 _ToolHandler = Callable[[AgentGatewayService, dict[str, object]], dict[str, object]]
 
 
@@ -587,13 +1016,13 @@ def _list_edges(gateway: AgentGatewayService, arguments: dict[str, object]) -> d
 
 
 def _search(gateway: AgentGatewayService, arguments: dict[str, object]) -> dict[str, object]:
-    hits = gateway.search(
+    return gateway.search(
         WorkspaceId(str(arguments["workspace_id"])),
         str(arguments["query_text"]),
         include_archived=bool(arguments.get("include_archived", False)),
+        scope=_optional_str_arg(arguments, "scope") or "all",
         limit=_int_arg(arguments, "limit", MAX_SEARCH_LIMIT),
     )
-    return {"hits": [hit.model_dump(mode="json") for hit in hits]}
 
 
 def _list_resources(
@@ -918,6 +1347,460 @@ def _delete_context_pack(
     )
 
 
+def _list_work_items(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    items = gateway.list_work_items(
+        WorkspaceId(_str_arg(arguments, "workspace_id")),
+        include_archived=bool(arguments.get("include_archived", False)),
+    )
+    return {"work_items": [item.model_dump(mode="json") for item in items]}
+
+
+def _get_work_item(gateway: AgentGatewayService, arguments: dict[str, object]) -> dict[str, object]:
+    return gateway.get_work_item(WorkItemId(_str_arg(arguments, "work_item_id"))).model_dump(
+        mode="json"
+    )
+
+
+def _create_work_item(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    kind = WorkItemKind(_str_arg(arguments, "kind"))
+    work_type = WorkItemType(_str_arg(arguments, "work_type"))
+    parent_id = _optional_str_arg(arguments, "parent_id")
+    repository_node_id = _optional_str_arg(arguments, "repository_node_id")
+    return gateway.create_work_item(
+        WorkspaceId(_str_arg(arguments, "workspace_id")),
+        kind=kind,
+        work_type=work_type,
+        title=_str_arg(arguments, "title"),
+        body=_optional_str_arg(arguments, "body") or "",
+        status=WorkItemStatus(_optional_str_arg(arguments, "status") or "backlog"),
+        parent_id=WorkItemId(parent_id) if parent_id is not None else None,
+        repository_node_id=NodeId(repository_node_id) if repository_node_id is not None else None,
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _update_work_item(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    work_type = _optional_str_arg(arguments, "work_type")
+    status = _optional_str_arg(arguments, "status")
+    priority = _optional_str_arg(arguments, "priority")
+    due_date = _optional_str_arg(arguments, "due_date")
+    return gateway.update_work_item(
+        WorkItemId(_str_arg(arguments, "work_item_id")),
+        work_type=WorkItemType(work_type) if work_type else None,
+        status=WorkItemStatus(status) if status else None,
+        priority=WorkItemPriority(priority) if priority else None,
+        due_date=date.fromisoformat(due_date) if due_date else None,
+        assignee=_optional_str_arg(arguments, "assignee"),
+        blockers=_optional_str_arg(arguments, "blockers"),
+        progress_percent=_optional_int_arg(arguments, "progress_percent"),
+        repository_node_id=(
+            NodeId(_str_arg(arguments, "repository_node_id"))
+            if arguments.get("repository_node_id") is not None
+            else None
+        ),
+        clear_priority=bool(arguments.get("clear_priority", False)),
+        clear_due_date=bool(arguments.get("clear_due_date", False)),
+        clear_assignee=bool(arguments.get("clear_assignee", False)),
+        clear_blockers=bool(arguments.get("clear_blockers", False)),
+        clear_progress_percent=bool(arguments.get("clear_progress_percent", False)),
+        clear_repository_node_id=bool(arguments.get("clear_repository_node_id", False)),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _reparent_work_item(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    parent_id = _optional_str_arg(arguments, "parent_id")
+    return gateway.reparent_work_item(
+        WorkItemId(_str_arg(arguments, "work_item_id")),
+        parent_id=WorkItemId(parent_id) if parent_id is not None else None,
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _archive_work_item(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.archive_work_item(
+        WorkItemId(_str_arg(arguments, "work_item_id")),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _restore_work_item(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.restore_work_item(
+        WorkItemId(_str_arg(arguments, "work_item_id")),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _delete_work_item(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.delete_work_item(
+        WorkItemId(_str_arg(arguments, "work_item_id")),
+        destructive=bool(arguments["destructive"]),
+        confirm_id=_optional_str_arg(arguments, "confirm_id"),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _add_checklist_item(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.add_checklist_item(
+        WorkItemId(_str_arg(arguments, "work_item_id")),
+        label=_str_arg(arguments, "label"),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _update_checklist_item(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.update_checklist_item(
+        WorkItemChecklistItemId(_str_arg(arguments, "checklist_item_id")),
+        label=_optional_str_arg(arguments, "label"),
+        is_completed=_optional_bool_arg(arguments, "is_completed"),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _remove_checklist_item(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.remove_checklist_item(
+        WorkItemChecklistItemId(_str_arg(arguments, "checklist_item_id")),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _reorder_checklist_items(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    ordered_ids = arguments["ordered_ids"]
+    if not isinstance(ordered_ids, list):
+        raise ValueError("ordered_ids must be an array of strings")
+    return gateway.reorder_checklist_items(
+        WorkItemId(_str_arg(arguments, "work_item_id")),
+        ordered_ids=tuple(WorkItemChecklistItemId(str(item)) for item in ordered_ids),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _attach_document(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.attach_document(
+        WorkItemId(_str_arg(arguments, "work_item_id")),
+        document_id=DocumentId(_str_arg(arguments, "document_id")),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _detach_document(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.detach_document(
+        WorkItemId(_str_arg(arguments, "work_item_id")),
+        document_id=DocumentId(_str_arg(arguments, "document_id")),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _list_documents(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    documents = gateway.list_documents(
+        WorkspaceId(_str_arg(arguments, "workspace_id")),
+        include_archived=bool(arguments.get("include_archived", False)),
+    )
+    return {"documents": [document.model_dump(mode="json") for document in documents]}
+
+
+def _get_document(gateway: AgentGatewayService, arguments: dict[str, object]) -> dict[str, object]:
+    return gateway.get_document(DocumentId(_str_arg(arguments, "document_id"))).model_dump(
+        mode="json"
+    )
+
+
+def _list_document_versions(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    versions = gateway.list_document_versions(DocumentId(_str_arg(arguments, "document_id")))
+    return {"versions": [version.model_dump(mode="json") for version in versions]}
+
+
+def _get_document_version(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    return gateway.get_document_version(
+        DocumentId(_str_arg(arguments, "document_id")),
+        version_number=_int_arg(arguments, "version_number", 1),
+    ).model_dump(mode="json")
+
+
+def _archive_document(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.archive_document(
+        DocumentId(_str_arg(arguments, "document_id")),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _restore_document(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.restore_document(
+        DocumentId(_str_arg(arguments, "document_id")),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _delete_document(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.delete_document(
+        DocumentId(_str_arg(arguments, "document_id")),
+        destructive=bool(arguments["destructive"]),
+        confirm_id=_optional_str_arg(arguments, "confirm_id"),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _list_collections(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    collections = gateway.list_collections(WorkspaceId(_str_arg(arguments, "workspace_id")))
+    return {"collections": [collection.model_dump(mode="json") for collection in collections]}
+
+
+def _list_tags(gateway: AgentGatewayService, arguments: dict[str, object]) -> dict[str, object]:
+    tags = gateway.list_tags(WorkspaceId(_str_arg(arguments, "workspace_id")))
+    return {"tags": [tag.model_dump(mode="json") for tag in tags]}
+
+
+def _restore_resource(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.restore_resource(
+        ResourceId(_str_arg(arguments, "resource_id")),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _delete_resource(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.delete_resource(
+        ResourceId(_str_arg(arguments, "resource_id")),
+        destructive=bool(arguments["destructive"]),
+        confirm_id=_optional_str_arg(arguments, "confirm_id"),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _restore_node(gateway: AgentGatewayService, arguments: dict[str, object]) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.restore_node(
+        NodeId(_str_arg(arguments, "node_id")),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _delete_node(gateway: AgentGatewayService, arguments: dict[str, object]) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.delete_node(
+        NodeId(_str_arg(arguments, "node_id")),
+        destructive=bool(arguments["destructive"]),
+        confirm_id=_optional_str_arg(arguments, "confirm_id"),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _disconnect_nodes(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.disconnect_edge(
+        EdgeId(_str_arg(arguments, "edge_id")),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _enrich_resource(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.enrich_resource(
+        ResourceId(_str_arg(arguments, "resource_id")),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _list_ingestion_jobs(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    jobs = gateway.list_ingestion_jobs(
+        WorkspaceId(_str_arg(arguments, "workspace_id")),
+        limit=_int_arg(arguments, "limit", MAX_LIST_LIMIT),
+    )
+    return {"jobs": [job.model_dump(mode="json") for job in jobs]}
+
+
+def _get_ingestion_job(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    return gateway.get_ingestion_job(IngestionJobId(_str_arg(arguments, "job_id"))).model_dump(
+        mode="json"
+    )
+
+
+def _list_relation_proposals(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    status = _optional_str_arg(arguments, "status")
+    proposals = gateway.list_relation_proposals(
+        WorkspaceId(_str_arg(arguments, "workspace_id")),
+        status=RelationProposalStatus(status) if status else None,
+        limit=_int_arg(arguments, "limit", MAX_LIST_LIMIT),
+    )
+    return {"proposals": [proposal.model_dump(mode="json") for proposal in proposals]}
+
+
+def _accept_relation_proposal(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.accept_relation_proposal(
+        RelationProposalId(_str_arg(arguments, "proposal_id")),
+        target_node_id=NodeId(_str_arg(arguments, "target_node_id")),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _reject_relation_proposal(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.reject_relation_proposal(
+        RelationProposalId(_str_arg(arguments, "proposal_id")),
+        actor_name=actor_name,
+        reason=reason,
+        request_id=request_id,
+    )
+
+
+def _capture(gateway: AgentGatewayService, arguments: dict[str, object]) -> dict[str, object]:
+    actor_name, reason, request_id = _attribution_args(arguments)
+    return gateway.capture(
+        WorkspaceId(_str_arg(arguments, "workspace_id")),
+        source=_str_arg(arguments, "source"),
+        request_id=request_id,
+        actor_name=actor_name,
+        payload_kind=_str_arg(arguments, "payload_kind"),
+        url=_optional_str_arg(arguments, "url"),
+        text=_optional_str_arg(arguments, "text"),
+        intent=_optional_str_arg(arguments, "intent") or "save_raw",
+        title=_optional_str_arg(arguments, "title"),
+        repository_node_id=(
+            NodeId(_str_arg(arguments, "repository_node_id"))
+            if arguments.get("repository_node_id") is not None
+            else None
+        ),
+        reason=reason,
+    )
+
+
+def _import_clickup_item(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    actor_name, reason, _request_id = _attribution_args(arguments)
+    return gateway.import_clickup_item(
+        WorkspaceId(_str_arg(arguments, "workspace_id")),
+        task_id=_str_arg(arguments, "task_id"),
+        intent=_optional_str_arg(arguments, "intent") or "save_raw",
+        actor_name=actor_name,
+        repository_node_id=(
+            NodeId(_str_arg(arguments, "repository_node_id"))
+            if arguments.get("repository_node_id") is not None
+            else None
+        ),
+        reason=reason,
+    )
+
+
 _HANDLERS: dict[str, _ToolHandler] = {
     "pgos_get_workspace": _get_workspace,
     "pgos_list_nodes": _list_nodes,
@@ -945,6 +1828,42 @@ _HANDLERS: dict[str, _ToolHandler] = {
     "pgos_get_context_pack": _get_context_pack,
     "pgos_materialize_context_pack": _materialize_context_pack,
     "pgos_delete_context_pack": _delete_context_pack,
+    "pgos_list_work_items": _list_work_items,
+    "pgos_get_work_item": _get_work_item,
+    "pgos_create_work_item": _create_work_item,
+    "pgos_update_work_item": _update_work_item,
+    "pgos_reparent_work_item": _reparent_work_item,
+    "pgos_archive_work_item": _archive_work_item,
+    "pgos_restore_work_item": _restore_work_item,
+    "pgos_delete_work_item": _delete_work_item,
+    "pgos_add_checklist_item": _add_checklist_item,
+    "pgos_update_checklist_item": _update_checklist_item,
+    "pgos_remove_checklist_item": _remove_checklist_item,
+    "pgos_reorder_checklist_items": _reorder_checklist_items,
+    "pgos_attach_document": _attach_document,
+    "pgos_detach_document": _detach_document,
+    "pgos_list_documents": _list_documents,
+    "pgos_get_document": _get_document,
+    "pgos_list_document_versions": _list_document_versions,
+    "pgos_get_document_version": _get_document_version,
+    "pgos_archive_document": _archive_document,
+    "pgos_restore_document": _restore_document,
+    "pgos_delete_document": _delete_document,
+    "pgos_list_collections": _list_collections,
+    "pgos_list_tags": _list_tags,
+    "pgos_restore_resource": _restore_resource,
+    "pgos_delete_resource": _delete_resource,
+    "pgos_restore_node": _restore_node,
+    "pgos_delete_node": _delete_node,
+    "pgos_disconnect_nodes": _disconnect_nodes,
+    "pgos_enrich_resource": _enrich_resource,
+    "pgos_list_ingestion_jobs": _list_ingestion_jobs,
+    "pgos_get_ingestion_job": _get_ingestion_job,
+    "pgos_list_relation_proposals": _list_relation_proposals,
+    "pgos_accept_relation_proposal": _accept_relation_proposal,
+    "pgos_reject_relation_proposal": _reject_relation_proposal,
+    "pgos_capture": _capture,
+    "pgos_import_clickup_item": _import_clickup_item,
 }
 
 

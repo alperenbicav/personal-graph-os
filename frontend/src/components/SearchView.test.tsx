@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { SearchView } from './SearchView'
-import type { GraphNode, SearchResult } from '../types'
+import type { GraphNode, SearchResponse, SearchResult } from '../types'
 
 function makeNode(id: string, title: string): GraphNode {
   return {
@@ -18,25 +18,42 @@ function makeNode(id: string, title: string): GraphNode {
   }
 }
 
+function makeResult(title: string, id = 'n1'): SearchResult {
+  return {
+    node: makeNode(id, title),
+    resource: null,
+    document: null,
+    snippet: `[${title.split(' ')[0]}] is all you need`,
+    score: 0.5,
+    scope: 'all',
+    entity_type: 'node',
+    source: null,
+    goto: id,
+  }
+}
+
+function page(results: SearchResult[], total: number, offset: number): SearchResponse {
+  return { results, total, has_more: offset + results.length < total, offset }
+}
+
 describe('SearchView', () => {
   it('runs the search on submit and renders a highlighted snippet', async () => {
-    const results: SearchResult[] = [
-      { node: makeNode('n1', 'Attention Is All You Need'), resource: null, snippet: '[Attention] is all you need' },
-    ]
-    const onSearch = vi.fn().mockResolvedValue(results)
+    const onSearch = vi
+      .fn()
+      .mockResolvedValue(page([makeResult('Attention Is All You Need')], 1, 0))
 
     render(<SearchView onSearch={onSearch} selectedNodeId={null} onSelectNode={vi.fn()} />)
 
     fireEvent.change(screen.getByPlaceholderText(/search titles/i), { target: { value: 'attention' } })
     fireEvent.click(screen.getByRole('button', { name: /search/i }))
 
-    await waitFor(() => expect(onSearch).toHaveBeenCalledWith('attention'))
+    await waitFor(() => expect(onSearch).toHaveBeenCalledWith('attention', 'all', 0))
     expect(await screen.findByText('Attention Is All You Need')).toBeInTheDocument()
     expect(screen.getByText('Attention', { selector: 'mark' })).toBeInTheDocument()
   })
 
   it('shows a no-matches message after a search returns nothing', async () => {
-    const onSearch = vi.fn().mockResolvedValue([])
+    const onSearch = vi.fn().mockResolvedValue(page([], 0, 0))
     render(<SearchView onSearch={onSearch} selectedNodeId={null} onSelectNode={vi.fn()} />)
 
     fireEvent.change(screen.getByPlaceholderText(/search titles/i), { target: { value: 'nothing' } })
@@ -47,12 +64,10 @@ describe('SearchView', () => {
 
   it('reports the clicked result node id', async () => {
     const onSelectNode = vi.fn()
-    const results: SearchResult[] = [
-      { node: makeNode('n1', 'Attention Is All You Need'), resource: null, snippet: 'text' },
-    ]
+    const onSearch = vi.fn().mockResolvedValue(page([makeResult('Attention Is All You Need')], 1, 0))
     render(
       <SearchView
-        onSearch={vi.fn().mockResolvedValue(results)}
+        onSearch={onSearch}
         selectedNodeId={null}
         onSelectNode={onSelectNode}
       />,
@@ -63,5 +78,23 @@ describe('SearchView', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /attention is all you need/i }))
     expect(onSelectNode).toHaveBeenCalledWith('n1')
+  })
+
+  it('loads the next page when has_more is set', async () => {
+    const first = page([makeResult('First result', 'n1')], 2, 0)
+    const second = page([makeResult('Second result', 'n2')], 2, 1)
+    const onSearch = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(second)
+
+    render(<SearchView onSearch={onSearch} selectedNodeId={null} onSelectNode={vi.fn()} />)
+
+    fireEvent.change(screen.getByPlaceholderText(/search titles/i), { target: { value: 'match' } })
+    fireEvent.click(screen.getByRole('button', { name: /search/i }))
+
+    const loadMore = await screen.findByRole('button', { name: /load more/i })
+    fireEvent.click(loadMore)
+
+    await waitFor(() => expect(onSearch).toHaveBeenLastCalledWith('match', 'all', 1))
+    expect(await screen.findByText('Second result')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument()
   })
 })

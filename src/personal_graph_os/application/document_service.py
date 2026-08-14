@@ -21,6 +21,7 @@ from personal_graph_os.application.repositories import (
     DocumentRepository,
     DocumentVersionRepository,
     NodeRepository,
+    SearchIndexRepository,
     TagRepository,
     WorkspaceRepository,
 )
@@ -44,6 +45,7 @@ from personal_graph_os.domain.identifiers import (
     TagId,
     WorkspaceId,
 )
+from personal_graph_os.domain.search import SearchEntityType, SearchScope
 
 
 class DocumentNotFoundError(UnknownSchemaReferenceError):
@@ -94,6 +96,8 @@ class DocumentService:
         tags: TagRepository,
         nodes: NodeRepository,
         unit_of_work_factory: Callable[[], ResearchUnitOfWork],
+        *,
+        search_index: SearchIndexRepository | None = None,
     ) -> None:
         self._workspaces = workspaces
         self._documents = documents
@@ -103,6 +107,7 @@ class DocumentService:
         self._tags = tags
         self._nodes = nodes
         self._unit_of_work_factory = unit_of_work_factory
+        self._search_index = search_index
 
     # -- reads ---------------------------------------------------------------------------
 
@@ -136,9 +141,7 @@ class DocumentService:
     def list_backlinks(self, document_id: DocumentId) -> tuple[Document, ...]:
         """Every other document with a `DocumentLink` pointing at `document_id`."""
         self._require_document(document_id)
-        links = self._document_links.list_by_target(
-            DocumentLinkTargetType.DOCUMENT, document_id
-        )
+        links = self._document_links.list_by_target(DocumentLinkTargetType.DOCUMENT, document_id)
         backlinked: list[Document] = []
         for link in links:
             source = self._documents.get(link.document_id)
@@ -256,6 +259,7 @@ class DocumentService:
                 action=MutationAction.CREATED,
                 after_state=document.model_dump(mode="json"),
             )
+        self.index_document_for_search(document.id)
         return document, version
 
     def update_metadata(
@@ -312,7 +316,45 @@ class DocumentService:
                 before_state=before,
                 after_state=updated.model_dump(mode="json"),
             )
+        self.index_document_for_search(updated.id)
         return updated
+
+    def archive(self, document_id: DocumentId) -> Document:
+        """Soft-archive a document (default, recoverable lifecycle; ST-09)."""
+        return self.update_metadata(document_id, is_archived=True)
+
+    def restore(self, document_id: DocumentId) -> Document:
+        """Clear a document's archive flag (ST-09)."""
+        return self.update_metadata(document_id, is_archived=False)
+
+    def update_metadata_within(
+        self,
+        unit_of_work: ResearchUnitOfWork,
+        document_id: DocumentId,
+        *,
+        is_archived: bool,
+    ) -> Document:
+        """Same write as `update_metadata(is_archived=...)`, into a caller-managed, already-open
+        `unit_of_work` (used by the MCP gateway so the activity event and idempotency receipt
+        commit atomically with the mutation)."""
+        document = unit_of_work.documents.get(document_id)
+        if document is None:
+            raise DocumentNotFoundError(f"document {document_id} does not exist")
+        if document.is_archived == is_archived:
+            return document
+        updated = document.model_copy(
+            update={"is_archived": is_archived, "updated_at": datetime.now(UTC)}
+        )
+        unit_of_work.documents.save_without_commit(updated)
+        return updated
+
+    def delete(self, document_id: DocumentId) -> None:
+        """Hard-delete a document; its versions, links, and tag rows cascade (ST-09).
+        Irrecoverable; callers must gate this behind an explicit destructive confirmation."""
+        self._require_document(document_id)
+        with self._unit_of_work_factory() as unit_of_work:
+            unit_of_work.documents.delete_without_commit(document_id)
+        self.remove_document_from_search(document_id)
 
     def edit_body(
         self, document_id: DocumentId, *, body_markdown: str, actor: str
@@ -353,6 +395,7 @@ class DocumentService:
                 before_state={"version_number": latest.version_number},
                 after_state={"version_number": next_version.version_number},
             )
+        self.index_document_for_search(document.id)
         return next_version
 
     def add_link(
@@ -472,6 +515,37 @@ class DocumentService:
         if version is None:
             raise DocumentNotFoundError(f"document {document_id} has no version yet")
         return version
+
+    def index_document_for_search(self, document_id: DocumentId) -> None:
+        """(Re)index a document's title + latest body into the `wiki` search scope (ST-12).
+
+        Safe to call after the writing unit of work has committed (`index_document` owns its own
+        connection transaction), including from the MCP gateway after its `upsert_for_agent_within`
+        unit of work exits.
+        """
+        if self._search_index is None:
+            return
+        document = self._documents.get(document_id)
+        if document is None:
+            return
+        version = self._document_versions.latest_for_document(document_id)
+        if version is None:
+            return
+        self._search_index.index_document(
+            workspace_id=document.workspace_id,
+            entity_type=SearchEntityType.DOCUMENT,
+            entity_id=document.id,
+            text=f"{document.title}\n{version.body_markdown}",
+            scope=SearchScope.WIKI,
+        )
+
+    def remove_document_from_search(self, document_id: DocumentId) -> None:
+        """Remove a document's `wiki` search row (ST-12): called on hard delete."""
+        if self._search_index is None:
+            return
+        self._search_index.remove_document(
+            entity_type=SearchEntityType.DOCUMENT, entity_id=document_id
+        )
 
     def _require_collection(self, collection_id: CollectionId) -> Collection:
         collection = self._collections.get(collection_id)

@@ -12,6 +12,7 @@ from personal_graph_os.application.activity_service import ActivityService
 from personal_graph_os.application.capture_planning_orchestrator import (
     CapturePlanningOrchestrator,
 )
+from personal_graph_os.application.clickup_service import ClickupService
 from personal_graph_os.application.discovery import DiscoveryService
 from personal_graph_os.application.document_service import DocumentService
 from personal_graph_os.application.enrichment_service import EnrichmentService
@@ -42,6 +43,7 @@ from personal_graph_os.application.services import (
     SchemaService,
 )
 from personal_graph_os.application.undo_service import UndoService
+from personal_graph_os.application.work_item_service import WorkItemService
 from personal_graph_os.application.workflow_chain import WorkflowChainService
 from personal_graph_os.domain.identifiers import CanvasId, WorkspaceId
 
@@ -134,6 +136,10 @@ def get_document_service(request: Request) -> DocumentService:
     return request.app.state.document_service
 
 
+def get_work_item_service(request: Request) -> WorkItemService:
+    return request.app.state.work_item_service
+
+
 def get_file_service(request: Request) -> FileService:
     return request.app.state.file_service
 
@@ -160,6 +166,10 @@ def get_enrichment_service(request: Request) -> EnrichmentService | None:
 
 def get_capture_planning_orchestrator(request: Request) -> CapturePlanningOrchestrator:
     return request.app.state.capture_planning_orchestrator
+
+
+def get_clickup_service(request: Request) -> ClickupService:
+    return request.app.state.clickup_service
 
 
 def get_default_workspace_id(request: Request) -> WorkspaceId:

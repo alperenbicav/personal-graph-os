@@ -18,6 +18,7 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteAttachmentRepository,
     SqliteCanvasPlacementRepository,
     SqliteCanvasRepository,
+    SqliteChannelSyncStateRepository,
     SqliteCollectionRepository,
     SqliteContextPackRepository,
     SqliteDiscoveryRunRepository,
@@ -36,6 +37,7 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteResourceRepository,
     SqliteSavedViewRepository,
     SqliteTagRepository,
+    SqliteWorkItemChecklistItemRepository,
     SqliteWorkItemRepository,
     SqliteWorkPlanningReceiptRepository,
     SqliteWorkspaceRepository,
@@ -71,7 +73,9 @@ class SqliteResearchUnitOfWork:
         )
         self.relation_proposals = SqliteRelationProposalRepository(connection)
         self.work_items = SqliteWorkItemRepository(connection)
+        self.work_item_checklist_items = SqliteWorkItemChecklistItemRepository(connection)
         self.work_planning_receipts = SqliteWorkPlanningReceiptRepository(connection)
+        self.channel_sync_state = SqliteChannelSyncStateRepository(connection)
         self._savepoint_count = 0
 
     def __enter__(self) -> SqliteResearchUnitOfWork:

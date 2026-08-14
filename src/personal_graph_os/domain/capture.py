@@ -111,6 +111,11 @@ class CaptureEnvelope(BaseModel):
     # operations for `TEXT` payloads from `text` via `capture_parsing` instead.
     operations: tuple[CaptureOperation, ...] = ()
     title: str | None = None
+    # Channel metadata (ST-10), like `title`: the canonical external link of the captured item
+    # (e.g. the imported ClickUp task's deep link). Stored on the resulting `IngestionJob` as
+    # provenance and included in the idempotency fingerprint, so a changed external link on a
+    # reused request id is a genuine conflict, never a silent replay.
+    external_url: str | None = None
 
     @model_validator(mode="after")
     def _validate(self) -> CaptureEnvelope:
@@ -125,6 +130,7 @@ class CaptureEnvelope(BaseModel):
             ("CaptureEnvelope.external_item_id", self.external_item_id),
             ("CaptureEnvelope.text", self.text),
             ("CaptureEnvelope.title", self.title),
+            ("CaptureEnvelope.external_url", self.external_url),
         ):
             if value is not None:
                 _non_empty(value, field_label)
@@ -146,9 +152,14 @@ class CaptureEnvelope(BaseModel):
             if other_field == required_field:
                 continue
             # `text` may accompany a `url` payload as an evidence/instruction caption (the
-            # Telegram-style "<url> summarize, ..." message); every other combination is
+            # Telegram-style "<url> summarize, ..." message) or an `external_item` payload as
+            # the item's own verbatim body (ST-10: a ClickUp task's name+description, stored
+            # unchanged -- never re-parsed as a channel message). Every other combination is
             # rejected so a caller cannot declare two payloads at once.
-            if other_field == "text" and self.payload_kind is CapturePayloadKind.URL:
+            if other_field == "text" and self.payload_kind in (
+                CapturePayloadKind.URL,
+                CapturePayloadKind.EXTERNAL_ITEM,
+            ):
                 continue
             if getattr(self, other_field) is not None:
                 raise InvariantViolationError(
@@ -188,6 +199,7 @@ class CaptureEnvelope(BaseModel):
                 for operation in self.operations
             ],
             "title": self.title,
+            "external_url": self.external_url,
         }
         serialized = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()

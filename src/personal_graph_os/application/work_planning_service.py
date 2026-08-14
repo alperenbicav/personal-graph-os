@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from personal_graph_os.application.repositories import SearchIndexRepository
 from personal_graph_os.application.research_unit_of_work import ResearchUnitOfWork
 from personal_graph_os.application.work_item_service import WorkItemService
 from personal_graph_os.application.work_planning_adapters import WorkPlanningProvider
@@ -28,7 +29,13 @@ from personal_graph_os.domain.documents import (
     DocumentLinkTargetType,
     DocumentVersion,
 )
+from personal_graph_os.domain.graph import Node
 from personal_graph_os.domain.identifiers import IngestionJobId, NodeId, WorkspaceId
+from personal_graph_os.domain.search import (
+    SearchEntityType,
+    SearchScope,
+    build_node_search_text,
+)
 from personal_graph_os.domain.work_items import WorkItem, WorkItemKind
 from personal_graph_os.domain.work_planning import WorkPlanningReceipt, WorkPlanOutcomeStatus
 
@@ -58,10 +65,13 @@ class WorkPlanningService:
         work_item_service: WorkItemService,
         provider: WorkPlanningProvider,
         unit_of_work_factory: Callable[[], ResearchUnitOfWork],
+        *,
+        search_index: SearchIndexRepository | None = None,
     ) -> None:
         self._work_item_service = work_item_service
         self._provider = provider
         self._unit_of_work_factory = unit_of_work_factory
+        self._search_index = search_index
 
     def plan_from_capture(
         self,
@@ -125,6 +135,8 @@ class WorkPlanningService:
         assert result.plan_title is not None
         assert result.plan_body_markdown is not None
 
+        created_nodes: list[Node] = []
+        created_document: Document | None = None
         with self._unit_of_work_factory() as unit_of_work:
             if ingestion_job_id is not None:
                 existing_receipt = unit_of_work.work_planning_receipts.get_by_ingestion_job(
@@ -144,11 +156,12 @@ class WorkPlanningService:
                 source=actor,
                 repository_node_id=repository_node_id,
             )
+            created_nodes.append(epic_node)
 
             stories: list[WorkItem] = []
             tasks: list[WorkItem] = []
             for proposed_story in result.stories:
-                story, _ = self._work_item_service.create_within(
+                story, story_node = self._work_item_service.create_within(
                     unit_of_work,
                     workspace,
                     node_type,
@@ -160,9 +173,10 @@ class WorkPlanningService:
                     parent_id=epic.id,
                     repository_node_id=repository_node_id,
                 )
+                created_nodes.append(story_node)
                 stories.append(story)
                 for proposed_task in proposed_story.tasks:
-                    task, _ = self._work_item_service.create_within(
+                    task, task_node = self._work_item_service.create_within(
                         unit_of_work,
                         workspace,
                         node_type,
@@ -174,6 +188,7 @@ class WorkPlanningService:
                         parent_id=story.id,
                         repository_node_id=repository_node_id,
                     )
+                    created_nodes.append(task_node)
                     tasks.append(task)
 
             plan_document = Document(
@@ -182,6 +197,7 @@ class WorkPlanningService:
                 title=result.plan_title,
                 source=actor,
             )
+            created_document = plan_document
             plan_version = DocumentVersion(
                 document_id=plan_document.id,
                 version_number=1,
@@ -217,12 +233,45 @@ class WorkPlanningService:
                     )
                 )
 
-            return WorkPlanOutcome(
+            outcome = WorkPlanOutcome(
                 epic=epic,
                 stories=tuple(stories),
                 tasks=tuple(tasks),
                 plan_document=plan_document,
                 plan_version=plan_version,
+            )
+
+        # Index after the unit of work commits (S12-F02 golden fixtures): the work items' nodes go
+        # into the `tasks` scope and the plan document into `wiki`, so planned work is searchable.
+        self._index_created_plan(workspace_id, created_nodes, created_document)
+        return outcome
+
+    def _index_created_plan(
+        self,
+        workspace_id: WorkspaceId,
+        created_nodes: list[Node],
+        created_document: Document | None,
+    ) -> None:
+        if self._search_index is None:
+            return
+        node_type = self._work_item_service.require_node_type(
+            self._work_item_service.require_workspace(workspace_id)
+        )
+        for node in created_nodes:
+            self._search_index.index_document(
+                workspace_id=workspace_id,
+                entity_type=SearchEntityType.NODE,
+                entity_id=node.id,
+                text=build_node_search_text(node, node_type),
+                scope=SearchScope.TASKS,
+            )
+        if created_document is not None:
+            self._search_index.index_document(
+                workspace_id=workspace_id,
+                entity_type=SearchEntityType.DOCUMENT,
+                entity_id=created_document.id,
+                text=created_document.title,
+                scope=SearchScope.WIKI,
             )
 
     def _reconstruct_outcome(

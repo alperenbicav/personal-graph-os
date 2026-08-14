@@ -37,6 +37,7 @@ from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.identifiers import (
     CanvasId,
     CanvasPlacementId,
+    EdgeId,
     EdgeTypeId,
     FieldDefinitionId,
     NodeId,
@@ -68,8 +69,10 @@ from personal_graph_os.domain.schema import (
 )
 from personal_graph_os.domain.search import (
     SearchEntityType,
+    SearchScope,
     build_node_search_text,
     build_resource_search_text,
+    search_scope_for_resource_kind,
 )
 from personal_graph_os.domain.views import ProjectionQuery, SavedView, ViewKind
 
@@ -104,6 +107,10 @@ class StatusDefinitionNotFoundError(UnknownSchemaReferenceError):
 
 class EdgeTypeNotFoundError(UnknownSchemaReferenceError):
     """Raised when an operation references an edge type that does not exist."""
+
+
+class EdgeNotFoundError(UnknownSchemaReferenceError):
+    """Raised when an operation references an edge that does not exist."""
 
 
 class ResourceNotFoundError(UnknownSchemaReferenceError):
@@ -147,14 +154,18 @@ def _validate_object_references(nodes: NodeRepository, node: Node, node_type: No
 
 
 def _index_node_text(
-    search_index: SearchIndexRepository | None, node: Node, node_type: NodeType
+    search_index: SearchIndexRepository | None,
+    node: Node,
+    node_type: NodeType,
+    scope: SearchScope = SearchScope.GRAPH,
 ) -> None:
     """Keep `search_documents` current with a node's own title/body plus its searchable
     (`FieldType.TEXT`) custom-field values.
 
     A resource's identity/kind/takeaways/questions are indexed separately by `ResourceService`
     under the same `entity_id` (see `SqliteSearchIndexRepository`), so this never touches that
-    text and a plain node write can never clobber it.
+    text and a plain node write can never clobber it. `scope` places the row in the matching tab
+    (default `graph` for generic nodes; resource/work-item/document services pass their own).
     """
     if search_index is None:
         return
@@ -163,6 +174,7 @@ def _index_node_text(
         entity_type=SearchEntityType.NODE,
         entity_id=node.id,
         text=build_node_search_text(node, node_type),
+        scope=scope,
     )
 
 
@@ -385,7 +397,64 @@ class NodeService:
             updated_at=datetime.now(UTC),
         )
 
-    def restore_within(self, unit_of_work: ResearchUnitOfWork, target: Node) -> Node:
+    def restore(self, node_id: NodeId) -> Node:
+        """Un-archive a node (ST-09 MCP/REST lifecycle parity)."""
+        existing = self._nodes.get(node_id)
+        if existing is None:
+            raise NodeNotFoundError(f"node {node_id} does not exist")
+        with self._unit_of_work_factory() as unit_of_work:
+            restored = self.restore_within(unit_of_work, node_id)
+            record_activity_event(
+                unit_of_work,
+                workspace_id=existing.workspace_id,
+                context=MutationContext.rest(),
+                entity_type="node",
+                entity_id=existing.id,
+                action=MutationAction.RESTORED,
+                before_state=existing.model_dump(mode="json"),
+                after_state=restored.model_dump(mode="json"),
+            )
+        return restored
+
+    def restore_within(self, unit_of_work: ResearchUnitOfWork, node_id: NodeId) -> Node:
+        """Same write as `restore`, into a caller-managed, already-open `unit_of_work`."""
+        node = unit_of_work.nodes.get(node_id)
+        if node is None:
+            raise NodeNotFoundError(f"node {node_id} does not exist")
+        if not node.is_archived:
+            return node
+        restored = node.model_copy(update={"is_archived": False, "updated_at": datetime.now(UTC)})
+        unit_of_work.nodes.save_without_commit(restored)
+        return restored
+
+    def delete(self, node_id: NodeId) -> None:
+        """Hard-delete a node and everything that cascades from it (ST-09). Irrecoverable;
+        callers must gate this behind an explicit destructive confirmation."""
+        existing = self._nodes.get(node_id)
+        if existing is None:
+            raise NodeNotFoundError(f"node {node_id} does not exist")
+        with self._unit_of_work_factory() as unit_of_work:
+            self.delete_within(unit_of_work, node_id)
+            record_activity_event(
+                unit_of_work,
+                workspace_id=existing.workspace_id,
+                context=MutationContext.rest(),
+                entity_type="node",
+                entity_id=existing.id,
+                action=MutationAction.DELETED,
+                before_state=existing.model_dump(mode="json"),
+            )
+        if self._search_index is not None:
+            self._search_index.remove_document(entity_type=SearchEntityType.NODE, entity_id=node_id)
+
+    def delete_within(self, unit_of_work: ResearchUnitOfWork, node_id: NodeId) -> None:
+        """Same write as `delete`, into a caller-managed, already-open `unit_of_work`."""
+        node = unit_of_work.nodes.get(node_id)
+        if node is None:
+            raise NodeNotFoundError(f"node {node_id} does not exist")
+        unit_of_work.nodes.delete_without_commit(node_id)
+
+    def restore_snapshot_within(self, unit_of_work: ResearchUnitOfWork, target: Node) -> Node:
         """Write back an exact historical `Node` state (used only by undo's compensating
         restore, ST07-F04) after re-validating it against the *current* workspace schema --
         unlike `update_within`, which merges new fields, this reproduces a specific past
@@ -460,6 +529,31 @@ class EdgeService:
         )
         unit_of_work.edges.save_without_commit(edge)
         return edge
+
+    def disconnect(self, edge_id: EdgeId) -> None:
+        """Hard-delete one edge (ST-09). Irrecoverable; callers must gate this behind an
+        explicit destructive confirmation."""
+        existing = self._edges.get(edge_id)
+        if existing is None:
+            raise EdgeNotFoundError(f"edge {edge_id} does not exist")
+        with self._unit_of_work_factory() as unit_of_work:
+            self.disconnect_within(unit_of_work, edge_id)
+            record_activity_event(
+                unit_of_work,
+                workspace_id=existing.workspace_id,
+                context=MutationContext.rest(),
+                entity_type="edge",
+                entity_id=existing.id,
+                action=MutationAction.DELETED,
+                before_state=existing.model_dump(mode="json"),
+            )
+
+    def disconnect_within(self, unit_of_work: ResearchUnitOfWork, edge_id: EdgeId) -> None:
+        """Same write as `disconnect`, into a caller-managed, already-open `unit_of_work`."""
+        edge = unit_of_work.edges.get(edge_id)
+        if edge is None:
+            raise EdgeNotFoundError(f"edge {edge_id} does not exist")
+        unit_of_work.edges.delete_without_commit(edge_id)
 
     def _build_edge(
         self,
@@ -1227,6 +1321,7 @@ class ResourceService:
             entity_type=SearchEntityType.RESOURCE,
             entity_id=resource.node_id,
             text=build_resource_search_text(resource),
+            scope=search_scope_for_resource_kind(resource.kind),
         )
 
     def _require_workspace(self, workspace_id: WorkspaceId) -> Workspace:
@@ -1346,7 +1441,12 @@ class ResourceService:
         """
         workspace = self._require_workspace(resource.workspace_id)
         node_type = self._require_resource_node_type(workspace)
-        _index_node_text(self._search_index, node, node_type)
+        _index_node_text(
+            self._search_index,
+            node,
+            node_type,
+            scope=search_scope_for_resource_kind(resource.kind),
+        )
         self._index_resource_text(resource)
 
     def _write_resource(
@@ -1609,7 +1709,58 @@ class ResourceService:
             unit_of_work, resource_id, lifecycle_status=ResourceLifecycleStatus.ARCHIVED
         )
 
-    def restore_within(self, unit_of_work: ResearchUnitOfWork, target: Resource) -> Resource:
+    def restore(self, resource_id: ResourceId) -> Resource:
+        """Un-archive a resource (ST-09): the archive lifecycle does not remember the prior
+        status, so restore returns it to `INBOX` — a neutral "needs attention" state — rather
+        than guessing a prior stage. A no-op when the resource is not archived."""
+        existing = self._resources.get(resource_id)
+        if existing is None:
+            raise ResourceNotFoundError(f"resource {resource_id} does not exist")
+        if existing.lifecycle_status is not ResourceLifecycleStatus.ARCHIVED:
+            return existing
+        return self.update(resource_id, lifecycle_status=ResourceLifecycleStatus.INBOX)
+
+    def restore_within(
+        self, unit_of_work: ResearchUnitOfWork, resource_id: ResourceId
+    ) -> tuple[Resource, bool]:
+        """Same write as `restore`, into a caller-managed, already-open `unit_of_work`."""
+        return self.update_within(
+            unit_of_work, resource_id, lifecycle_status=ResourceLifecycleStatus.INBOX
+        )
+
+    def delete(self, resource_id: ResourceId) -> None:
+        """Hard-delete a resource and its backing node together (ST-09). Irrecoverable;
+        callers must gate this behind an explicit destructive confirmation."""
+        existing = self._resources.get(resource_id)
+        if existing is None:
+            raise ResourceNotFoundError(f"resource {resource_id} does not exist")
+        with self._unit_of_work_factory() as unit_of_work:
+            self.delete_within(unit_of_work, resource_id)
+            record_activity_event(
+                unit_of_work,
+                workspace_id=existing.workspace_id,
+                context=MutationContext.rest(),
+                entity_type="resource",
+                entity_id=existing.id,
+                action=MutationAction.DELETED,
+                before_state=existing.model_dump(mode="json"),
+            )
+        if self._search_index is not None:
+            self._search_index.remove_document(
+                entity_type=SearchEntityType.RESOURCE, entity_id=resource_id
+            )
+
+    def delete_within(self, unit_of_work: ResearchUnitOfWork, resource_id: ResourceId) -> None:
+        """Same write as `delete`, into a caller-managed, already-open `unit_of_work`."""
+        resource = unit_of_work.resources.get(resource_id)
+        if resource is None:
+            raise ResourceNotFoundError(f"resource {resource_id} does not exist")
+        unit_of_work.resources.delete_without_commit(resource_id)
+        unit_of_work.nodes.delete_without_commit(resource.node_id)
+
+    def restore_snapshot_within(
+        self, unit_of_work: ResearchUnitOfWork, target: Resource
+    ) -> Resource:
         """Write back an exact historical `Resource` state (used only by undo's compensating
         restore, ST07-F04), after confirming the workspace still carries a resource-role node
         type -- the schema-changed-since-event conflict this aggregate can actually have."""

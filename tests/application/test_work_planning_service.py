@@ -22,6 +22,7 @@ from personal_graph_os.domain.work_planning import WorkPlanOutcomeStatus
 from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteIngestionJobRepository,
     SqliteNodeRepository,
+    SqliteWorkItemChecklistItemRepository,
     SqliteWorkItemRepository,
     SqliteWorkPlanningReceiptRepository,
     SqliteWorkspaceRepository,
@@ -38,6 +39,7 @@ def _services(sqlite_connection: sqlite3.Connection) -> tuple[WorkItemService, W
     work_item_service = WorkItemService(
         SqliteWorkspaceRepository(sqlite_connection),
         SqliteWorkItemRepository(sqlite_connection),
+        SqliteWorkItemChecklistItemRepository(sqlite_connection),
         lambda: SqliteResearchUnitOfWork(sqlite_connection),
     )
     return work_item_service, workspace

@@ -35,6 +35,7 @@ from personal_graph_os.application.repositories import (
     AttachmentRepository,
     CanvasPlacementRepository,
     CanvasRepository,
+    ChannelSyncStateRepository,
     CollectionRepository,
     ContextPackRepository,
     DiscoveryRunRepository,
@@ -53,6 +54,7 @@ from personal_graph_os.application.repositories import (
     ResourceRepository,
     SavedViewRepository,
     TagRepository,
+    WorkItemChecklistItemRepository,
     WorkItemRepository,
     WorkPlanningReceiptRepository,
     WorkspaceRepository,
@@ -138,7 +140,13 @@ class ResearchUnitOfWork(Protocol):
     def work_items(self) -> WorkItemRepository: ...
 
     @property
+    def work_item_checklist_items(self) -> WorkItemChecklistItemRepository: ...
+
+    @property
     def work_planning_receipts(self) -> WorkPlanningReceiptRepository: ...
+
+    @property
+    def channel_sync_state(self) -> ChannelSyncStateRepository: ...
 
     def __enter__(self) -> ResearchUnitOfWork: ...
 

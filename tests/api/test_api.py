@@ -382,7 +382,7 @@ def test_changing_a_field_out_of_text_immediately_removes_it_from_search(
         len(
             client.get(
                 "/search", params={"workspace_id": workspace_id, "q": "apischemaprobe"}
-            ).json()
+            ).json()["results"]
         )
         == 1
     )
@@ -394,7 +394,9 @@ def test_changing_a_field_out_of_text_immediately_removes_it_from_search(
     assert response.status_code == 200
 
     assert (
-        client.get("/search", params={"workspace_id": workspace_id, "q": "apischemaprobe"}).json()
+        client.get("/search", params={"workspace_id": workspace_id, "q": "apischemaprobe"}).json()[
+            "results"
+        ]
         == []
     )
 

@@ -22,6 +22,7 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteDocumentRepository,
     SqliteDocumentVersionRepository,
     SqliteNodeRepository,
+    SqliteSearchIndexRepository,
     SqliteTagRepository,
     SqliteWorkspaceRepository,
 )
@@ -85,7 +86,10 @@ def test_create_document_resolves_tag_names_idempotently(
 
     # Reusing the same tag name across a second document must not create a duplicate tag.
     service.create_document(
-        workspace_id, title="Second note", kind=DocumentKind.NOTE, source="manual",
+        workspace_id,
+        title="Second note",
+        kind=DocumentKind.NOTE,
+        source="manual",
         tag_names=("alpha",),
     )
     assert len(service.list_tags(workspace_id)) == 2
@@ -175,9 +179,7 @@ def test_get_detail_aggregates_collection_tags_links_and_backlinks(
     collection = service.create_collection(workspace_id, "Research notes")
     workspace = SqliteWorkspaceRepository(sqlite_connection).get(workspace_id)
     assert workspace is not None
-    node = Node(
-        workspace_id=workspace_id, node_type_id=workspace.node_types[0].id, title="A node"
-    )
+    node = Node(workspace_id=workspace_id, node_type_id=workspace.node_types[0].id, title="A node")
     SqliteNodeRepository(sqlite_connection).save(node)
 
     document, _ = service.create_document(
@@ -238,3 +240,55 @@ def test_get_raises_when_document_missing(sqlite_connection: sqlite3.Connection)
     service, _ = _setup(sqlite_connection)
     with pytest.raises(DocumentNotFoundError):
         service.get(DocumentId("missing"))
+
+
+def test_a_wiki_document_is_searchable_in_the_wiki_scope_and_removed_on_delete(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    """ST-12 acceptance (3): creating a document indexes it into the `wiki` search scope, and
+    hard-deleting it removes the search row."""
+    from personal_graph_os.application.search_service import SearchService
+    from personal_graph_os.domain.search import SearchScope
+    from personal_graph_os.infrastructure.sqlite.repositories import (
+        SqliteBm25SearchEngine,
+        SqliteResourceRepository,
+    )
+
+    workspace = ensure_semantic_schema(new_workspace("Personal"))
+    workspace_repository = SqliteWorkspaceRepository(sqlite_connection)
+    workspace_repository.save(workspace)
+    search_index = SqliteSearchIndexRepository(sqlite_connection)
+    service = DocumentService(
+        workspace_repository,
+        SqliteDocumentRepository(sqlite_connection),
+        SqliteDocumentVersionRepository(sqlite_connection),
+        SqliteDocumentLinkRepository(sqlite_connection),
+        SqliteCollectionRepository(sqlite_connection),
+        SqliteTagRepository(sqlite_connection),
+        SqliteNodeRepository(sqlite_connection),
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
+        search_index=search_index,
+    )
+    search_service = SearchService(
+        SqliteNodeRepository(sqlite_connection),
+        SqliteResourceRepository(sqlite_connection),
+        SqliteDocumentRepository(sqlite_connection),
+        SqliteBm25SearchEngine(sqlite_connection),
+    )
+
+    document, _version = service.create_document(
+        workspace.id,
+        title="distinctive wiki title",
+        kind=DocumentKind.NOTE,
+        source="manual",
+        body_markdown="a distinctive body for the wiki scope",
+    )
+
+    hits = search_service.search(workspace.id, "distinctive", scope=SearchScope.WIKI).results
+    assert len(hits) == 1
+    assert hits[0].document is not None
+    assert hits[0].document.id == document.id
+
+    service.delete(document.id)
+
+    assert search_service.search(workspace.id, "distinctive", scope=SearchScope.WIKI).results == ()

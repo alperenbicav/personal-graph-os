@@ -61,6 +61,9 @@ class IngestionJob(BaseModel):
     # Stable identity for idempotent replay -- e.g. a URL hash, ClickUp item id, or Telegram
     # `update_id`. Unique per `(workspace_id, source, source_identifier)`.
     source_identifier: str
+    # Channel metadata (ST-10): the canonical external link of the captured item (e.g. the
+    # imported ClickUp task's deep link). Never used for content, only provenance.
+    external_url: str | None = None
     stage: IngestionStage = IngestionStage.RECEIVED
     status: IngestionJobStatus = IngestionJobStatus.PENDING
     result_entity_type: str | None = None
@@ -74,6 +77,13 @@ class IngestionJob(BaseModel):
     def _validate_non_empty(cls, value: str, info: object) -> str:
         field_name = getattr(info, "field_name", "IngestionJob field")
         return _non_empty(value, f"IngestionJob.{field_name}")
+
+    @field_validator("external_url")
+    @classmethod
+    def _validate_external_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _non_empty(value, "IngestionJob.external_url")
 
     def model_post_init(self, _context: object) -> None:
         # Review finding R03: `committed` is a terminal stage that means exactly one thing --

@@ -4,20 +4,17 @@ import * as api from './api/client'
 import { ActivityView } from './components/ActivityView'
 import { CanvasRail } from './components/CanvasRail'
 import { ConnectEdgeModal, type PendingConnection } from './components/ConnectEdgeModal'
-import { DiscoveryView } from './components/DiscoveryView'
+import { CreateNodeControl } from './components/CreateNodeControl'
 import { EnrichmentDetailPanel } from './components/EnrichmentDetailPanel'
 import { GraphCanvas } from './components/GraphCanvas'
 import { Inspector, type RelationRow } from './components/Inspector'
-import { KanbanView } from './components/KanbanView'
 import { NavTabs, type AppView } from './components/NavTabs'
 import { PlaceExistingNodeControl } from './components/PlaceExistingNodeControl'
 import { RepositoriesView } from './components/RepositoriesView'
 import { ResearchDetailPanel } from './components/ResearchDetailPanel'
 import { ResearchView } from './components/ResearchView'
-import { SavedViewsPanel } from './components/SavedViewsPanel'
 import { SearchView } from './components/SearchView'
-import { TableView } from './components/TableView'
-import { TimelineView } from './components/TimelineView'
+import { TasksView } from './components/TasksView'
 import { TopBar } from './components/TopBar'
 import { UnlockScreen } from './components/UnlockScreen'
 import { WikiView } from './components/WikiView'
@@ -33,23 +30,20 @@ import { SchemaEditor } from './components/SchemaEditor'
 import type {
   Canvas,
   CanvasPlacement,
-  DiscoveryCandidateInput,
   GraphEdge,
   GraphNode,
-  ProjectionItem,
   RelatedNode,
   RepositoryLabel,
   ResearchDashboard,
   Resource,
   ResourceKind,
   StatusDefinition,
+  WikiDocument,
+  WorkItem,
   WorkflowChainStep,
   Workspace,
 } from './types'
 
-const DISCOVERY_AGENT_IDENTITY = 'manual-import'
-
-const CAPTURE_TYPE_ORDER = ['Note', 'Task', 'Project', 'Resource']
 const MAX_FOCUS_DEPTH = 3
 
 function randomSpawnPosition() {
@@ -66,18 +60,17 @@ function App() {
   const [placements, setPlacements] = useState<CanvasPlacement[]>([])
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [focusDepth, setFocusDepth] = useState(0)
-  const [isCapturing, setIsCapturing] = useState(false)
   const [pendingConnection, setPendingConnection] = useState<PendingConnection | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [isSchemaEditorOpen, setIsSchemaEditorOpen] = useState(false)
 
-  const [activeView, setActiveView] = useState<AppView>('canvas')
+  const [activeView, setActiveView] = useState<AppView>('graph')
   const [resources, setResources] = useState<Resource[]>([])
-  const [tableRows, setTableRows] = useState<ProjectionItem[]>([])
-  const [kanbanColumns, setKanbanColumns] = useState<Record<string, ProjectionItem[]>>({})
-  const [timelineRows, setTimelineRows] = useState<ProjectionItem[]>([])
+  const [workItems, setWorkItems] = useState<WorkItem[]>([])
+  const [documents, setDocuments] = useState<WikiDocument[]>([])
   const [researchDashboard, setResearchDashboard] = useState<ResearchDashboard | null>(null)
+  const [selectedWorkItemId, setSelectedWorkItemId] = useState<string | null>(null)
 
   // Per-placement move sequence: guards against an older, now-superseded save request
   // rolling back a position that a newer move already replaced (or is still in flight).
@@ -140,6 +133,13 @@ function App() {
         setCanvases(canvasesResponse)
         setActiveCanvasId(canvasesResponse[0]?.id ?? null)
         setResources(resourcesResponse)
+        const [workItemsResponse, documentsResponse] = await Promise.all([
+          api.listWorkItems(workspaceResponse.id),
+          api.listDocuments(workspaceResponse.id),
+        ])
+        if (cancelled) return
+        setWorkItems(workItemsResponse ?? [])
+        setDocuments(documentsResponse ?? [])
       } catch (error) {
         if (!cancelled) setLoadError(messageFor(error))
       }
@@ -171,23 +171,14 @@ function App() {
     }
   }, [activeCanvasId, recordPersisted])
 
-  // The one refresh path every projection (table/Kanban/timeline/research) shares: re-fetch
-  // whichever view is currently active from the backend's `ProjectionService`/
-  // `ResearchDashboardService`, so an edit made anywhere is reflected the next time this runs
-  // rather than each view keeping its own stale copy.
+  // The one refresh path the Tasks/Research workspaces share: re-fetch whichever view is
+  // currently active from the backend so an edit made anywhere is reflected the next time
+  // this runs rather than each view keeping its own stale copy.
   const refreshActiveViewData = useCallback(
     async (workspaceId: string, view: AppView) => {
       try {
-        if (view === 'table') {
-          setTableRows(await api.evaluateTableView({ workspace_id: workspaceId }))
-        } else if (view === 'kanban') {
-          setKanbanColumns(
-            await api.evaluateKanbanView({ workspace_id: workspaceId, group_by: 'status_id' }),
-          )
-        } else if (view === 'timeline') {
-          setTimelineRows(
-            await api.evaluateTimelineView({ workspace_id: workspaceId, date_field: 'created_at' }),
-          )
+        if (view === 'tasks') {
+          setWorkItems((await api.listWorkItems(workspaceId)) ?? [])
         } else if (view === 'research') {
           setResearchDashboard(await api.getResearchDashboard(workspaceId))
         }
@@ -223,18 +214,6 @@ function App() {
 
   const nodesById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes])
 
-  // Every node type is capturable — a schema-editor-created (or any non-default) type must
-  // never be uninstantiable — with the familiar defaults surfaced first for muscle memory.
-  const captureNodeTypes = useMemo(() => {
-    if (!workspace) return []
-    const preferred = CAPTURE_TYPE_ORDER.map((name) =>
-      workspace.node_types.find((nt) => nt.name === name),
-    ).filter((nodeType): nodeType is NonNullable<typeof nodeType> => Boolean(nodeType))
-    const preferredIds = new Set(preferred.map((nodeType) => nodeType.id))
-    const rest = workspace.node_types.filter((nodeType) => !preferredIds.has(nodeType.id))
-    return [...preferred, ...rest]
-  }, [workspace])
-
   const activeCanvas = useMemo(
     () => canvases.find((canvas) => canvas.id === activeCanvasId) ?? null,
     [canvases, activeCanvasId],
@@ -269,6 +248,46 @@ function App() {
     () => resources.find((resource) => resource.node_id === selectedNodeId) ?? null,
     [resources, selectedNodeId],
   )
+  const selectedWorkItem = useMemo(
+    () => workItems.find((item) => item.node_id === selectedNodeId) ?? null,
+    [workItems, selectedNodeId],
+  )
+
+  // Repository options for the Tasks workspace's repository selector (S8-F05): the
+  // `github_repository` resources' stable projection node ids, never a free-text name.
+  const repositories = useMemo(
+    () =>
+      resources
+        .filter((resource) => resource.kind === 'github_repository')
+        .map((resource) => ({ node_id: resource.node_id, title: resource.title })),
+    [resources],
+  )
+
+  // The projected destination of the selected node for the Inspector's `Go to` action (S8-F01):
+  // a Resource/WorkItem node routes to its owning tab, a generic node gets no destination.
+  const goToTarget = useMemo(() => {
+    if (selectedResource) {
+      if (selectedResource.kind === 'github_repository') {
+        return { view: 'repositories' as const, label: 'Repositories' }
+      }
+      if (selectedResource.kind === 'paper' || selectedResource.kind === 'article') {
+        return { view: 'research' as const, label: 'Research' }
+      }
+      return null
+    }
+    if (selectedWorkItem) {
+      return { view: 'tasks' as const, label: 'Tasks' }
+    }
+    return null
+  }, [selectedResource, selectedWorkItem])
+
+  const handleGoToProjected = useCallback(() => {
+    if (!goToTarget) return
+    if (goToTarget.view === 'tasks' && selectedWorkItem) {
+      setSelectedWorkItemId(selectedWorkItem.id)
+    }
+    setActiveView(goToTarget.view)
+  }, [goToTarget, selectedWorkItem])
   const nextWorkflowStep = selectedNodeType?.system_key
     ? NEXT_WORKFLOW_STEP[selectedNodeType.system_key]
     : undefined
@@ -303,27 +322,6 @@ function App() {
       })
   }, [edges, selectedNodeId, edgeTypeById, nodesById])
 
-  const handleCapture = useCallback(
-    async (nodeTypeId: string, title: string) => {
-      if (!workspace || !activeCanvasId) return
-      setIsCapturing(true)
-      try {
-        const node = await api.captureNode(workspace.id, nodeTypeId, title)
-        const { x, y } = randomSpawnPosition()
-        const placement = await api.placeNode(activeCanvasId, node.id, x, y)
-        recordPersisted(placement)
-        setNodes((current) => [...current, node])
-        setPlacements((current) => [...current, placement])
-        setSelectedNodeId(node.id)
-      } catch (error) {
-        setActionError(`Could not capture "${title}": ${messageFor(error)}`)
-      } finally {
-        setIsCapturing(false)
-      }
-    },
-    [workspace, activeCanvasId, recordPersisted],
-  )
-
   const handlePlaceExisting = useCallback(
     async (nodeId: string) => {
       if (!activeCanvasId) return
@@ -338,6 +336,27 @@ function App() {
       }
     },
     [activeCanvasId, recordPersisted],
+  )
+
+  // The Graph tab's typed create-node flow (S8-F03): with the TopBar global quick-capture gone,
+  // every node type — including custom Schema-Editor types and generic graph-only nodes — is
+  // instantiated here, landing on the active canvas like the old capture did.
+  const handleCreateNode = useCallback(
+    async (nodeTypeId: string, title: string) => {
+      if (!workspace || !activeCanvasId) return
+      try {
+        const node = await api.captureNode(workspace.id, nodeTypeId, title)
+        const { x, y } = randomSpawnPosition()
+        const placement = await api.placeNode(activeCanvasId, node.id, x, y)
+        recordPersisted(placement)
+        setNodes((current) => [...current, node])
+        setPlacements((current) => [...current, placement])
+        setSelectedNodeId(node.id)
+      } catch (error) {
+        setActionError(`Could not create "${title}": ${messageFor(error)}`)
+      }
+    },
+    [workspace, activeCanvasId, recordPersisted],
   )
 
   const handleMovePlacement = useCallback(
@@ -442,8 +461,8 @@ function App() {
   )
 
   // Research/Repositories' own typed create forms (ST-07): a create-or-reuse call identical to
-  // Discovery's single-candidate path, but invoked directly by the owning tab instead of routed
-  // through an import batch.
+  // the Research create path, but invoked directly by the owning tab instead of routed through
+  // an import batch.
   const handleCreateResource = useCallback(
     async (title: string, rawSource: string, kind: ResourceKind): Promise<Resource> => {
       if (!workspace) throw new Error('No active workspace')
@@ -458,10 +477,86 @@ function App() {
     [workspace],
   )
 
-  // A relation points at another domain's resource by node id; jumping to its owning tab
-  // (Research for papers/articles, Repositories for GitHub repos) mirrors the design gate's
-  // "Go to" navigation for projected nodes. Work-item/generic-node targets have no owning tab
-  // yet (ST-07/ST-08), so selection still moves but the active view does not.
+  const handleCreateWorkItem = useCallback(
+    async (input: api.CreateWorkItemInput): Promise<WorkItem> => {
+      const workItem = await api.createWorkItem(input)
+      setWorkItems((current) => [...current, workItem])
+      setSelectedWorkItemId(workItem.id)
+      return workItem
+    },
+    [],
+  )
+
+  const handleUpdateWorkItem = useCallback(
+    async (workItemId: string, patch: api.UpdateWorkItemPatch): Promise<WorkItem> => {
+      const updated = await api.updateWorkItem(workItemId, patch)
+      setWorkItems((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item)),
+      )
+      return updated
+    },
+    [],
+  )
+
+  const handleEditWorkItemBody = useCallback(
+    async (workItemId: string, body: string) => {
+      const workItem = workItems.find((item) => item.id === workItemId)
+      if (!workItem) return
+      const updated = await api.updateNode(workItem.node_id, { body })
+      setNodes((current) => current.map((node) => (node.id === updated.id ? updated : node)))
+      setWorkItems((current) =>
+        current.map((item) => (item.id === workItemId ? { ...item, body } : item)),
+      )
+    },
+    [workItems],
+  )
+
+  const handleAddChecklistItem = useCallback(
+    async (workItemId: string, label: string) => {
+      return api.addChecklistItem(workItemId, label)
+    },
+    [],
+  )
+
+  const handleUpdateChecklistItem = useCallback(
+    async (checklistItemId: string, patch: api.UpdateChecklistItemPatch) => {
+      return api.updateChecklistItem(checklistItemId, patch)
+    },
+    [],
+  )
+
+  const handleRemoveChecklistItem = useCallback(
+    async (checklistItemId: string) => {
+      await api.removeChecklistItem(checklistItemId)
+    },
+    [],
+  )
+
+  const handleReorderChecklistItems = useCallback(
+    async (workItemId: string, orderedIds: string[]) => {
+      return api.reorderChecklistItems(workItemId, orderedIds)
+    },
+    [],
+  )
+
+  const handleAttachWorkItemDocument = useCallback(
+    async (workItemId: string, documentId: string) => {
+      await api.attachWorkItemWikiLink(workItemId, documentId)
+    },
+    [],
+  )
+
+  const handleDetachWorkItemDocument = useCallback(
+    async (workItemId: string, documentId: string) => {
+      await api.detachWorkItemWikiLink(workItemId, documentId)
+    },
+    [],
+  )
+
+  // A relation points at another domain's object by node id; jumping to its owning tab
+  // (Research for papers/articles, Repositories for GitHub repos, Tasks for work items)
+  // mirrors the design gate's "Go to" navigation for projected nodes. Generic nodes have no
+  // owning tab, so selection still moves but the active view does not.
   const handleGoToRelation = useCallback((relation: RelatedNode) => {
     setSelectedNodeId(relation.node_id)
     if (relation.target_domain === 'resource') {
@@ -469,6 +564,9 @@ function App() {
       else if (relation.resource_kind === 'paper' || relation.resource_kind === 'article') {
         setActiveView('research')
       }
+    } else if (relation.target_domain === 'work_item') {
+      setSelectedWorkItemId(relation.target_entity_id)
+      setActiveView('tasks')
     }
   }, [])
 
@@ -509,37 +607,6 @@ function App() {
       refreshActiveViewData(workspace.id, activeView)
     },
     [workspace, selectedNodeId, activeView, refreshActiveViewData],
-  )
-
-  const handleDiscoveryPreview = useCallback(
-    (instruction: string, candidates: DiscoveryCandidateInput[]) => {
-      if (!workspace) throw new Error('Workspace has not loaded yet')
-      return api.previewDiscovery(workspace.id, instruction, candidates)
-    },
-    [workspace],
-  )
-
-  const handleDiscoveryApply = useCallback(
-    async (instruction: string, candidates: DiscoveryCandidateInput[]) => {
-      if (!workspace) throw new Error('Workspace has not loaded yet')
-      const run = await api.applyDiscovery(
-        workspace.id,
-        DISCOVERY_AGENT_IDENTITY,
-        instruction,
-        candidates,
-      )
-      // A run may have created new Node+Resource pairs; a targeted refetch keeps every other
-      // view (table/Kanban/timeline/research/canvas) consistent with what was just imported.
-      const [nodesResponse, resourcesResponse] = await Promise.all([
-        api.listNodes(workspace.id),
-        api.listResources(workspace.id),
-      ])
-      setNodes(nodesResponse)
-      setResources(resourcesResponse)
-      refreshActiveViewData(workspace.id, activeView)
-      return run
-    },
-    [workspace, activeView, refreshActiveViewData],
   )
 
   const handleArchiveSelected = useCallback(async () => {
@@ -632,9 +699,6 @@ function App() {
   return (
     <div className="app">
       <TopBar
-        captureNodeTypes={captureNodeTypes}
-        onCapture={handleCapture}
-        isCapturing={isCapturing}
         onOpenSchemaEditor={() => setIsSchemaEditorOpen(true)}
         onExportWorkspace={async () => {
           if (!workspace) return
@@ -659,20 +723,20 @@ function App() {
 
       <NavTabs activeView={activeView} onSelectView={setActiveView} />
 
-      {/* Discovery and Activity have no node-selection mechanism of their own, so the
-          Inspector/Research/Workflow panel would otherwise keep showing whatever was last
-          selected on a different tab — a stale, unrelated side panel with no connection to
-          what's actually on screen. */}
+      {/* Tasks, Activity, and Wiki own their full-page layouts (tree + editor + inspector), so
+          the generic Inspector/Research/Workflow panel would otherwise keep showing whatever
+          was last selected on a different tab — a stale, unrelated side panel with no
+          connection to what's actually on screen. */}
       <div
         className={
-          activeView === 'canvas'
+          activeView === 'graph'
             ? 'workbench'
-            : activeView === 'discovery' || activeView === 'activity' || activeView === 'wiki'
+            : activeView === 'tasks' || activeView === 'activity' || activeView === 'wiki'
               ? 'workbench workbench-full'
               : 'workbench workbench-no-rail'
         }
       >
-        {activeView === 'canvas' && (
+        {activeView === 'graph' && (
           <CanvasRail
             canvases={canvases}
             activeCanvasId={activeCanvasId}
@@ -681,13 +745,18 @@ function App() {
           />
         )}
 
-        {activeView === 'canvas' && (
+        {activeView === 'graph' && (
           <div className="stage-frame">
             <div className="stage-toolbar">
               <span className="stage-pill">
                 {activeCanvas ? activeCanvas.name : '—'} · {visibleNodes.length} objects ·{' '}
                 {edges.length} relations
               </span>
+              <CreateNodeControl
+                nodeTypes={workspace?.node_types ?? []}
+                isDisabled={!activeCanvasId}
+                onCreate={handleCreateNode}
+              />
               <PlaceExistingNodeControl unplacedNodes={unplacedNodes} onPlace={handlePlaceExisting} />
             </div>
 
@@ -742,49 +811,39 @@ function App() {
           </div>
         )}
 
-        {activeView === 'table' && workspace && (
-          <div className="view-frame">
-            <SavedViewsPanel workspaceId={workspace.id} viewKind="table" />
-            <TableView
-              rows={tableRows}
-              nodeTypeById={nodeTypeById}
-              statusById={statusById}
-              selectedNodeId={selectedNodeId}
-              onSelectNode={setSelectedNodeId}
-            />
-          </div>
-        )}
-
-        {activeView === 'kanban' && (
-          <div className="view-frame">
-            <KanbanView
-              columns={kanbanColumns}
-              nodeTypeById={nodeTypeById}
-              statusById={statusById}
-              selectedNodeId={selectedNodeId}
-              onSelectNode={setSelectedNodeId}
-            />
-          </div>
-        )}
-
-        {activeView === 'timeline' && (
-          <div className="view-frame">
-            <TimelineView
-              rows={timelineRows}
-              nodeTypeById={nodeTypeById}
-              statusById={statusById}
-              selectedNodeId={selectedNodeId}
-              onSelectNode={setSelectedNodeId}
-            />
-          </div>
-        )}
-
         {activeView === 'search' && (
           <div className="view-frame">
             <SearchView
-              onSearch={(query) => (workspace ? api.search(workspace.id, query) : Promise.resolve([]))}
+              onSearch={(query, scope, offset) =>
+                workspace
+                  ? api.search(workspace.id, query, 20, false, scope, offset)
+                  : Promise.resolve({ results: [], total: 0, has_more: false, offset: 0 })
+              }
               selectedNodeId={selectedNodeId}
               onSelectNode={setSelectedNodeId}
+            />
+          </div>
+        )}
+
+        {activeView === 'tasks' && workspace && (
+          <div className="view-frame">
+            <TasksView
+              workspaceId={workspace.id}
+              workItems={workItems}
+              documents={documents}
+              repositories={repositories}
+              selectedWorkItemId={selectedWorkItemId}
+              onSelectWorkItem={setSelectedWorkItemId}
+              onCreateWorkItem={handleCreateWorkItem}
+              onUpdateWorkItem={handleUpdateWorkItem}
+              onLoadDetail={api.getWorkItemDetail}
+              onEditBody={handleEditWorkItemBody}
+              onAddChecklistItem={handleAddChecklistItem}
+              onUpdateChecklistItem={handleUpdateChecklistItem}
+              onRemoveChecklistItem={handleRemoveChecklistItem}
+              onReorderChecklistItems={handleReorderChecklistItems}
+              onAttachDocument={handleAttachWorkItemDocument}
+              onDetachDocument={handleDetachWorkItemDocument}
             />
           </div>
         )}
@@ -839,12 +898,6 @@ function App() {
           </div>
         )}
 
-        {activeView === 'discovery' && (
-          <div className="view-frame">
-            <DiscoveryView onPreview={handleDiscoveryPreview} onApply={handleDiscoveryApply} />
-          </div>
-        )}
-
         {activeView === 'activity' && (
           <div className="view-frame">
             <ActivityView
@@ -866,7 +919,7 @@ function App() {
           </div>
         )}
 
-        {activeView !== 'discovery' && activeView !== 'activity' && activeView !== 'wiki' && (
+        {activeView !== 'tasks' && activeView !== 'activity' && activeView !== 'wiki' && (
           <div className="inspector-column">
             <Inspector
               node={selectedNode}
@@ -877,6 +930,8 @@ function App() {
               onChangeBody={handleChangeBody}
               onChangeField={handleChangeField}
               onArchive={handleArchiveSelected}
+              goToLabel={goToTarget?.label ?? null}
+              onGoTo={handleGoToProjected}
             />
             {/* Research/Repositories own the rich canonical Resource detail (review finding
                 S6-F01); every other view keeps only the generic Inspector above, even when a

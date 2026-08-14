@@ -27,12 +27,20 @@ import type {
   ResourceKind,
   ResourceListFilters,
   SavedView,
-  SearchResult,
+  SearchResponse,
+  SearchScope,
   StatusDefinition,
   Tag,
   ViewKind,
   WikiDocument,
   WorkflowChainStep,
+  WorkItem,
+  WorkItemChecklistItem,
+  WorkItemDetail,
+  WorkItemKind,
+  WorkItemPriority,
+  WorkItemStatus,
+  WorkItemType,
   Workspace,
   WorkspaceResearchSettings,
 } from '../types'
@@ -524,17 +532,137 @@ export function createTag(workspaceId: string, name: string): Promise<Tag> {
   return request('/tags', { method: 'POST', body: JSON.stringify({ workspace_id: workspaceId, name }) })
 }
 
+export function listWorkItems(workspaceId: string): Promise<WorkItem[]> {
+  return request(`/work-items?workspace_id=${encodeURIComponent(workspaceId)}`)
+}
+
+export function getWorkItem(workItemId: string): Promise<WorkItem> {
+  return request(`/work-items/${encodeURIComponent(workItemId)}`)
+}
+
+export function getWorkItemDetail(workItemId: string): Promise<WorkItemDetail> {
+  return request(`/work-items/${encodeURIComponent(workItemId)}/detail`)
+}
+
+export interface CreateWorkItemInput {
+  workspace_id: string
+  kind: WorkItemKind
+  work_type: WorkItemType
+  title: string
+  body?: string
+  source: string
+  status?: WorkItemStatus
+  parent_id?: string | null
+  repository_node_id?: string | null
+}
+
+export function createWorkItem(payload: CreateWorkItemInput): Promise<WorkItem> {
+  return request('/work-items', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+export interface UpdateWorkItemPatch {
+  work_type?: WorkItemType
+  status?: WorkItemStatus
+  priority?: WorkItemPriority
+  due_date?: string | null
+  assignee?: string | null
+  blockers?: string | null
+  progress_percent?: number
+  repository_node_id?: string | null
+  clear_priority?: boolean
+  clear_due_date?: boolean
+  clear_assignee?: boolean
+  clear_blockers?: boolean
+  clear_progress_percent?: boolean
+  clear_repository_node_id?: boolean
+}
+
+export function updateWorkItem(
+  workItemId: string,
+  patch: UpdateWorkItemPatch,
+): Promise<WorkItem> {
+  return request(`/work-items/${encodeURIComponent(workItemId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  })
+}
+
+export interface UpdateChecklistItemPatch {
+  label?: string
+  is_completed?: boolean
+}
+
+export function addChecklistItem(
+  workItemId: string,
+  label: string,
+): Promise<WorkItemChecklistItem> {
+  return request(`/work-items/${encodeURIComponent(workItemId)}/checklist-items`, {
+    method: 'POST',
+    body: JSON.stringify({ label }),
+  })
+}
+
+export function updateChecklistItem(
+  checklistItemId: string,
+  patch: UpdateChecklistItemPatch,
+): Promise<WorkItemChecklistItem> {
+  return request(`/checklist-items/${encodeURIComponent(checklistItemId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  })
+}
+
+export function removeChecklistItem(checklistItemId: string): Promise<void> {
+  return request(`/checklist-items/${encodeURIComponent(checklistItemId)}`, {
+    method: 'DELETE',
+  })
+}
+
+export function reorderChecklistItems(
+  workItemId: string,
+  orderedIds: string[],
+): Promise<WorkItemChecklistItem[]> {
+  return request(`/work-items/${encodeURIComponent(workItemId)}/checklist-items/reorder`, {
+    method: 'POST',
+    body: JSON.stringify({ ordered_ids: orderedIds }),
+  })
+}
+
+export function attachWorkItemWikiLink(
+  workItemId: string,
+  documentId: string,
+): Promise<void> {
+  return request(`/work-items/${encodeURIComponent(workItemId)}/wiki-links`, {
+    method: 'POST',
+    body: JSON.stringify({ document_id: documentId }),
+  })
+}
+
+export function detachWorkItemWikiLink(
+  workItemId: string,
+  documentId: string,
+): Promise<void> {
+  return request(
+    `/work-items/${encodeURIComponent(workItemId)}/wiki-links?document_id=${encodeURIComponent(documentId)}`,
+    { method: 'DELETE' },
+  )
+}
+
 export function search(
   workspaceId: string,
   query: string,
   limit = 20,
   includeArchived = false,
-): Promise<SearchResult[]> {
+  scope: SearchScope = 'all',
+  offset = 0,
+): Promise<SearchResponse> {
   const params = new URLSearchParams({
     workspace_id: workspaceId,
     q: query,
     limit: String(limit),
     include_archived: String(includeArchived),
+    scope,
+    offset: String(offset),
   })
   return request(`/search?${params.toString()}`)
 }

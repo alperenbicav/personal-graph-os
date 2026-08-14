@@ -1,15 +1,12 @@
 import { useState } from 'react'
 
 export type AppView =
-  | 'canvas'
-  | 'table'
-  | 'kanban'
-  | 'timeline'
+  | 'graph'
+  | 'tasks'
   | 'search'
   | 'wiki'
   | 'research'
   | 'repositories'
-  | 'discovery'
   | 'activity'
 
 interface TabDefinition {
@@ -20,30 +17,16 @@ interface TabDefinition {
 
 const TABS: TabDefinition[] = [
   {
-    id: 'canvas',
-    label: 'Canvas',
+    id: 'graph',
+    label: 'Graph',
     description:
-      'Drag nodes around a visual graph canvas, connect them with typed relationships, and organize multiple canvases per workspace.',
+      'A visual graph canvas over every object in the workspace — drag nodes around, connect them with typed relationships, and select one to inspect or jump to its owning tab.',
   },
   {
-    id: 'table',
-    label: 'Table',
-    description: 'Every node as a row. Also where you can save the current view to reopen it later.',
-  },
-  {
-    id: 'kanban',
-    label: 'Kanban',
-    description: 'Nodes grouped into columns by their status.',
-  },
-  {
-    id: 'timeline',
-    label: 'Timeline',
-    description: 'Nodes ordered by when they were created.',
-  },
-  {
-    id: 'search',
-    label: 'Search',
-    description: 'Full-text search across every node and research resource.',
+    id: 'tasks',
+    label: 'Tasks',
+    description:
+      'An Epic → Story → Task work hierarchy with Markdown descriptions, checklists, Wiki links, repository association, dates, priority, assignee, blockers, and progress.',
   },
   {
     id: 'wiki',
@@ -64,10 +47,9 @@ const TABS: TabDefinition[] = [
       'GitHub repositories you have captured, grouped by ownership (personal, Apilex, liked external), with purpose, capabilities, stack, license/activity, risks, and related graph objects.',
   },
   {
-    id: 'discovery',
-    label: 'Discovery',
-    description:
-      'Import external candidates (identifier/URL + title, one per line) as research resources — preview them first, then confirm. This never fetches or searches the web itself.',
+    id: 'search',
+    label: 'Search',
+    description: 'Full-text search across every node and research resource.',
   },
   {
     id: 'activity',

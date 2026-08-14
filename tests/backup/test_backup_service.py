@@ -297,6 +297,10 @@ def _build_gateway_for_app(app: FastAPI):
         context_pack_service=app.state.context_pack_service,
         activity_service=app.state.activity_service,
         document_service=app.state.document_service,
+        work_item_service=app.state.work_item_service,
+        enrichment_service=app.state.enrichment_service,
+        extraction_service=app.state.extraction_service,
+        capture_planning_orchestrator=app.state.capture_planning_orchestrator,
         unit_of_work_factory=lambda: SqliteResearchUnitOfWork(app.state.connection),
     )
 

@@ -114,16 +114,6 @@ describe('App bootstrap', () => {
   })
 })
 
-describe('quick capture node types', () => {
-  it('offers every workspace node type, including one outside the default preferred order', async () => {
-    render(<App />)
-    await screen.findByText('Personal Graph OS')
-
-    const options = screen.getAllByRole('option').map((option) => option.textContent)
-    expect(options).toContain('Idea')
-  })
-})
-
 describe('non-destructive error handling', () => {
   it('surfaces a dismissible banner when placements fail to load, without crashing', async () => {
     mockedApi.listNodes.mockResolvedValue([makeNode('n1', 'Write report')])
@@ -270,7 +260,7 @@ describe('resource detail panels stay scoped to Research/Repositories (S6-F01 re
     await waitFor(() => expect(document.querySelector('.research-detail')).not.toBeNull())
     expect(document.querySelector('.enrichment-detail')).not.toBeNull()
 
-    fireEvent.click(within(navTabs).getByRole('button', { name: 'Canvas' }))
+    fireEvent.click(within(navTabs).getByRole('button', { name: 'Graph' }))
 
     expect(document.querySelector('.research-detail')).toBeNull()
     expect(document.querySelector('.enrichment-detail')).toBeNull()

@@ -42,61 +42,10 @@
   padding-left: 9px;
 }
 
-.capture {
+.topbar-actions {
   display: flex;
   align-items: center;
-  flex: 1 1 380px;
-  max-width: 480px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--paper-raised);
-  box-shadow: var(--shadow-1);
-  overflow: hidden;
-}
-
-.capture select {
-  border: 0;
-  background: transparent;
-  color: var(--ink-soft);
-  font-size: 12.5px;
-  padding: 9px 6px 9px 12px;
-  border-right: 1px solid var(--line);
-  cursor: pointer;
-}
-
-.capture input {
-  flex: 1;
-  min-width: 0;
-  border: 0;
-  background: transparent;
-  color: var(--ink);
-  font-size: 13px;
-  padding: 9px 10px;
-  outline: none;
-}
-
-.capture input::placeholder {
-  color: var(--slate);
-}
-
-.capture button {
-  border: 0;
-  background: var(--brass);
-  color: #221604;
-  font-weight: 600;
-  font-size: 12.5px;
-  padding: 9px 16px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.capture button:hover:not(:disabled) {
-  filter: brightness(1.06);
-}
-
-.capture button:disabled {
-  opacity: 0.5;
-  cursor: default;
+  gap: 9px;
 }
 
 /* ---------- Workbench grid ---------- */
@@ -1706,4 +1655,102 @@ select.status-select {
   border: 1px solid var(--line);
   border-radius: 8px;
   font-size: 13px;
+}
+
+/* ---------- Tasks workspace (ST-08) ---------- */
+
+.tasks-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+  margin-bottom: 16px;
+}
+
+.tasks-fields label {
+  grid-column: span 2;
+  margin-bottom: -8px;
+}
+
+.tasks-fields select,
+.tasks-fields input {
+  width: 100%;
+}
+
+.tasks-tree-children {
+  margin-left: 16px;
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+}
+
+.tasks-checklist-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tasks-checklist-row .field-control-checkbox {
+  flex: 1;
+  min-width: 0;
+}
+
+.tasks-checklist-row button {
+  padding: 2px 7px;
+}
+
+.tasks-done {
+  text-decoration: line-through;
+  color: var(--slate);
+}
+
+/* ---------- Graph tab create-node control (ST-08 S8-F03) ---------- */
+
+.create-node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper-raised);
+  padding: 3px 3px 3px 8px;
+}
+
+.create-node select {
+  border: 0;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.create-node input {
+  flex: 1;
+  min-width: 120px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  outline: none;
+}
+
+.create-node button {
+  border: 0;
+  background: var(--brass);
+  color: #221604;
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.create-node button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ---------- Inspector Go to action (ST-08 S8-F01) ---------- */
+
+.go-to-button {
+  margin-top: 8px;
+  width: 100%;
 }

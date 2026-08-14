@@ -13,6 +13,7 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Callable, Sequence
+from datetime import date
 from typing import Any
 
 from personal_graph_os.application.activity_recording import MutationContext, record_activity_event
@@ -20,6 +21,10 @@ from personal_graph_os.application.activity_service import (
     ActivityEventNotFoundError,
     ActivityService,
 )
+from personal_graph_os.application.capture_planning_orchestrator import (
+    CapturePlanningOrchestrator,
+)
+from personal_graph_os.application.clickup_service import ClickupService
 from personal_graph_os.application.context_pack_service import (
     ContextPackNotFoundError,
     ContextPackSelectionError,
@@ -27,7 +32,9 @@ from personal_graph_os.application.context_pack_service import (
     ContextPackTokenBudgetError,
 )
 from personal_graph_os.application.discovery import DiscoveryCandidateInput, DiscoveryService
-from personal_graph_os.application.document_service import DocumentService
+from personal_graph_os.application.document_service import DocumentNotFoundError, DocumentService
+from personal_graph_os.application.enrichment_service import EnrichmentService
+from personal_graph_os.application.extraction_service import ExtractionService
 from personal_graph_os.application.file_service import FileService
 from personal_graph_os.application.repositories import (
     EdgeRepository,
@@ -38,9 +45,15 @@ from personal_graph_os.application.repositories import (
 from personal_graph_os.application.research_unit_of_work import ResearchUnitOfWork
 from personal_graph_os.application.search_service import SearchService
 from personal_graph_os.application.services import EdgeService, NodeService, ResourceService
+from personal_graph_os.application.work_item_service import (
+    WorkItemNotFoundError,
+    WorkItemService,
+    WorkItemUpdatePatch,
+)
 from personal_graph_os.application.workflow_chain import WorkflowChainService, WorkflowChainStep
 from personal_graph_os.domain.activity import IdempotencyReceipt, MutationAction
 from personal_graph_os.domain.documents import DocumentKind
+from personal_graph_os.domain.enrichment import RelationProposalStatus
 from personal_graph_os.domain.identifiers import (
     ActivityEventId,
     CollectionId,
@@ -48,17 +61,29 @@ from personal_graph_os.domain.identifiers import (
     DocumentId,
     EdgeId,
     EdgeTypeId,
+    IngestionJobId,
     NodeId,
     NodeTypeId,
+    RelationProposalId,
     ResourceId,
     StatusDefinitionId,
+    WorkItemChecklistItemId,
+    WorkItemId,
     WorkspaceId,
 )
 from personal_graph_os.domain.resource import ResourceKind, ResourceLifecycleStatus
+from personal_graph_os.domain.work_items import (
+    WorkItem,
+    WorkItemKind,
+    WorkItemPriority,
+    WorkItemStatus,
+    WorkItemType,
+)
 from personal_graph_os.infrastructure.mcp.dto import (
     ActivityEventDTO,
     ActivityEventPageDTO,
     ActivityEventSummaryDTO,
+    CollectionDTO,
     ContextPackDTO,
     DiscoveryPreviewDTO,
     DiscoveryRunDTO,
@@ -66,10 +91,15 @@ from personal_graph_os.infrastructure.mcp.dto import (
     DocumentVersionDTO,
     EdgeDTO,
     EvidencePointerDTO,
+    IngestionJobDTO,
     MaterializedContextPackDTO,
     NodeDTO,
+    RelationProposalDTO,
     ResourceDTO,
     SearchHitDTO,
+    TagDTO,
+    WorkItemChecklistItemDTO,
+    WorkItemDTO,
     WorkspaceDTO,
 )
 
@@ -180,6 +210,11 @@ class AgentGatewayService:
         context_pack_service: ContextPackService,
         activity_service: ActivityService,
         document_service: DocumentService,
+        work_item_service: WorkItemService,
+        enrichment_service: EnrichmentService | None,
+        extraction_service: ExtractionService | None,
+        capture_planning_orchestrator: CapturePlanningOrchestrator | None,
+        clickup_service: ClickupService | None = None,
         unit_of_work_factory: Callable[[], ResearchUnitOfWork],
     ) -> None:
         self._workspaces = workspaces
@@ -196,6 +231,11 @@ class AgentGatewayService:
         self._context_pack_service = context_pack_service
         self._activity_service = activity_service
         self._document_service = document_service
+        self._work_item_service = work_item_service
+        self._enrichment_service = enrichment_service
+        self._extraction_service = extraction_service
+        self._capture_planning_orchestrator = capture_planning_orchestrator
+        self._clickup_service = clickup_service
         self._unit_of_work_factory = unit_of_work_factory
 
     def _require_workspace(self, workspace_id: WorkspaceId) -> None:
@@ -246,14 +286,28 @@ class AgentGatewayService:
         query_text: str,
         *,
         include_archived: bool = False,
+        scope: str = "all",
         limit: int = MAX_SEARCH_LIMIT,
-    ) -> tuple[SearchHitDTO, ...]:
+    ) -> dict[str, object]:
         _validate_limit(limit, maximum=MAX_SEARCH_LIMIT)
         self._require_workspace(workspace_id)
-        results = self._search.search(
-            workspace_id, query_text, limit=limit, include_archived=include_archived
+        from personal_graph_os.domain.search import SearchScope
+
+        page = self._search.search(
+            workspace_id,
+            query_text,
+            scope=SearchScope(scope),
+            limit=limit,
+            include_archived=include_archived,
         )
-        return tuple(SearchHitDTO.from_domain(result) for result in results)
+        return {
+            "hits": [
+                SearchHitDTO.from_domain(result).model_dump(mode="json") for result in page.results
+            ],
+            "total": page.total,
+            "has_more": page.has_more,
+            "offset": page.offset,
+        }
 
     def list_resources(
         self,
@@ -820,6 +874,9 @@ class AgentGatewayService:
                 fingerprint=fingerprint,
                 result_payload=result_payload,
             )
+        # Index after the unit of work commits (ST-12): `index_document` owns its own connection
+        # transaction and would end the still-open caller transaction if called inside.
+        self._document_service.index_document_for_search(document.id)
         return {**result_payload, "replayed": False}
 
     def update_resource(
@@ -1401,3 +1458,1529 @@ class AgentGatewayService:
                 result_payload=result_payload,
             )
         return {**result_payload, "replayed": False}
+
+    # ------------------------------------------------------------------
+    # ST-09: work items
+    # ------------------------------------------------------------------
+
+    def _work_item_dto(self, work_item: WorkItem) -> WorkItemDTO:
+        node = self._nodes.get(work_item.node_id)
+        if node is None:
+            raise GatewayNotFoundError(
+                f"work item {work_item.id}'s backing node {work_item.node_id} is missing"
+            )
+        return WorkItemDTO.from_work_item_and_node(work_item, node)
+
+    def list_work_items(
+        self, workspace_id: WorkspaceId, *, include_archived: bool = False
+    ) -> tuple[WorkItemDTO, ...]:
+        self._require_workspace(workspace_id)
+        return tuple(
+            self._work_item_dto(item)
+            for item in self._work_item_service.list_workspace(
+                workspace_id, include_archived=include_archived
+            )
+        )
+
+    def get_work_item(self, work_item_id: WorkItemId) -> WorkItemDTO:
+        try:
+            return self._work_item_dto(self._work_item_service.get(work_item_id))
+        except WorkItemNotFoundError as error:
+            raise GatewayNotFoundError(str(error)) from error
+
+    def create_work_item(
+        self,
+        workspace_id: WorkspaceId,
+        *,
+        kind: WorkItemKind,
+        work_type: WorkItemType,
+        title: str,
+        body: str,
+        status: WorkItemStatus,
+        parent_id: WorkItemId | None,
+        repository_node_id: NodeId | None,
+        actor_name: str,
+        reason: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        title = _validate_bounded_text(title, field_name="title", maximum=MAX_TITLE_LENGTH)
+        body = _validate_bounded_bytes(
+            body, field_name="body", maximum_bytes=MAX_SERIALIZED_FIELD_BYTES
+        )
+        payload = {
+            "kind": kind.value,
+            "work_type": work_type.value,
+            "title": title,
+            "status": status.value,
+            "parent_id": str(parent_id) if parent_id is not None else None,
+            "repository_node_id": str(repository_node_id)
+            if repository_node_id is not None
+            else None,
+            "reason": reason,
+        }
+        workspace = self._work_item_service.require_workspace(workspace_id)
+        node_type = self._work_item_service.require_node_type(workspace)
+        with self._unit_of_work_factory() as unit_of_work:
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="create_work_item",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            work_item, node = self._work_item_service.create_within(
+                unit_of_work,
+                workspace,
+                node_type,
+                kind=kind,
+                work_type=work_type,
+                title=title,
+                body=body,
+                source=f"agent:{actor_name}",
+                status=status,
+                parent_id=parent_id,
+                repository_node_id=repository_node_id,
+            )
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="work_item",
+                entity_id=work_item.id,
+                action=MutationAction.CREATED,
+                after_state=work_item.model_dump(mode="json"),
+            )
+            result_payload: dict[str, Any] = {
+                "work_item": self._work_item_dto(work_item).model_dump(mode="json")
+            }
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="create_work_item",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        self._node_service.index_captured_node(node)
+        return {**result_payload, "replayed": False}
+
+    def update_work_item(
+        self,
+        work_item_id: WorkItemId,
+        *,
+        work_type: WorkItemType | None,
+        status: WorkItemStatus | None,
+        priority: WorkItemPriority | None,
+        due_date: date | None,
+        assignee: str | None,
+        blockers: str | None,
+        progress_percent: int | None,
+        repository_node_id: NodeId | None,
+        clear_priority: bool,
+        clear_due_date: bool,
+        clear_assignee: bool,
+        clear_blockers: bool,
+        clear_progress_percent: bool,
+        clear_repository_node_id: bool,
+        actor_name: str,
+        reason: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        if assignee is not None:
+            assignee = _validate_bounded_text(
+                assignee, field_name="assignee", maximum=MAX_TITLE_LENGTH
+            )
+        if blockers is not None:
+            blockers = _validate_bounded_text(
+                blockers, field_name="blockers", maximum=MAX_REASON_LENGTH
+            )
+        patch = WorkItemUpdatePatch(
+            work_type=work_type,
+            status=status,
+            priority=priority,
+            due_date=due_date,
+            assignee=assignee,
+            blockers=blockers,
+            progress_percent=progress_percent,
+            repository_node_id=repository_node_id,
+            clear_priority=clear_priority,
+            clear_due_date=clear_due_date,
+            clear_assignee=clear_assignee,
+            clear_blockers=clear_blockers,
+            clear_progress_percent=clear_progress_percent,
+            clear_repository_node_id=clear_repository_node_id,
+        )
+        existing = self._work_item_service.get(work_item_id)
+        workspace_id = existing.workspace_id
+        payload = {
+            "work_item_id": str(work_item_id),
+            "work_type": work_type.value if work_type else None,
+            "status": status.value if status else None,
+            "priority": priority.value if priority else None,
+            "due_date": due_date.isoformat() if due_date else None,
+            "assignee": assignee,
+            "blockers": blockers,
+            "progress_percent": progress_percent,
+            "reason": reason,
+        }
+        with self._unit_of_work_factory() as unit_of_work:
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="update_work_item",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            updated = self._work_item_service.update_within(
+                unit_of_work, workspace_id, work_item_id, patch
+            )
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="work_item",
+                entity_id=updated.id,
+                action=MutationAction.UPDATED,
+                before_state=existing.model_dump(mode="json"),
+                after_state=updated.model_dump(mode="json"),
+            )
+            result_payload = {"work_item": self._work_item_dto(updated).model_dump(mode="json")}
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="update_work_item",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        return {**result_payload, "replayed": False}
+
+    def reparent_work_item(
+        self,
+        work_item_id: WorkItemId,
+        *,
+        parent_id: WorkItemId | None,
+        actor_name: str,
+        reason: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        existing = self._work_item_service.get(work_item_id)
+        workspace_id = existing.workspace_id
+        payload = {
+            "work_item_id": str(work_item_id),
+            "parent_id": str(parent_id) if parent_id is not None else None,
+            "reason": reason,
+        }
+        with self._unit_of_work_factory() as unit_of_work:
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="reparent_work_item",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            updated = self._work_item_service.reparent_within(
+                unit_of_work, workspace_id, work_item_id, parent_id
+            )
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="work_item",
+                entity_id=updated.id,
+                action=MutationAction.UPDATED,
+                before_state=existing.model_dump(mode="json"),
+                after_state=updated.model_dump(mode="json"),
+            )
+            result_payload = {"work_item": self._work_item_dto(updated).model_dump(mode="json")}
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="reparent_work_item",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        return {**result_payload, "replayed": False}
+
+    def _archive_work_item(
+        self,
+        work_item_id: WorkItemId,
+        *,
+        is_archived: bool,
+        operation: str,
+        action: MutationAction,
+        actor_name: str,
+        reason: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        existing = self._work_item_service.get(work_item_id)
+        workspace_id = existing.workspace_id
+        payload = {"work_item_id": str(work_item_id), "reason": reason}
+        with self._unit_of_work_factory() as unit_of_work:
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation=operation,
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            if is_archived:
+                updated = self._work_item_service.archive_within(
+                    unit_of_work, workspace_id, work_item_id
+                )
+            else:
+                updated = self._work_item_service.restore_within(
+                    unit_of_work, workspace_id, work_item_id
+                )
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="work_item",
+                entity_id=updated.id,
+                action=action,
+                before_state=existing.model_dump(mode="json"),
+                after_state=updated.model_dump(mode="json"),
+            )
+            result_payload = {"work_item": self._work_item_dto(updated).model_dump(mode="json")}
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation=operation,
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        return {**result_payload, "replayed": False}
+
+    def archive_work_item(
+        self, work_item_id: WorkItemId, *, actor_name: str, reason: str, request_id: str
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        result = self._archive_work_item(
+            work_item_id,
+            is_archived=True,
+            operation="archive_work_item",
+            action=MutationAction.ARCHIVED,
+            actor_name=actor_name,
+            reason=reason,
+            request_id=request_id,
+        )
+        return {**result, "recoverable": True}
+
+    def restore_work_item(
+        self, work_item_id: WorkItemId, *, actor_name: str, reason: str, request_id: str
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        return self._archive_work_item(
+            work_item_id,
+            is_archived=False,
+            operation="restore_work_item",
+            action=MutationAction.RESTORED,
+            actor_name=actor_name,
+            reason=reason,
+            request_id=request_id,
+        )
+
+    def delete_work_item(
+        self,
+        work_item_id: WorkItemId,
+        *,
+        destructive: bool,
+        confirm_id: str | None,
+        actor_name: str,
+        reason: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        self._require_destructive_confirmation(str(work_item_id), destructive, confirm_id)
+        existing = self._work_item_service.get(work_item_id)
+        workspace_id = existing.workspace_id
+        payload = {"work_item_id": str(work_item_id), "reason": reason}
+        with self._unit_of_work_factory() as unit_of_work:
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="delete_work_item",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            self._work_item_service.delete_within(unit_of_work, workspace_id, work_item_id)
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="work_item",
+                entity_id=work_item_id,
+                action=MutationAction.DELETED,
+                before_state=existing.model_dump(mode="json"),
+            )
+            result_payload: dict[str, Any] = {
+                "work_item_id": work_item_id,
+                "recoverable": False,
+            }
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="delete_work_item",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        return {**result_payload, "replayed": False}
+
+    def add_checklist_item(
+        self,
+        work_item_id: WorkItemId,
+        *,
+        label: str,
+        actor_name: str,
+        reason: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        label = _validate_bounded_text(label, field_name="label", maximum=MAX_TITLE_LENGTH)
+        existing = self._work_item_service.get(work_item_id)
+        workspace_id = existing.workspace_id
+        payload = {"work_item_id": str(work_item_id), "label": label, "reason": reason}
+        with self._unit_of_work_factory() as unit_of_work:
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="add_checklist_item",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            item = self._work_item_service.add_checklist_item_within(
+                unit_of_work, workspace_id, work_item_id, label
+            )
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="work_item",
+                entity_id=work_item_id,
+                action=MutationAction.UPDATED,
+                after_state=item.model_dump(mode="json"),
+            )
+            result_payload = {
+                "checklist_item": WorkItemChecklistItemDTO.from_domain(item).model_dump(mode="json")
+            }
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="add_checklist_item",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        return {**result_payload, "replayed": False}
+
+    def update_checklist_item(
+        self,
+        checklist_item_id: WorkItemChecklistItemId,
+        *,
+        label: str | None,
+        is_completed: bool | None,
+        actor_name: str,
+        reason: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        if label is not None:
+            label = _validate_bounded_text(label, field_name="label", maximum=MAX_TITLE_LENGTH)
+        item = self._work_item_service.get_checklist_item(checklist_item_id)
+        work_item = self._work_item_service.get(item.work_item_id)
+        workspace_id = work_item.workspace_id
+        payload = {
+            "checklist_item_id": str(checklist_item_id),
+            "label": label,
+            "is_completed": is_completed,
+            "reason": reason,
+        }
+        with self._unit_of_work_factory() as unit_of_work:
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="update_checklist_item",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            updated = self._work_item_service.update_checklist_item_within(
+                unit_of_work,
+                workspace_id,
+                checklist_item_id,
+                label=label,
+                is_completed=is_completed,
+            )
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="work_item",
+                entity_id=work_item.id,
+                action=MutationAction.UPDATED,
+                before_state=item.model_dump(mode="json"),
+                after_state=updated.model_dump(mode="json"),
+            )
+            result_payload = {
+                "checklist_item": WorkItemChecklistItemDTO.from_domain(updated).model_dump(
+                    mode="json"
+                )
+            }
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="update_checklist_item",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        return {**result_payload, "replayed": False}
+
+    def remove_checklist_item(
+        self,
+        checklist_item_id: WorkItemChecklistItemId,
+        *,
+        actor_name: str,
+        reason: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        item = self._work_item_service.get_checklist_item(checklist_item_id)
+        work_item = self._work_item_service.get(item.work_item_id)
+        workspace_id = work_item.workspace_id
+        payload = {"checklist_item_id": str(checklist_item_id), "reason": reason}
+        with self._unit_of_work_factory() as unit_of_work:
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="remove_checklist_item",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            self._work_item_service.remove_checklist_item_within(
+                unit_of_work, workspace_id, checklist_item_id
+            )
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="work_item",
+                entity_id=work_item.id,
+                action=MutationAction.UPDATED,
+                before_state=item.model_dump(mode="json"),
+            )
+            result_payload: dict[str, Any] = {"checklist_item_id": checklist_item_id}
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="remove_checklist_item",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        return {**result_payload, "replayed": False}
+
+    def reorder_checklist_items(
+        self,
+        work_item_id: WorkItemId,
+        *,
+        ordered_ids: tuple[WorkItemChecklistItemId, ...],
+        actor_name: str,
+        reason: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        existing = self._work_item_service.get(work_item_id)
+        workspace_id = existing.workspace_id
+        payload = {
+            "work_item_id": str(work_item_id),
+            "ordered_ids": [str(item_id) for item_id in ordered_ids],
+            "reason": reason,
+        }
+        with self._unit_of_work_factory() as unit_of_work:
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="reorder_checklist_items",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            items = self._work_item_service.reorder_checklist_items_within(
+                unit_of_work, workspace_id, work_item_id, ordered_ids
+            )
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="work_item",
+                entity_id=work_item_id,
+                action=MutationAction.UPDATED,
+            )
+            result_payload = {
+                "checklist_items": [
+                    WorkItemChecklistItemDTO.from_domain(item).model_dump(mode="json")
+                    for item in items
+                ]
+            }
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="reorder_checklist_items",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        return {**result_payload, "replayed": False}
+
+    def attach_document(
+        self,
+        work_item_id: WorkItemId,
+        *,
+        document_id: DocumentId,
+        actor_name: str,
+        reason: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        existing = self._work_item_service.get(work_item_id)
+        workspace_id = existing.workspace_id
+        payload = {
+            "work_item_id": str(work_item_id),
+            "document_id": str(document_id),
+            "reason": reason,
+        }
+        with self._unit_of_work_factory() as unit_of_work:
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="attach_document",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            link = self._work_item_service.attach_document_within(
+                unit_of_work,
+                workspace_id=workspace_id,
+                work_item_id=work_item_id,
+                document_id=document_id,
+            )
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="work_item",
+                entity_id=work_item_id,
+                action=MutationAction.UPDATED,
+                after_state=link.model_dump(mode="json"),
+            )
+            result_payload: dict[str, Any] = {"document_link_id": link.id}
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="attach_document",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        return {**result_payload, "replayed": False}
+
+    def detach_document(
+        self,
+        work_item_id: WorkItemId,
+        *,
+        document_id: DocumentId,
+        actor_name: str,
+        reason: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        existing = self._work_item_service.get(work_item_id)
+        workspace_id = existing.workspace_id
+        payload = {
+            "work_item_id": str(work_item_id),
+            "document_id": str(document_id),
+            "reason": reason,
+        }
+        with self._unit_of_work_factory() as unit_of_work:
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="detach_document",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            self._work_item_service.detach_document_within(
+                unit_of_work,
+                workspace_id=workspace_id,
+                work_item_id=work_item_id,
+                document_id=document_id,
+            )
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="work_item",
+                entity_id=work_item_id,
+                action=MutationAction.UPDATED,
+            )
+            result_payload: dict[str, Any] = {
+                "work_item_id": work_item_id,
+                "document_id": document_id,
+            }
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="detach_document",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        return {**result_payload, "replayed": False}
+
+    # ------------------------------------------------------------------
+    # ST-09: document/resource/node/edge lifecycle
+    # ------------------------------------------------------------------
+
+    def list_documents(
+        self, workspace_id: WorkspaceId, *, include_archived: bool = False
+    ) -> tuple[DocumentDTO, ...]:
+        self._require_workspace(workspace_id)
+        return tuple(
+            DocumentDTO.from_domain(document)
+            for document in self._document_service.list_documents(
+                workspace_id, include_archived=include_archived
+            )
+        )
+
+    def get_document(self, document_id: DocumentId) -> DocumentDTO:
+        try:
+            return DocumentDTO.from_domain(self._document_service.get(document_id))
+        except DocumentNotFoundError as error:
+            raise GatewayNotFoundError(str(error)) from error
+
+    def list_document_versions(self, document_id: DocumentId) -> tuple[DocumentVersionDTO, ...]:
+        self._document_service.get(document_id)
+        return tuple(
+            DocumentVersionDTO.from_domain(version)
+            for version in self._document_service.list_versions(document_id)
+        )
+
+    def get_document_version(
+        self, document_id: DocumentId, *, version_number: int
+    ) -> DocumentVersionDTO:
+        versions = self._document_service.list_versions(document_id)
+        for version in versions:
+            if version.version_number == version_number:
+                return DocumentVersionDTO.from_domain(version)
+        raise GatewayNotFoundError(f"document {document_id} has no version {version_number}")
+
+    def archive_document(
+        self, document_id: DocumentId, *, actor_name: str, reason: str, request_id: str
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        existing = self._document_service.get(document_id)
+        workspace_id = existing.workspace_id
+        payload = {"document_id": str(document_id), "reason": reason}
+        with self._unit_of_work_factory() as unit_of_work:
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="archive_document",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            updated = self._document_service.update_metadata_within(
+                unit_of_work, document_id, is_archived=True
+            )
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="document",
+                entity_id=document_id,
+                action=MutationAction.ARCHIVED,
+                before_state=existing.model_dump(mode="json"),
+                after_state=updated.model_dump(mode="json"),
+            )
+            result_payload = {"document": DocumentDTO.from_domain(updated).model_dump(mode="json")}
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="archive_document",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        return {**result_payload, "replayed": False, "recoverable": True}
+
+    def restore_document(
+        self, document_id: DocumentId, *, actor_name: str, reason: str, request_id: str
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        existing = self._document_service.get(document_id)
+        workspace_id = existing.workspace_id
+        payload = {"document_id": str(document_id), "reason": reason}
+        with self._unit_of_work_factory() as unit_of_work:
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="restore_document",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            updated = self._document_service.update_metadata_within(
+                unit_of_work, document_id, is_archived=False
+            )
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="document",
+                entity_id=document_id,
+                action=MutationAction.RESTORED,
+                before_state=existing.model_dump(mode="json"),
+                after_state=updated.model_dump(mode="json"),
+            )
+            result_payload = {"document": DocumentDTO.from_domain(updated).model_dump(mode="json")}
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="restore_document",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        return {**result_payload, "replayed": False}
+
+    def delete_document(
+        self,
+        document_id: DocumentId,
+        *,
+        destructive: bool,
+        confirm_id: str | None,
+        actor_name: str,
+        reason: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        self._require_destructive_confirmation(str(document_id), destructive, confirm_id)
+        existing = self._document_service.get(document_id)
+        workspace_id = existing.workspace_id
+        payload = {"document_id": str(document_id), "reason": reason}
+        with self._unit_of_work_factory() as unit_of_work:
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="delete_document",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            unit_of_work.documents.delete_without_commit(document_id)
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="document",
+                entity_id=document_id,
+                action=MutationAction.DELETED,
+                before_state=existing.model_dump(mode="json"),
+            )
+            result_payload: dict[str, Any] = {"document_id": document_id, "recoverable": False}
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="delete_document",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        return {**result_payload, "replayed": False}
+
+    def list_collections(self, workspace_id: WorkspaceId) -> tuple[CollectionDTO, ...]:
+        self._require_workspace(workspace_id)
+        return tuple(
+            CollectionDTO.from_domain(collection)
+            for collection in self._document_service.list_collections(workspace_id)
+        )
+
+    def list_tags(self, workspace_id: WorkspaceId) -> tuple[TagDTO, ...]:
+        self._require_workspace(workspace_id)
+        return tuple(
+            TagDTO.from_domain(tag) for tag in self._document_service.list_tags(workspace_id)
+        )
+
+    def _require_destructive_confirmation(
+        self, entity_id: str, destructive: bool, confirm_id: str | None
+    ) -> None:
+        if not destructive:
+            raise GatewayValidationError("hard delete requires destructive: true")
+        if confirm_id is None or confirm_id != entity_id:
+            raise GatewayValidationError("hard delete requires confirm_id matching the entity id")
+
+    def restore_resource(
+        self, resource_id: ResourceId, *, actor_name: str, reason: str, request_id: str
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        existing = self._resources.get(resource_id)
+        if existing is None:
+            raise GatewayNotFoundError(f"resource {resource_id} does not exist")
+        workspace_id = existing.workspace_id
+        payload = {"resource_id": str(resource_id), "reason": reason}
+        with self._unit_of_work_factory() as unit_of_work:
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="restore_resource",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            updated, _ = self._resource_service.restore_within(unit_of_work, resource_id)
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="resource",
+                entity_id=resource_id,
+                action=MutationAction.RESTORED,
+                before_state=existing.model_dump(mode="json"),
+                after_state=updated.model_dump(mode="json"),
+            )
+            result_payload = {"resource": ResourceDTO.from_domain(updated).model_dump(mode="json")}
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="restore_resource",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        return {**result_payload, "replayed": False}
+
+    def delete_resource(
+        self,
+        resource_id: ResourceId,
+        *,
+        destructive: bool,
+        confirm_id: str | None,
+        actor_name: str,
+        reason: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        self._require_destructive_confirmation(str(resource_id), destructive, confirm_id)
+        existing = self._resources.get(resource_id)
+        if existing is None:
+            raise GatewayNotFoundError(f"resource {resource_id} does not exist")
+        workspace_id = existing.workspace_id
+        payload = {"resource_id": str(resource_id), "reason": reason}
+        with self._unit_of_work_factory() as unit_of_work:
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="delete_resource",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            self._resource_service.delete_within(unit_of_work, resource_id)
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="resource",
+                entity_id=resource_id,
+                action=MutationAction.DELETED,
+                before_state=existing.model_dump(mode="json"),
+            )
+            result_payload: dict[str, Any] = {"resource_id": resource_id, "recoverable": False}
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="delete_resource",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        return {**result_payload, "replayed": False}
+
+    def restore_node(
+        self, node_id: NodeId, *, actor_name: str, reason: str, request_id: str
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        existing = self._nodes.get(node_id)
+        if existing is None:
+            raise GatewayNotFoundError(f"node {node_id} does not exist")
+        workspace_id = existing.workspace_id
+        payload = {"node_id": str(node_id), "reason": reason}
+        with self._unit_of_work_factory() as unit_of_work:
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="restore_node",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            updated = self._node_service.restore_within(unit_of_work, node_id)
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="node",
+                entity_id=node_id,
+                action=MutationAction.RESTORED,
+                before_state=existing.model_dump(mode="json"),
+                after_state=updated.model_dump(mode="json"),
+            )
+            result_payload = {"node": NodeDTO.from_domain(updated).model_dump(mode="json")}
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="restore_node",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        return {**result_payload, "replayed": False}
+
+    def delete_node(
+        self,
+        node_id: NodeId,
+        *,
+        destructive: bool,
+        confirm_id: str | None,
+        actor_name: str,
+        reason: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        self._require_destructive_confirmation(str(node_id), destructive, confirm_id)
+        existing = self._nodes.get(node_id)
+        if existing is None:
+            raise GatewayNotFoundError(f"node {node_id} does not exist")
+        workspace_id = existing.workspace_id
+        payload = {"node_id": str(node_id), "reason": reason}
+        with self._unit_of_work_factory() as unit_of_work:
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="delete_node",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            self._node_service.delete_within(unit_of_work, node_id)
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="node",
+                entity_id=node_id,
+                action=MutationAction.DELETED,
+                before_state=existing.model_dump(mode="json"),
+            )
+            result_payload: dict[str, Any] = {"node_id": node_id, "recoverable": False}
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="delete_node",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        return {**result_payload, "replayed": False}
+
+    def disconnect_edge(
+        self, edge_id: EdgeId, *, actor_name: str, reason: str, request_id: str
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        existing = self._edges.get(edge_id)
+        if existing is None:
+            raise GatewayNotFoundError(f"edge {edge_id} does not exist")
+        workspace_id = existing.workspace_id
+        payload = {"edge_id": str(edge_id), "reason": reason}
+        with self._unit_of_work_factory() as unit_of_work:
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="disconnect_edge",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            self._edge_service.disconnect_within(unit_of_work, edge_id)
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="edge",
+                entity_id=edge_id,
+                action=MutationAction.DELETED,
+                before_state=existing.model_dump(mode="json"),
+            )
+            result_payload: dict[str, Any] = {"edge_id": edge_id}
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="disconnect_edge",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        return {**result_payload, "replayed": False}
+
+    # ------------------------------------------------------------------
+    # ST-09: enrichment / ingestion jobs / relation review / capture
+    # ------------------------------------------------------------------
+
+    def enrich_resource(
+        self, resource_id: ResourceId, *, actor_name: str, reason: str, request_id: str
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        if self._enrichment_service is None:
+            raise GatewayValidationError(
+                "enrichment is not configured on this instance (no provider)"
+            )
+        if self._extraction_service is None:
+            raise GatewayValidationError("enrichment extraction is not configured on this instance")
+        existing = self._resources.get(resource_id)
+        if existing is None:
+            raise GatewayNotFoundError(f"resource {resource_id} does not exist")
+        workspace_id = existing.workspace_id
+        payload = {"resource_id": str(resource_id), "reason": reason}
+        with self._unit_of_work_factory() as unit_of_work:
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="enrich_resource",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+        # `enrich_resource` manages its own read/classify/write transactions on this same
+        # connection (S9-F02), so it must run with NO open transaction -- nesting a second
+        # `BEGIN` on the shared connection raises `cannot start a transaction within a
+        # transaction`. The receipt lookup above used a short, already-closed UoW.
+        extracted = self._extraction_service.extract(
+            resource_kind=existing.kind,
+            canonical_identifier=existing.canonical_identifier,
+            source_url=existing.source_url,
+        )
+        outcome = self._enrichment_service.enrich_resource(
+            workspace_id=workspace_id,
+            resource_id=resource_id,
+            extracted=extracted,
+            actor=actor_name,
+        )
+        result_payload: dict[str, Any] = {
+            "profile_id": outcome.profile.id,
+            "version_number": outcome.version.version_number,
+        }
+        with self._unit_of_work_factory() as unit_of_work:
+            self._record_event(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="resource",
+                entity_id=resource_id,
+                action=MutationAction.UPDATED,
+            )
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="enrich_resource",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        return {**result_payload, "replayed": False}
+
+    def list_ingestion_jobs(
+        self, workspace_id: WorkspaceId, *, limit: int
+    ) -> tuple[IngestionJobDTO, ...]:
+        _validate_limit(limit, maximum=MAX_LIST_LIMIT)
+        self._require_workspace(workspace_id)
+        with self._unit_of_work_factory() as unit_of_work:
+            jobs = unit_of_work.ingestion_jobs.list_by_workspace(workspace_id)
+        return tuple(IngestionJobDTO.from_domain(job) for job in jobs[:limit])
+
+    def get_ingestion_job(self, job_id: IngestionJobId) -> IngestionJobDTO:
+        with self._unit_of_work_factory() as unit_of_work:
+            job = unit_of_work.ingestion_jobs.get(job_id)
+        if job is None:
+            raise GatewayNotFoundError(f"ingestion job {job_id} does not exist")
+        return IngestionJobDTO.from_domain(job)
+
+    def list_relation_proposals(
+        self, workspace_id: WorkspaceId, *, status: RelationProposalStatus | None, limit: int
+    ) -> tuple[RelationProposalDTO, ...]:
+        _validate_limit(limit, maximum=MAX_LIST_LIMIT)
+        self._require_workspace(workspace_id)
+        with self._unit_of_work_factory() as unit_of_work:
+            proposals = unit_of_work.relation_proposals.list_by_workspace(
+                workspace_id, status=status
+            )
+        return tuple(RelationProposalDTO.from_domain(proposal) for proposal in proposals[:limit])
+
+    def accept_relation_proposal(
+        self,
+        proposal_id: RelationProposalId,
+        *,
+        target_node_id: NodeId,
+        actor_name: str,
+        reason: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        payload = {
+            "proposal_id": str(proposal_id),
+            "target_node_id": str(target_node_id),
+            "reason": reason,
+        }
+        with self._unit_of_work_factory() as unit_of_work:
+            proposal = unit_of_work.relation_proposals.get(proposal_id)
+            if proposal is None:
+                raise GatewayNotFoundError(f"relation proposal {proposal_id} does not exist")
+            if proposal.status is not RelationProposalStatus.NEEDS_REVIEW:
+                raise GatewayConflictError(
+                    f"relation proposal {proposal_id} is already resolved "
+                    f"(status={proposal.status.value})"
+                )
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=proposal.workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="accept_relation_proposal",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            workspace = unit_of_work.workspaces.get(proposal.workspace_id)
+            if workspace is None:
+                raise GatewayNotFoundError(f"workspace {proposal.workspace_id} does not exist")
+            edge_type = next(
+                (
+                    edge_type
+                    for edge_type in workspace.edge_types
+                    if edge_type.name == proposal.relation_kind.value
+                ),
+                None,
+            )
+            if edge_type is None:
+                raise GatewayValidationError(
+                    f"workspace has no edge type named {proposal.relation_kind.value}"
+                )
+            self._edge_service.connect_within(
+                unit_of_work,
+                proposal.workspace_id,
+                edge_type.id,
+                proposal.source_node_id,
+                target_node_id,
+            )
+            resolved = proposal.model_copy(
+                update={
+                    "resolved_target_node_id": target_node_id,
+                    "status": RelationProposalStatus.AUTO_APPLIED,
+                }
+            )
+            unit_of_work.relation_proposals.save_without_commit(resolved)
+            self._record_event(
+                unit_of_work,
+                workspace_id=proposal.workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="relation_proposal",
+                entity_id=proposal_id,
+                action=MutationAction.UPDATED,
+                before_state=proposal.model_dump(mode="json"),
+                after_state=resolved.model_dump(mode="json"),
+            )
+            result_payload: dict[str, Any] = {
+                "proposal": RelationProposalDTO.from_domain(resolved).model_dump(mode="json")
+            }
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=proposal.workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="accept_relation_proposal",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        return {**result_payload, "replayed": False}
+
+    def reject_relation_proposal(
+        self,
+        proposal_id: RelationProposalId,
+        *,
+        actor_name: str,
+        reason: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        payload = {"proposal_id": str(proposal_id), "reason": reason}
+        with self._unit_of_work_factory() as unit_of_work:
+            proposal = unit_of_work.relation_proposals.get(proposal_id)
+            if proposal is None:
+                raise GatewayNotFoundError(f"relation proposal {proposal_id} does not exist")
+            if proposal.status is RelationProposalStatus.AUTO_APPLIED:
+                raise GatewayConflictError(
+                    f"relation proposal {proposal_id} is already applied and cannot be rejected"
+                )
+            if proposal.status is RelationProposalStatus.REJECTED:
+                result_payload = {
+                    "proposal": RelationProposalDTO.from_domain(proposal).model_dump(mode="json")
+                }
+                return {**result_payload, "replayed": True}
+            fingerprint, cached = self._lookup_receipt(
+                unit_of_work,
+                workspace_id=proposal.workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="reject_relation_proposal",
+                payload=payload,
+            )
+            if cached is not None:
+                return {**cached, "replayed": True}
+            resolved = proposal.model_copy(update={"status": RelationProposalStatus.REJECTED})
+            unit_of_work.relation_proposals.save_without_commit(resolved)
+            self._record_event(
+                unit_of_work,
+                workspace_id=proposal.workspace_id,
+                actor_name=actor_name,
+                reason=reason,
+                request_id=request_id,
+                entity_type="relation_proposal",
+                entity_id=proposal_id,
+                action=MutationAction.UPDATED,
+                before_state=proposal.model_dump(mode="json"),
+                after_state=resolved.model_dump(mode="json"),
+            )
+            result_payload: dict[str, Any] = {
+                "proposal": RelationProposalDTO.from_domain(resolved).model_dump(mode="json")
+            }
+            self._save_receipt(
+                unit_of_work,
+                workspace_id=proposal.workspace_id,
+                actor_name=actor_name,
+                request_id=request_id,
+                operation="reject_relation_proposal",
+                fingerprint=fingerprint,
+                result_payload=result_payload,
+            )
+        return {**result_payload, "replayed": False}
+
+    def capture(
+        self,
+        workspace_id: WorkspaceId,
+        *,
+        source: str,
+        request_id: str,
+        actor_name: str,
+        payload_kind: str,
+        url: str | None,
+        text: str | None,
+        intent: str,
+        title: str | None,
+        repository_node_id: NodeId | None,
+        reason: str,
+    ) -> dict[str, Any]:
+        actor_name, reason, request_id = self._validate_attribution(actor_name, reason, request_id)
+        if self._capture_planning_orchestrator is None:
+            raise GatewayValidationError("capture/plan is not configured on this instance")
+        from personal_graph_os.domain.capture import (
+            CaptureEnvelope,
+            CaptureIntent,
+            CapturePayloadKind,
+        )
+
+        envelope = CaptureEnvelope(
+            workspace_id=workspace_id,
+            source=source,
+            request_id=request_id,
+            actor_name=actor_name,
+            payload_kind=CapturePayloadKind(payload_kind),
+            url=url,
+            text=text,
+            intent=CaptureIntent(intent),
+            title=title,
+        )
+        outcome, _ = self._capture_planning_orchestrator.submit(
+            envelope, repository_node_id=repository_node_id
+        )
+        return {
+            "ingestion_job_id": outcome.job.id,
+            "resource_id": outcome.resource_id,
+            "document_id": outcome.document_id,
+            "needs_clarification": outcome.needs_clarification,
+            "was_replayed": outcome.was_replayed,
+        }
+
+    def import_clickup_item(
+        self,
+        workspace_id: WorkspaceId,
+        *,
+        task_id: str,
+        intent: str,
+        actor_name: str,
+        repository_node_id: NodeId | None,
+        reason: str,
+    ) -> dict[str, Any]:
+        """Import one user-selected ClickUp task through the shared capture pipeline (ST-10).
+
+        `task_id` is both the stable external id and the idempotency key (`request_id ==
+        task.id`), so an MCP caller gets the same replay/conflict semantics as every other
+        channel without inventing a separate request id.
+        """
+        actor_name, reason, _request_id = self._validate_attribution(actor_name, reason, task_id)
+        if self._clickup_service is None:
+            raise GatewayValidationError("clickup import is not configured on this instance")
+        from personal_graph_os.domain.capture import CaptureIntent
+
+        outcome, plan_outcome = self._clickup_service.import_item(
+            workspace_id,
+            task_id=task_id,
+            intent=CaptureIntent(intent),
+            actor_name=actor_name,
+            repository_node_id=repository_node_id,
+        )
+        result: dict[str, Any] = {
+            "ingestion_job_id": outcome.job.id,
+            "resource_id": outcome.resource_id,
+            "document_id": outcome.document_id,
+            "needs_clarification": outcome.needs_clarification,
+            "was_replayed": outcome.was_replayed,
+            "pending_operations": [
+                operation.kind.value for operation in outcome.pending_operations
+            ],
+        }
+        if plan_outcome is not None:
+            result["plan"] = {
+                "epic_id": plan_outcome.epic.id,
+                "story_ids": [story.id for story in plan_outcome.stories],
+                "task_ids": [task.id for task in plan_outcome.tasks],
+                "plan_document_id": plan_outcome.plan_document.id,
+            }
+        return result

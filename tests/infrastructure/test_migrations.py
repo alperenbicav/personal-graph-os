@@ -39,6 +39,7 @@ _EXPECTED_TABLES = {
     "document_versions",
     "document_links",
     "ingestion_jobs",
+    "channel_sync_state",
     "work_items",
     "work_planning_receipts",
 }
@@ -68,6 +69,10 @@ _ALL_MIGRATION_NAMES = (
     "0013_repository_label.sql",
     "0014_enrichment_bibliographic_evidence.sql",
     "0015_ingestion_job_result_entity_index.sql",
+    "0016_work_item_task_fields.sql",
+    "0017_work_item_archive.sql",
+    "0018_channel_sync_and_external_url.sql",
+    "0019_search_scope.sql",
 )
 
 
@@ -126,6 +131,10 @@ def test_upgrading_an_existing_0001_database_preserves_ids_and_data() -> None:
         "0013_repository_label.sql",
         "0014_enrichment_bibliographic_evidence.sql",
         "0015_ingestion_job_result_entity_index.sql",
+        "0016_work_item_task_fields.sql",
+        "0017_work_item_archive.sql",
+        "0018_channel_sync_and_external_url.sql",
+        "0019_search_scope.sql",
     )
 
     resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()
@@ -342,6 +351,10 @@ def test_upgrading_an_existing_0007_database_preserves_resources_and_nodes() -> 
         "0013_repository_label.sql",
         "0014_enrichment_bibliographic_evidence.sql",
         "0015_ingestion_job_result_entity_index.sql",
+        "0016_work_item_task_fields.sql",
+        "0017_work_item_archive.sql",
+        "0018_channel_sync_and_external_url.sql",
+        "0019_search_scope.sql",
     )
 
     resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()
@@ -401,6 +414,10 @@ def test_upgrading_a_pre_0011_database_with_duplicate_edges_keeps_one_canonical_
         "0013_repository_label.sql",
         "0014_enrichment_bibliographic_evidence.sql",
         "0015_ingestion_job_result_entity_index.sql",
+        "0016_work_item_task_fields.sql",
+        "0017_work_item_archive.sql",
+        "0018_channel_sync_and_external_url.sql",
+        "0019_search_scope.sql",
     )
 
     rows = connection.execute(
@@ -512,3 +529,165 @@ def test_0015_adds_a_result_entity_lookup_index_covering_the_selected_query() ->
         "created_at",
         "id",
     ]
+
+
+def test_0016_adds_work_item_planning_fields_and_the_checklist_table() -> None:
+    """ST-08: the five nullable planning columns land additively on `work_items` (existing rows
+    keep working with no backfill), and the checklist is its own child table with stable ids and
+    a dense position index, not an embedded JSON column."""
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    run_migrations(connection)
+
+    work_item_columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info('work_items')").fetchall()
+    }
+    assert {
+        "priority",
+        "due_date",
+        "assignee",
+        "blockers",
+        "progress_percent",
+    }.issubset(work_item_columns)
+
+    connection.execute(
+        "INSERT INTO workspaces (id, name, created_at) VALUES ('ws-1', 'Personal', 't0')"
+    )
+    connection.execute(
+        "INSERT INTO node_types (id, workspace_id, name) VALUES ('nt-1', 'ws-1', 'Resource')"
+    )
+    connection.execute(
+        "INSERT INTO nodes "
+        "(id, workspace_id, node_type_id, title, created_at, updated_at) "
+        "VALUES ('node-1', 'ws-1', 'nt-1', 'Epic', 't0', 't0')"
+    )
+    connection.execute(
+        "INSERT INTO work_items "
+        "(id, workspace_id, node_id, kind, work_type, source, created_at, updated_at) "
+        "VALUES ('wi-1', 'ws-1', 'node-1', 'epic', 'feature', 'manual', 't0', 't0')"
+    )
+    connection.commit()
+    row = connection.execute("SELECT * FROM work_items WHERE id = 'wi-1'").fetchone()
+    assert row["priority"] is None
+    assert row["progress_percent"] is None
+
+    connection.execute(
+        "INSERT INTO work_item_checklist_items "
+        "(id, work_item_id, position, label, is_completed, created_at) "
+        "VALUES ('cli-1', 'wi-1', 0, 'Draft', 1, 't0')"
+    )
+    connection.commit()
+
+    indexed_columns = [
+        row["name"]
+        for row in connection.execute(
+            "PRAGMA index_info('idx_work_item_checklist_items_work_item')"
+        ).fetchall()
+    ]
+    assert indexed_columns == ["work_item_id", "position"]
+
+
+def test_0016_checklist_items_cascade_when_their_work_item_is_deleted() -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    run_migrations(connection)
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.commit()
+    connection.execute(
+        "INSERT INTO workspaces (id, name, created_at) VALUES ('ws-1', 'Personal', 't0')"
+    )
+    connection.execute(
+        "INSERT INTO node_types (id, workspace_id, name) VALUES ('nt-1', 'ws-1', 'Resource')"
+    )
+    connection.execute(
+        "INSERT INTO nodes "
+        "(id, workspace_id, node_type_id, title, created_at, updated_at) "
+        "VALUES ('node-1', 'ws-1', 'nt-1', 'Epic', 't0', 't0')"
+    )
+    connection.execute(
+        "INSERT INTO work_items "
+        "(id, workspace_id, node_id, kind, work_type, source, created_at, updated_at) "
+        "VALUES ('wi-1', 'ws-1', 'node-1', 'epic', 'feature', 'manual', 't0', 't0')"
+    )
+    connection.execute(
+        "INSERT INTO work_item_checklist_items "
+        "(id, work_item_id, position, label, created_at) "
+        "VALUES ('cli-1', 'wi-1', 0, 'Draft', 't0')"
+    )
+    connection.commit()
+
+    connection.execute("DELETE FROM work_items WHERE id = 'wi-1'")
+    connection.commit()
+
+    remaining = connection.execute(
+        "SELECT * FROM work_item_checklist_items WHERE work_item_id = 'wi-1'"
+    ).fetchall()
+    assert remaining == []
+
+
+def test_0019_backfills_the_search_scope_from_the_canonical_tables() -> None:
+    """ST-12: migrating a pre-0019 database rebuilds `search_documents` with the `scope` column
+    and backfills each row's scope from the resource kind / work-item membership it indexes."""
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    applied_migration_names(connection)
+    versions = resources.files("personal_graph_os.infrastructure.sqlite.migrations.versions")
+    pre_0019 = [name for name in _ALL_MIGRATION_NAMES if not name.startswith("0019")]
+    for name in pre_0019:
+        apply_migration_script(connection, name, (versions / name).read_text(encoding="utf-8"))
+
+    connection.execute(
+        "INSERT INTO workspaces (id, name, created_at) VALUES ('ws-1', 'Personal', 't0')"
+    )
+    connection.execute(
+        "INSERT INTO node_types (id, workspace_id, name) VALUES ('nt-1', 'ws-1', 'Note')"
+    )
+    for node_id in ("node-generic", "node-article", "node-repo", "node-task"):
+        connection.execute(
+            "INSERT INTO nodes "
+            "(id, workspace_id, node_type_id, title, created_at, updated_at) "
+            "VALUES (?, 'ws-1', 'nt-1', 'title', 't0', 't0')",
+            (node_id,),
+        )
+    connection.execute(
+        "INSERT INTO resources (id, workspace_id, node_id, kind, canonical_identifier, "
+        "last_activity_at) VALUES ('res-article', 'ws-1', 'node-article', 'article', 'art:1', 't0')"
+    )
+    connection.execute(
+        "INSERT INTO resources (id, workspace_id, node_id, kind, canonical_identifier, "
+        "last_activity_at) VALUES ('res-repo', 'ws-1', 'node-repo', 'github_repository', "
+        "'github:owner/repo', 't0')"
+    )
+    connection.execute(
+        "INSERT INTO work_items (id, workspace_id, node_id, kind, work_type, status, source, "
+        "created_at, updated_at) VALUES ('wi-1', 'ws-1', 'node-task', 'story', 'feature', "
+        "'backlog', 'manual', 't0', 't0')"
+    )
+    for entity_type, entity_id in (
+        ("node", "node-generic"),
+        ("node", "node-article"),
+        ("node", "node-repo"),
+        ("node", "node-task"),
+        ("resource", "node-article"),
+        ("resource", "node-repo"),
+    ):
+        connection.execute(
+            "INSERT INTO search_documents (workspace_id, entity_type, entity_id, text) "
+            "VALUES ('ws-1', ?, ?, 'text')",
+            (entity_type, entity_id),
+        )
+    connection.commit()
+
+    newly_applied = run_migrations(connection)
+
+    assert newly_applied == ("0019_search_scope.sql",)
+    rows = connection.execute(
+        "SELECT entity_type, entity_id, scope FROM search_documents ORDER BY entity_id, entity_type"
+    ).fetchall()
+    by_row = {(row["entity_type"], row["entity_id"]): row["scope"] for row in rows}
+    assert by_row[("node", "node-generic")] == "graph"
+    assert by_row[("node", "node-article")] == "research"
+    assert by_row[("resource", "node-article")] == "research"
+    assert by_row[("node", "node-repo")] == "repositories"
+    assert by_row[("resource", "node-repo")] == "repositories"
+    assert by_row[("node", "node-task")] == "tasks"

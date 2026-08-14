@@ -250,11 +250,11 @@ def test_undo_a_node_update_repairs_the_search_index_projection(client: TestClie
     assert response.status_code == 200
     restored_hits = client.get(
         "/search", params={"workspace_id": workspace_id, "q": "AlphaOldUnique"}
-    ).json()
+    ).json()["results"]
     assert any(hit["node"]["id"] == node["id"] for hit in restored_hits)
     stale_hits = client.get(
         "/search", params={"workspace_id": workspace_id, "q": "BetaNewUnique"}
-    ).json()
+    ).json()["results"]
     assert not any(hit["node"]["id"] == node["id"] for hit in stale_hits)
 
 

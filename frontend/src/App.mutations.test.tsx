@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import * as api from './api/client'
 import { clearSession, commitToken } from './api/session'
-import type { Canvas, CanvasPlacement, GraphEdge, GraphNode, Workspace } from './types'
+import type { Canvas, CanvasPlacement, GraphEdge, GraphNode, WorkItem, Workspace } from './types'
 
 vi.mock('./api/client')
 
@@ -16,11 +16,15 @@ vi.mock('./components/GraphCanvas', () => ({
     placements: CanvasPlacement[]
     onMovePlacement: (placementId: string, x: number, y: number) => void
     onRequestConnect: (source: string, target: string) => void
+    onSelectNode: (nodeId: string) => void
   }) => {
     const p1 = props.placements.find((p) => p.id === 'p1')
     return (
       <div data-testid="graph-canvas-stub">
         <span data-testid="p1-position">{p1 ? `${p1.position_x},${p1.position_y}` : 'none'}</span>
+        <button type="button" onClick={() => props.onSelectNode('n1')}>
+          stub-select-node
+        </button>
         <button type="button" onClick={() => props.onMovePlacement('p1', 999, 999)}>
           stub-move-p1
         </button>
@@ -92,11 +96,12 @@ function placementFor(nodeId: string, id: string, x = 10, y = 10): CanvasPlaceme
 
 async function captureAndSelectNode(title: string) {
   const node = makeNode('n1', title)
-  mockedApi.captureNode.mockResolvedValue(node)
-  mockedApi.placeNode.mockResolvedValue(placementFor('n1', 'p1'))
+  mockedApi.listNodes.mockResolvedValue([node])
+  mockedApi.listPlacements.mockResolvedValue([placementFor('n1', 'p1')])
 
-  fireEvent.change(screen.getByLabelText(/quick capture/i), { target: { value: title } })
-  fireEvent.click(screen.getByRole('button', { name: /^add$/i }))
+  render(<App />)
+  await screen.findByText('Personal Graph OS')
+  fireEvent.click(screen.getByRole('button', { name: 'stub-select-node' }))
   await screen.findByText(title)
 }
 
@@ -108,6 +113,8 @@ beforeEach(() => {
   mockedApi.listNodes.mockResolvedValue([])
   mockedApi.listPlacements.mockResolvedValue([])
   mockedApi.listResources.mockResolvedValue([])
+  mockedApi.listWorkItems.mockResolvedValue([])
+  mockedApi.listDocuments.mockResolvedValue([])
   mockedApi.listAttachments.mockResolvedValue([])
   mockedApi.listFileReferences.mockResolvedValue([])
 })
@@ -119,8 +126,6 @@ afterEach(() => {
 
 describe('status change and archive failure handling', () => {
   it('surfaces a dismissible error and keeps the node unchanged when a status update is rejected', async () => {
-    render(<App />)
-    await screen.findByText('Personal Graph OS')
     await captureAndSelectNode('Write report')
 
     mockedApi.updateNode.mockRejectedValue(new Error('status update failed'))
@@ -132,8 +137,6 @@ describe('status change and archive failure handling', () => {
   })
 
   it('surfaces an error and keeps the node present when archiving is rejected', async () => {
-    render(<App />)
-    await screen.findByText('Personal Graph OS')
     await captureAndSelectNode('Write report')
 
     mockedApi.archiveNode.mockRejectedValue(new Error('archive failed'))
@@ -147,8 +150,6 @@ describe('status change and archive failure handling', () => {
 
 describe('field update failure handling', () => {
   it('surfaces an error and reverts the control to the canonical value when a field save is rejected', async () => {
-    render(<App />)
-    await screen.findByText('Personal Graph OS')
     await captureAndSelectNode('Write report')
 
     mockedApi.updateNode.mockRejectedValue(new Error('field update failed'))
@@ -285,5 +286,78 @@ describe('placement move rollback', () => {
     pending[1].reject(new Error('request 2 failed'))
     await screen.findByText(/could not save the new position/i)
     await waitFor(() => expect(screen.getByTestId('p1-position').textContent).toBe('10,10'))
+  })
+
+  it('shows Go to Tasks for a projected work-item node and navigates (S8-F01)', async () => {
+    const workItem: WorkItem = {
+      id: 'wi-1',
+      workspace_id: 'ws-1',
+      node_id: 'n1',
+      kind: 'epic',
+      work_type: 'feature',
+      status: 'backlog',
+      parent_id: null,
+      repository_node_id: null,
+      priority: null,
+      due_date: null,
+      assignee: null,
+      blockers: null,
+      progress_percent: null,
+      source: 'manual',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      title: 'An epic',
+      body: 'Epic body',
+    }
+    mockedApi.listNodes.mockResolvedValue([makeNode('n1', 'An epic')])
+    mockedApi.listPlacements.mockResolvedValue([placementFor('n1', 'p1')])
+    mockedApi.listWorkItems.mockResolvedValue([workItem])
+    mockedApi.getWorkItemDetail.mockResolvedValue({
+      work_item: workItem,
+      checklist_items: [],
+      linked_documents: [],
+    })
+
+    render(<App />)
+    await screen.findByText('Personal Graph OS')
+    fireEvent.click(screen.getByRole('button', { name: 'stub-select-node' }))
+
+    const goToTasks = await screen.findByRole('button', { name: 'Go to Tasks' })
+    fireEvent.click(goToTasks)
+
+    expect(
+      screen.getByRole('button', { name: 'Tasks' }),
+    ).toHaveAttribute('aria-current', 'true')
+  })
+
+  it('does not offer a Go to action for a generic node (S8-F01)', async () => {
+    mockedApi.listNodes.mockResolvedValue([makeNode('n1', 'Plain note')])
+    mockedApi.listPlacements.mockResolvedValue([placementFor('n1', 'p1')])
+
+    render(<App />)
+    await screen.findByText('Personal Graph OS')
+    fireEvent.click(screen.getByRole('button', { name: 'stub-select-node' }))
+
+    expect(screen.queryByRole('button', { name: /^go to /i })).not.toBeInTheDocument()
+  })
+
+  it('creates a node of a chosen type from the Graph toolbar without global capture (S8-F03)', async () => {
+    const node = makeNode('n1', 'Idea node')
+    mockedApi.captureNode.mockResolvedValue(node)
+    mockedApi.placeNode.mockResolvedValue(placementFor('n1', 'p1'))
+    mockedApi.listNodes.mockResolvedValue([])
+    mockedApi.listPlacements.mockResolvedValue([])
+
+    render(<App />)
+    await screen.findByText('Personal Graph OS')
+
+    fireEvent.change(screen.getByLabelText('Node type'), { target: { value: 'nt-task' } })
+    fireEvent.change(screen.getByLabelText('New node title'), { target: { value: 'Idea node' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add node' }))
+
+    await waitFor(() =>
+      expect(mockedApi.captureNode).toHaveBeenCalledWith('ws-1', 'nt-task', 'Idea node'),
+    )
+    expect(screen.getByText('Idea node')).toBeInTheDocument()
   })
 })

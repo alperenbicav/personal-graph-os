@@ -103,6 +103,10 @@ class CaptureService:
     def submit(self, envelope: CaptureEnvelope) -> CaptureOutcome:
         self._require_workspace(envelope.workspace_id)
         fingerprint = envelope.content_fingerprint()
+        is_structured_payload = envelope.payload_kind in (
+            CapturePayloadKind.FILE,
+            CapturePayloadKind.EXTERNAL_ITEM,
+        )
 
         existing_receipt = self._idempotency_receipts.get_by_request(
             envelope.workspace_id, envelope.source, envelope.actor_name, envelope.request_id
@@ -128,6 +132,7 @@ class CaptureService:
                 operations=operations,
                 clarification_reason=clarification_reason,
                 was_replayed=True,
+                is_structured_payload=is_structured_payload,
             )
 
         if source_url is None:
@@ -137,6 +142,7 @@ class CaptureService:
                 operations=operations,
                 clarification_reason=clarification_reason,
                 was_replayed=False,
+                is_structured_payload=is_structured_payload,
             )
 
         _resource, job = self._capture_as_resource(envelope, source_url, fingerprint=fingerprint)
@@ -145,6 +151,7 @@ class CaptureService:
             operations=operations,
             clarification_reason=clarification_reason,
             was_replayed=False,
+            is_structured_payload=is_structured_payload,
         )
 
     def _outcome_for_committed_job(
@@ -154,6 +161,7 @@ class CaptureService:
         operations: tuple[CaptureOperation, ...],
         clarification_reason: str | None,
         was_replayed: bool,
+        is_structured_payload: bool,
     ) -> CaptureOutcome:
         resource_id = (
             ResourceId(job.result_entity_id)
@@ -166,9 +174,14 @@ class CaptureService:
             if is_document_fallback and job.result_entity_id is not None
             else None
         )
-        needs_clarification = is_document_fallback or clarification_reason is not None
+        # A `file`/`external_item` capture is structured: the caller explicitly identified what
+        # to capture, so a Document result is the *expected* outcome, never a fallback that needs
+        # clarification (review finding S10-F01). Only a free-text/URL capture that resolved to a
+        # raw-inbox Document is ambiguous and reports `needs_clarification`.
+        is_ambiguous = is_document_fallback and not is_structured_payload
+        needs_clarification = is_ambiguous or clarification_reason is not None
         reason = clarification_reason
-        if is_document_fallback and reason is None:
+        if is_ambiguous and reason is None:
             reason = "no recognized URL or identifier found in capture text"
         return CaptureOutcome(
             job=job,
@@ -277,6 +290,7 @@ class CaptureService:
             workspace_id=envelope.workspace_id,
             source=envelope.source,
             source_identifier=envelope.request_id,
+            external_url=envelope.external_url,
         )
         for stage in _STAGES_BEFORE_COMMITTED:
             job = job.advance_to(stage)

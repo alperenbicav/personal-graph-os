@@ -244,6 +244,58 @@ export type DocumentKind = 'note' | 'lesson' | 'documentation' | 'plan'
 
 export type DocumentLinkTargetType = 'node' | 'document'
 
+export type WorkItemKind = 'epic' | 'story' | 'task'
+
+export type WorkItemType = 'feature' | 'fix' | 'refactor' | 'research' | 'ops' | 'docs'
+
+export type WorkItemStatus =
+  | 'backlog'
+  | 'planned'
+  | 'in_progress'
+  | 'in_review'
+  | 'done'
+  | 'production'
+  | 'blocked'
+  | 'cancelled'
+
+export type WorkItemPriority = 'low' | 'medium' | 'high' | 'critical'
+
+export interface WorkItem {
+  id: string
+  workspace_id: string
+  node_id: string
+  kind: WorkItemKind
+  work_type: WorkItemType
+  status: WorkItemStatus
+  parent_id: string | null
+  repository_node_id: string | null
+  priority: WorkItemPriority | null
+  due_date: string | null
+  assignee: string | null
+  blockers: string | null
+  progress_percent: number | null
+  source: string
+  created_at: string
+  updated_at: string
+  title: string
+  body: string
+}
+
+export interface WorkItemChecklistItem {
+  id: string
+  work_item_id: string
+  position: number
+  label: string
+  is_completed: boolean
+  created_at: string
+}
+
+export interface WorkItemDetail {
+  work_item: WorkItem
+  checklist_items: WorkItemChecklistItem[]
+  linked_documents: DocumentLink[]
+}
+
 export interface WikiDocument {
   id: string
   workspace_id: string
@@ -349,10 +401,25 @@ export interface ProjectionItem {
   resource: Resource | null
 }
 
+export type SearchScope = 'all' | 'wiki' | 'tasks' | 'research' | 'repositories' | 'graph'
+
 export interface SearchResult {
-  node: GraphNode
+  node: GraphNode | null
   resource: Resource | null
+  document: WikiDocument | null
   snippet: string
+  score: number
+  scope: SearchScope
+  entity_type: string
+  source: string | null
+  goto: string | null
+}
+
+export interface SearchResponse {
+  results: SearchResult[]
+  total: number
+  has_more: boolean
+  offset: number
 }
 
 export interface ResearchDashboard {

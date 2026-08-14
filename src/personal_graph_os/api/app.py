@@ -5,6 +5,7 @@ as a FastAPI app for the local frontend.
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -24,6 +25,7 @@ from personal_graph_os.api.routers import (
     activity,
     canvases,
     capture,
+    clickup,
     discovery,
     edges,
     enrichment,
@@ -38,6 +40,7 @@ from personal_graph_os.api.routers import (
     search,
     views,
     wiki,
+    work_items,
     workflow_chain,
     workspace,
 )
@@ -55,6 +58,13 @@ from personal_graph_os.application.capture_planning_orchestrator import (
     CapturePlanningOrchestrator,
 )
 from personal_graph_os.application.capture_service import CaptureService
+from personal_graph_os.application.clickup_adapters import (
+    ClickUpAccessDeniedError,
+    ClickUpFetchFailedError,
+    ClickUpNotConfiguredError,
+    ClickUpTaskNotFoundError,
+)
+from personal_graph_os.application.clickup_service import ClickupService
 from personal_graph_os.application.context_pack_service import ContextPackService
 from personal_graph_os.application.discovery import DiscoveryService
 from personal_graph_os.application.document_service import (
@@ -102,8 +112,14 @@ from personal_graph_os.application.services import (
     StatusDefinitionNotFoundError,
     WorkspaceNotFoundError,
 )
+from personal_graph_os.application.telegram_poller import TelegramPoller
+from personal_graph_os.application.telegram_service import TelegramService
 from personal_graph_os.application.undo_service import UndoConflictError, UndoService
-from personal_graph_os.application.work_item_service import WorkItemService
+from personal_graph_os.application.work_item_service import (
+    WorkItemChecklistItemNotFoundError,
+    WorkItemNotFoundError,
+    WorkItemService,
+)
 from personal_graph_os.application.work_planning_service import WorkPlanningService
 from personal_graph_os.application.workflow_chain import (
     WorkflowChainService,
@@ -116,6 +132,7 @@ from personal_graph_os.domain.errors import (
     DomainError,
     UploadTooLargeError,
 )
+from personal_graph_os.infrastructure.clickup.builder import build_clickup_client_from_env
 from personal_graph_os.infrastructure.enrichment.provider_factory import (
     build_enrichment_provider_from_env,
 )
@@ -136,6 +153,7 @@ from personal_graph_os.infrastructure.sqlite.migrations.runner import run_migrat
 from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteActivityEventRepository,
     SqliteAttachmentRepository,
+    SqliteBm25SearchEngine,
     SqliteCanvasPlacementRepository,
     SqliteCanvasRepository,
     SqliteCollectionRepository,
@@ -157,12 +175,14 @@ from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteSavedViewRepository,
     SqliteSearchIndexRepository,
     SqliteTagRepository,
+    SqliteWorkItemChecklistItemRepository,
     SqliteWorkItemRepository,
     SqliteWorkspaceRepository,
 )
 from personal_graph_os.infrastructure.sqlite.research_unit_of_work import (
     SqliteResearchUnitOfWork,
 )
+from personal_graph_os.infrastructure.telegram.builder import build_telegram_client_from_env
 from personal_graph_os.infrastructure.work_planning.provider_factory import (
     build_work_planning_provider_from_env,
 )
@@ -177,6 +197,9 @@ DEFAULT_STATIC_DIR = _REPO_ROOT / "frontend" / "dist"
 DEV_FRONTEND_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 STATIC_MOUNT_PATH = "/app"
 _STATIC_ASSET_PREFIX = "assets/"
+# Telegram long-poll runs up to `poll_timeout_seconds` (25s) plus idle sleep per iteration, so
+# the shutdown join must allow one in-flight poll to finish.
+_TELEGRAM_POLLER_JOIN_TIMEOUT_SECONDS = 30.0
 
 
 class _AppStaticFiles(StaticFiles):
@@ -205,6 +228,8 @@ def create_app(
     static_dir: Path | str | None = None,
     enrichment_provider_transport: httpx.BaseTransport | None = None,
     work_planning_provider_transport: httpx.BaseTransport | None = None,
+    clickup_transport: httpx.BaseTransport | None = None,
+    telegram_transport: httpx.BaseTransport | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Personal Graph OS API")
 
@@ -270,7 +295,11 @@ def create_app(
     default_workspace = get_or_create_default_workspace(workspace_repository)
     default_canvas = get_or_create_default_canvas(canvas_repository, default_workspace)
     backfill_search_index(
-        node_repository, resource_repository, search_index_repository, default_workspace
+        node_repository,
+        resource_repository,
+        work_item_repository,
+        search_index_repository,
+        default_workspace,
     )
 
     app.state.connection = connection
@@ -333,6 +362,7 @@ def create_app(
         tag_repository,
         node_repository,
         lambda: SqliteResearchUnitOfWork(connection),
+        search_index=search_index_repository,
     )
     app.state.resource_detail_service = ResourceDetailService(
         workspace_repository,
@@ -351,7 +381,10 @@ def create_app(
     )
     app.state.projection_service = ProjectionService(node_repository, resource_repository)
     app.state.search_service = SearchService(
-        node_repository, resource_repository, search_index_repository
+        node_repository,
+        resource_repository,
+        document_repository,
+        SqliteBm25SearchEngine(connection),
     )
     app.state.research_dashboard_service = ResearchDashboardService(
         workspace_repository, resource_repository, edge_repository, research_settings_repository
@@ -419,8 +452,13 @@ def create_app(
         lambda: SqliteResearchUnitOfWork(connection),
     )
     work_item_service = WorkItemService(
-        workspace_repository, work_item_repository, lambda: SqliteResearchUnitOfWork(connection)
+        workspace_repository,
+        work_item_repository,
+        SqliteWorkItemChecklistItemRepository(connection),
+        lambda: SqliteResearchUnitOfWork(connection),
+        search_index=search_index_repository,
     )
+    app.state.work_item_service = work_item_service
     work_planning_provider = build_work_planning_provider_from_env(
         os.environ, transport=work_planning_provider_transport
     )
@@ -429,12 +467,36 @@ def create_app(
             work_item_service,
             work_planning_provider,
             lambda: SqliteResearchUnitOfWork(connection),
+            search_index=search_index_repository,
         )
         if work_planning_provider is not None
         else None
     )
     app.state.capture_planning_orchestrator = CapturePlanningOrchestrator(
-        capture_service, work_planning_service, lambda: SqliteResearchUnitOfWork(connection)
+        capture_service,
+        work_planning_service,
+        lambda: SqliteResearchUnitOfWork(connection),
+        enrichment_service=app.state.enrichment_service,
+        extraction_service=app.state.extraction_service,
+    )
+    clickup_client = build_clickup_client_from_env(os.environ, transport=clickup_transport)
+    app.state.clickup_service = ClickupService(
+        clickup_client,
+        app.state.capture_planning_orchestrator,
+        workspace_repository,
+        lambda: SqliteResearchUnitOfWork(connection),
+    )
+    telegram_client = build_telegram_client_from_env(os.environ, transport=telegram_transport)
+    app.state.telegram_service = TelegramService(
+        telegram_client,
+        app.state.capture_planning_orchestrator,
+        default_workspace.id,
+        lambda: SqliteResearchUnitOfWork(connection),
+    )
+    app.state.telegram_poller = (
+        TelegramPoller(telegram_client, app.state.telegram_service)
+        if telegram_client is not None
+        else None
     )
 
     app.state.export_service = ExportService(
@@ -508,6 +570,11 @@ def create_app(
         context_pack_service=app.state.context_pack_service,
         activity_service=app.state.activity_service,
         document_service=app.state.document_service,
+        work_item_service=app.state.work_item_service,
+        enrichment_service=app.state.enrichment_service,
+        extraction_service=app.state.extraction_service,
+        capture_planning_orchestrator=app.state.capture_planning_orchestrator,
+        clickup_service=app.state.clickup_service,
         unit_of_work_factory=lambda: SqliteResearchUnitOfWork(connection),
     )
     mcp_asgi_app, mcp_session_manager, app.state.mcp_telemetry = create_mcp_asgi_app(
@@ -516,10 +583,29 @@ def create_app(
 
     @asynccontextmanager
     async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        # The MCP session manager owns its own task group for the process lifetime; nothing
-        # else in this app currently needs a lifespan, so this only wires that one concern in.
-        async with mcp_session_manager.run():
-            yield
+        # The MCP session manager owns its own task group for the process lifetime.
+        # ST-11: when Telegram is configured (kill switch + token + allowlist), a daemon thread
+        # long-polls the bot for the app lifetime; it never starts when unconfigured and stops
+        # cleanly on shutdown via the stop flag.
+        telegram_stop = threading.Event()
+        telegram_thread: threading.Thread | None = None
+        if app.state.telegram_poller is not None:
+            poller = app.state.telegram_poller
+
+            def _run_poller() -> None:
+                poller.run(should_stop=lambda: telegram_stop.is_set())
+
+            telegram_thread = threading.Thread(
+                target=_run_poller, name="telegram-poller", daemon=True
+            )
+            telegram_thread.start()
+        try:
+            async with mcp_session_manager.run():
+                yield
+        finally:
+            if telegram_thread is not None:
+                telegram_stop.set()
+                telegram_thread.join(timeout=_TELEGRAM_POLLER_JOIN_TIMEOUT_SECONDS)
 
     app.router.lifespan_context = _lifespan
     # A plain Starlette `Route` wrapping a raw ASGI app, not `Mount`: `Mount`'s path pattern
@@ -555,7 +641,10 @@ def create_app(
     app.include_router(export.router, dependencies=auth_dependency)
     app.include_router(enrichment.router, dependencies=auth_dependency)
     app.include_router(capture.router, dependencies=auth_dependency)
+    app.include_router(clickup.router, dependencies=auth_dependency)
     app.include_router(wiki.router, dependencies=auth_dependency)
+    app.include_router(work_items.router, dependencies=auth_dependency)
+    app.include_router(work_items.checklist_router, dependencies=auth_dependency)
 
     if static_dir is not None:
         # A distinct `/app` prefix, mounted after every API router: it cannot shadow `/mcp`
@@ -582,6 +671,15 @@ def create_app(
     def _enrichment_not_configured(_request: Request, exc: Exception) -> JSONResponse:
         return JSONResponse(status_code=503, content={"detail": str(exc)})
 
+    def _clickup_not_configured(_request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+    def _clickup_access_denied(_request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+
+    def _clickup_gateway_error(_request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=502, content={"detail": str(exc)})
+
     def _undo_conflict(_request: Request, exc: Exception) -> JSONResponse:
         # A stable machine-readable `code` alongside `detail` (ST07-F05 re-review): callers
         # and the UI can distinguish policy-disabled undo from a snapshot-bound failure without
@@ -595,6 +693,9 @@ def create_app(
     app.add_exception_handler(UndoConflictError, _undo_conflict)
     app.add_exception_handler(InvalidActivityCursorError, _unprocessable)
     app.add_exception_handler(EnrichmentNotConfiguredError, _enrichment_not_configured)
+    app.add_exception_handler(ClickUpNotConfiguredError, _clickup_not_configured)
+    app.add_exception_handler(ClickUpAccessDeniedError, _clickup_access_denied)
+    app.add_exception_handler(ClickUpFetchFailedError, _clickup_gateway_error)
 
     for not_found_error_type in (
         WorkspaceNotFoundError,
@@ -618,6 +719,9 @@ def create_app(
         TagNotFoundError,
         DocumentLinkNotFoundError,
         DocumentLinkTargetNotFoundError,
+        WorkItemNotFoundError,
+        WorkItemChecklistItemNotFoundError,
+        ClickUpTaskNotFoundError,
     ):
         app.add_exception_handler(not_found_error_type, _not_found)
     app.add_exception_handler(DomainError, _unprocessable)

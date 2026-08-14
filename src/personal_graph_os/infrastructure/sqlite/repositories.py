@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from personal_graph_os.application.file_storage import PendingFileOperation
 from personal_graph_os.domain.activity import (
@@ -21,6 +21,7 @@ from personal_graph_os.domain.activity import (
     MutationAction,
 )
 from personal_graph_os.domain.canvas import Canvas, CanvasPlacement
+from personal_graph_os.domain.channel_sync import ChannelSyncState
 from personal_graph_os.domain.documents import (
     Collection,
     Document,
@@ -64,6 +65,7 @@ from personal_graph_os.domain.identifiers import (
     ResourceId,
     SavedViewId,
     TagId,
+    WorkItemChecklistItemId,
     WorkItemId,
     WorkPlanningReceiptId,
     WorkspaceId,
@@ -84,11 +86,20 @@ from personal_graph_os.domain.schema import (
     StatusDefinition,
     Workspace,
 )
-from personal_graph_os.domain.search import SearchEntityType, SearchHit, compile_fts5_query
+from personal_graph_os.domain.search import (
+    SearchEntityType,
+    SearchHit,
+    SearchPage,
+    SearchRequest,
+    SearchScope,
+    compile_fts5_query,
+)
 from personal_graph_os.domain.views import ContextPack, SavedView, ViewKind
 from personal_graph_os.domain.work_items import (
     WorkItem,
+    WorkItemChecklistItem,
     WorkItemKind,
+    WorkItemPriority,
     WorkItemStatus,
     WorkItemType,
 )
@@ -367,6 +378,11 @@ class SqliteNodeRepository:
     def delete(self, node_id: NodeId) -> None:
         with self._connection:
             self._connection.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
+
+    def delete_without_commit(self, node_id: NodeId) -> None:
+        """Delete a node row without committing, so a caller-managed unit of work can make the
+        delete atomic with its own aggregate/event/receipt writes (S9-F01)."""
+        self._connection.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
 
     def _hydrate(self, row: sqlite3.Row) -> Node:
         return Node(
@@ -670,6 +686,10 @@ class SqliteResourceRepository:
                 resource.repository_label.value if resource.repository_label is not None else None,
             ),
         )
+
+    def delete_without_commit(self, resource_id: ResourceId) -> None:
+        """Hard-delete one resource row; the caller deletes the backing node separately."""
+        self._connection.execute("DELETE FROM resources WHERE id = ?", (resource_id,))
 
     def _hydrate(self, row: sqlite3.Row) -> Resource:
         return Resource(
@@ -1280,6 +1300,7 @@ class SqliteSearchIndexRepository:
         entity_type: SearchEntityType,
         entity_id: str,
         text: str,
+        scope: SearchScope = SearchScope.GRAPH,
     ) -> None:
         with self._connection:
             self._connection.execute(
@@ -1287,9 +1308,10 @@ class SqliteSearchIndexRepository:
                 (entity_type.value, entity_id),
             )
             self._connection.execute(
-                "INSERT INTO search_documents (workspace_id, entity_type, entity_id, text) "
-                "VALUES (?, ?, ?, ?)",
-                (workspace_id, entity_type.value, entity_id, text),
+                "INSERT INTO search_documents "
+                "(workspace_id, entity_type, entity_id, text, scope) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (workspace_id, entity_type.value, entity_id, text, scope.value),
             )
 
     def remove_document(self, *, entity_type: SearchEntityType, entity_id: str) -> None:
@@ -1308,10 +1330,10 @@ class SqliteSearchIndexRepository:
         rows = self._connection.execute(
             "SELECT entity_type, entity_id, "
             "snippet(search_documents, 3, '[', ']', '…', 12) AS snippet, "
-            "bm25(search_documents) AS rank "
+            "bm25(search_documents) AS score, scope "
             "FROM search_documents "
             "WHERE search_documents MATCH ? AND workspace_id = ? "
-            "ORDER BY rank LIMIT ?",
+            "ORDER BY score LIMIT ?",
             (compiled_query, workspace_id, limit),
         ).fetchall()
         return tuple(
@@ -1319,10 +1341,99 @@ class SqliteSearchIndexRepository:
                 entity_type=SearchEntityType(row["entity_type"]),
                 entity_id=row["entity_id"],
                 snippet=row["snippet"],
-                rank=row["rank"],
+                score=row["score"],
+                scope=SearchScope(row["scope"]),
             )
             for row in rows
         )
+
+
+class SqliteBm25SearchEngine:
+    """`SearchEngine` backed by the existing `search_documents` FTS5 table (EP-2026-012 ST-12).
+
+    The read port `SearchService` depends on: scope-filtered, deduplicated-by-entity, archived-
+    filtered `bm25` ranking with a stable `total`/`has_more` that exactly match the caller-visible
+    set (S12-F01). A resource is indexed as a node row plus a resource row sharing its node id, so
+    the engine keeps one hit per `entity_id` (the best-scoring row) via a window function; archived
+    entities are filtered by joining the canonical `nodes`/`documents` tables, so `offset` never
+    skips over rows the caller will not see.
+    """
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def search(self, request: SearchRequest) -> SearchPage:
+        compiled_query = compile_fts5_query(request.query)
+        if compiled_query is None:
+            return SearchPage(hits=(), total=0, has_more=False)
+
+        archived_filter = (
+            ""
+            if request.include_archived
+            else "AND COALESCE(nodes.is_archived, documents.is_archived, 0) = 0"
+        )
+        scope_filter = "" if request.scope is SearchScope.ALL else "AND search_documents.scope = ?"
+
+        parameters: list[object] = [compiled_query, request.workspace_id]
+        if request.scope is not SearchScope.ALL:
+            parameters.append(request.scope.value)
+
+        # FTS5 cannot use a table alias with `MATCH` ("no such column"), so the FTS table is
+        # referenced unaliased throughout; the joins target the node/document row an indexed
+        # entity_id maps to.
+        total = self._connection.execute(
+            "SELECT COUNT(DISTINCT search_documents.entity_id) FROM search_documents "
+            "LEFT JOIN nodes ON search_documents.entity_type IN ('node', 'resource') "
+            "  AND nodes.id = search_documents.entity_id "
+            "LEFT JOIN documents ON search_documents.entity_type = 'document' "
+            "  AND documents.id = search_documents.entity_id "
+            "WHERE search_documents MATCH ? AND search_documents.workspace_id = ? "
+            f"{scope_filter} {archived_filter}",
+            parameters,
+        ).fetchone()[0]
+
+        # FTS5 cannot use a table alias with `MATCH` ("no such column"), and its aux functions
+        # (`snippet`/`bm25`) cannot run inside a CTE/derived table, so matches are fetched in one
+        # direct SELECT (aux functions + archived join + scope filter) and then deduplicated and
+        # windowed in Python: rows are ordered by `(score, entity_id)`, so the first row seen per
+        # `entity_id` is that entity's best-scoring row. This is deterministic and correct at the
+        # MVP's local scale; a future large-corpus engine can push dedup/windowing into SQL.
+        rows = self._connection.execute(
+            "SELECT search_documents.entity_type AS entity_type, "
+            "search_documents.entity_id AS entity_id, "
+            "snippet(search_documents, 3, '[', ']', '…', 12) AS snippet, "
+            "bm25(search_documents) AS score, search_documents.scope AS scope "
+            "FROM search_documents "
+            "LEFT JOIN nodes ON search_documents.entity_type IN ('node', 'resource') "
+            "  AND nodes.id = search_documents.entity_id "
+            "LEFT JOIN documents ON search_documents.entity_type = 'document' "
+            "  AND documents.id = search_documents.entity_id "
+            "WHERE search_documents MATCH ? AND search_documents.workspace_id = ? "
+            f"{scope_filter} {archived_filter} "
+            "ORDER BY score, entity_id",
+            parameters,
+        ).fetchall()
+
+        deduplicated: list[sqlite3.Row] = []
+        seen_entity_ids: set[str] = set()
+        for row in rows:
+            if row["entity_id"] in seen_entity_ids:
+                continue
+            seen_entity_ids.add(row["entity_id"])
+            deduplicated.append(row)
+        page_rows = deduplicated[request.offset : request.offset + request.limit]
+        hits = tuple(
+            SearchHit(
+                entity_type=SearchEntityType(row["entity_type"]),
+                entity_id=row["entity_id"],
+                snippet=row["snippet"],
+                score=row["score"],
+                scope=SearchScope(row["scope"]),
+            )
+            for row in page_rows
+        )
+        has_more = request.offset + len(page_rows) < total
+        return SearchPage(hits=hits, total=total, has_more=has_more)
 
 
 class SqliteResearchSettingsRepository:
@@ -1512,6 +1623,10 @@ class SqliteDocumentRepository:
                 (document.id, tag_id),
             )
 
+    def delete_without_commit(self, document_id: DocumentId) -> None:
+        """Hard-delete one document; versions, links, and tag rows cascade with it."""
+        self._connection.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+
     def _hydrate(self, row: sqlite3.Row) -> Document:
         tag_rows = self._connection.execute(
             "SELECT tag_id FROM document_tags WHERE document_id = ?", (row["id"],)
@@ -1689,18 +1804,20 @@ class SqliteIngestionJobRepository:
     def save_without_commit(self, ingestion_job: IngestionJob) -> None:
         self._connection.execute(
             "INSERT INTO ingestion_jobs "
-            "(id, workspace_id, source, source_identifier, stage, status, "
+            "(id, workspace_id, source, source_identifier, external_url, stage, status, "
             " result_entity_type, result_entity_id, error_message, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (id) DO UPDATE SET stage = excluded.stage, status = excluded.status, "
             "result_entity_type = excluded.result_entity_type, "
             "result_entity_id = excluded.result_entity_id, "
+            "external_url = excluded.external_url, "
             "error_message = excluded.error_message, updated_at = excluded.updated_at",
             (
                 ingestion_job.id,
                 ingestion_job.workspace_id,
                 ingestion_job.source,
                 ingestion_job.source_identifier,
+                ingestion_job.external_url,
                 ingestion_job.stage.value,
                 ingestion_job.status.value,
                 ingestion_job.result_entity_type,
@@ -1717,12 +1834,54 @@ class SqliteIngestionJobRepository:
             workspace_id=row["workspace_id"],
             source=row["source"],
             source_identifier=row["source_identifier"],
+            external_url=row["external_url"],
             stage=IngestionStage(row["stage"]),
             status=IngestionJobStatus(row["status"]),
             result_entity_type=row["result_entity_type"],
             result_entity_id=row["result_entity_id"],
             error_message=row["error_message"],
             created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+
+class SqliteChannelSyncStateRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(self, workspace_id: WorkspaceId, channel: str) -> ChannelSyncState | None:
+        row = self._connection.execute(
+            "SELECT * FROM channel_sync_state WHERE workspace_id = ? AND channel = ?",
+            (workspace_id, channel),
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def save_without_commit(self, state: ChannelSyncState) -> None:
+        # Monotonic per channel (review findings S10-F02/S11-F01): the stored cursor only ever
+        # advances, never regresses, so a later incremental/bidirectional sync keyed on
+        # `cursor_value` can trust it as a low-water mark. `MAX` is safe only because every
+        # channel writes a fixed-width, lexicographically-sortable cursor string (ClickUp:
+        # ISO-8601 UTC; Telegram: zero-padded `update_id`) whose string ordering matches its
+        # numeric/time ordering at every boundary.
+        self._connection.execute(
+            "INSERT INTO channel_sync_state (workspace_id, channel, cursor_value, updated_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (workspace_id, channel) DO UPDATE SET "
+            "cursor_value = MAX(cursor_value, excluded.cursor_value), "
+            "updated_at = excluded.updated_at",
+            (
+                state.workspace_id,
+                state.channel,
+                state.cursor_value,
+                state.updated_at.isoformat(),
+            ),
+        )
+
+    def _hydrate(self, row: sqlite3.Row) -> ChannelSyncState:
+        return ChannelSyncState(
+            workspace_id=row["workspace_id"],
+            channel=row["channel"],
+            cursor_value=row["cursor_value"],
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
 
@@ -1763,11 +1922,16 @@ class SqliteWorkItemRepository:
         self._connection.execute(
             "INSERT INTO work_items "
             "(id, workspace_id, node_id, kind, work_type, status, parent_id, "
-            " repository_node_id, source, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            " repository_node_id, source, priority, due_date, assignee, blockers, "
+            " progress_percent, is_archived, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (id) DO UPDATE SET work_type = excluded.work_type, "
             "status = excluded.status, parent_id = excluded.parent_id, "
             "repository_node_id = excluded.repository_node_id, "
+            "priority = excluded.priority, due_date = excluded.due_date, "
+            "assignee = excluded.assignee, blockers = excluded.blockers, "
+            "progress_percent = excluded.progress_percent, "
+            "is_archived = excluded.is_archived, "
             "updated_at = excluded.updated_at",
             (
                 work_item.id,
@@ -1779,6 +1943,12 @@ class SqliteWorkItemRepository:
                 work_item.parent_id,
                 work_item.repository_node_id,
                 work_item.source,
+                work_item.priority.value if work_item.priority is not None else None,
+                work_item.due_date.isoformat() if work_item.due_date is not None else None,
+                work_item.assignee,
+                work_item.blockers,
+                work_item.progress_percent,
+                int(work_item.is_archived),
                 work_item.created_at.isoformat(),
                 work_item.updated_at.isoformat(),
             ),
@@ -1796,9 +1966,77 @@ class SqliteWorkItemRepository:
             repository_node_id=(
                 NodeId(row["repository_node_id"]) if row["repository_node_id"] is not None else None
             ),
+            priority=(WorkItemPriority(row["priority"]) if row["priority"] is not None else None),
+            due_date=date.fromisoformat(row["due_date"]) if row["due_date"] is not None else None,
+            assignee=row["assignee"],
+            blockers=row["blockers"],
+            progress_percent=row["progress_percent"],
+            is_archived=bool(row["is_archived"]),
             source=row["source"],
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+    def delete_without_commit(self, work_item_id: WorkItemId) -> None:
+        """Hard-delete one work item row (checklist items cascade); the caller deletes the
+        backing node separately through the node repository."""
+        self._connection.execute("DELETE FROM work_items WHERE id = ?", (work_item_id,))
+
+
+class SqliteWorkItemChecklistItemRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(self, item_id: WorkItemChecklistItemId) -> WorkItemChecklistItem | None:
+        row = self._connection.execute(
+            "SELECT * FROM work_item_checklist_items WHERE id = ?", (item_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def list_by_work_item(self, work_item_id: WorkItemId) -> tuple[WorkItemChecklistItem, ...]:
+        rows = self._connection.execute(
+            "SELECT * FROM work_item_checklist_items WHERE work_item_id = ? "
+            "ORDER BY position, created_at",
+            (work_item_id,),
+        ).fetchall()
+        return tuple(self._hydrate(row) for row in rows)
+
+    def save(self, item: WorkItemChecklistItem) -> None:
+        with self._connection:
+            self.save_without_commit(item)
+
+    def save_without_commit(self, item: WorkItemChecklistItem) -> None:
+        self._connection.execute(
+            "INSERT INTO work_item_checklist_items "
+            "(id, work_item_id, position, label, is_completed, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (id) DO UPDATE SET position = excluded.position, "
+            "label = excluded.label, is_completed = excluded.is_completed",
+            (
+                item.id,
+                item.work_item_id,
+                item.position,
+                item.label,
+                int(item.is_completed),
+                item.created_at.isoformat(),
+            ),
+        )
+
+    def delete(self, item_id: WorkItemChecklistItemId) -> None:
+        with self._connection:
+            self.delete_without_commit(item_id)
+
+    def delete_without_commit(self, item_id: WorkItemChecklistItemId) -> None:
+        self._connection.execute("DELETE FROM work_item_checklist_items WHERE id = ?", (item_id,))
+
+    def _hydrate(self, row: sqlite3.Row) -> WorkItemChecklistItem:
+        return WorkItemChecklistItem(
+            id=WorkItemChecklistItemId(row["id"]),
+            work_item_id=WorkItemId(row["work_item_id"]),
+            position=row["position"],
+            label=row["label"],
+            is_completed=bool(row["is_completed"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
         )
 
 

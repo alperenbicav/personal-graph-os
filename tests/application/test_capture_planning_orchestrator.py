@@ -6,16 +6,33 @@ from personal_graph_os.application.capture_planning_orchestrator import (
     CapturePlanningOrchestrator,
 )
 from personal_graph_os.application.capture_service import CaptureService
+from personal_graph_os.application.enrichment_service import EnrichmentService
 from personal_graph_os.application.semantic_schema import ensure_semantic_schema
 from personal_graph_os.application.services import ResourceService, new_workspace
 from personal_graph_os.application.work_item_service import WorkItemService
 from personal_graph_os.application.work_planning_service import WorkPlanningService
-from personal_graph_os.domain.capture import CaptureEnvelope, CaptureIntent, CapturePayloadKind
+from personal_graph_os.domain.capture import (
+    CaptureEnvelope,
+    CaptureIntent,
+    CaptureOperation,
+    CaptureOperationKind,
+    CapturePayloadKind,
+)
+from personal_graph_os.domain.extraction import (
+    EvidenceKind,
+    ExtractedContent,
+    ExtractionEvidence,
+    hash_content,
+)
 from personal_graph_os.domain.identifiers import WorkspaceId
+from personal_graph_os.domain.resource import ResourceKind
+from personal_graph_os.infrastructure.enrichment.fake_provider import FakeEnrichmentProvider
 from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteIdempotencyReceiptRepository,
     SqliteIngestionJobRepository,
+    SqliteResourceEnrichmentProfileRepository,
     SqliteResourceRepository,
+    SqliteWorkItemChecklistItemRepository,
     SqliteWorkItemRepository,
     SqliteWorkspaceRepository,
 )
@@ -36,7 +53,11 @@ class _RecordingProvider(FakeWorkPlanningProvider):
 
 
 def _orchestrator(
-    sqlite_connection: sqlite3.Connection, *, work_planning_service: WorkPlanningService | None
+    sqlite_connection: sqlite3.Connection,
+    *,
+    work_planning_service: WorkPlanningService | None,
+    enrichment_service: EnrichmentService | None = None,
+    extraction_service: object | None = None,
 ) -> tuple[CapturePlanningOrchestrator, WorkspaceId]:
     workspace = ensure_semantic_schema(new_workspace("Personal"))
     SqliteWorkspaceRepository(sqlite_connection).save(workspace)
@@ -56,6 +77,8 @@ def _orchestrator(
         capture_service,
         work_planning_service,
         lambda: SqliteResearchUnitOfWork(sqlite_connection),
+        enrichment_service=enrichment_service,
+        extraction_service=extraction_service,  # type: ignore[arg-type]
     )
     return orchestrator, workspace.id
 
@@ -66,6 +89,7 @@ def _work_planning_service(
     work_item_service = WorkItemService(
         SqliteWorkspaceRepository(sqlite_connection),
         SqliteWorkItemRepository(sqlite_connection),
+        SqliteWorkItemChecklistItemRepository(sqlite_connection),
         lambda: SqliteResearchUnitOfWork(sqlite_connection),
     )
     return WorkPlanningService(
@@ -238,3 +262,124 @@ def test_replaying_an_unjustified_plan_request_does_not_reinvoke_the_provider(
     assert first_plan is None
     assert second_plan is None
     assert SqliteWorkItemRepository(sqlite_connection).list_by_workspace(workspace_id) == ()
+
+
+class _StubExtractionService:
+    """Stands in for `ExtractionService` (a separately tested, ST-03 concern): returns a fixed
+    `ExtractedContent` for whatever resource is asked about, so this test proves the
+    capture->enrichment orchestration wiring (S11-F05) without real network extraction."""
+
+    def extract(
+        self, *, resource_kind: ResourceKind, canonical_identifier: str, source_url: str | None
+    ) -> ExtractedContent:
+        return ExtractedContent(
+            resource_kind=resource_kind,
+            canonical_identifier=canonical_identifier,
+            title="A Test Article",
+            abstract="An abstract for the captured article.",
+            evidence=(
+                ExtractionEvidence(
+                    kind=EvidenceKind.METADATA_LOOKUP,
+                    adapter_name="test-adapter",
+                    source_reference=canonical_identifier,
+                    content_hash=hash_content(f"evidence-for-{canonical_identifier}"),
+                    byte_length=32,
+                ),
+            ),
+        )
+
+
+def _enrichment_service(sqlite_connection: sqlite3.Connection) -> EnrichmentService:
+    return EnrichmentService(
+        SqliteWorkspaceRepository(sqlite_connection),
+        FakeEnrichmentProvider(),
+        lambda: SqliteResearchUnitOfWork(sqlite_connection),
+    )
+
+
+def _summarize_envelope(workspace_id: WorkspaceId) -> CaptureEnvelope:
+    return CaptureEnvelope(
+        workspace_id=workspace_id,
+        source="manual",
+        request_id="req-summarize-1",
+        actor_name="alperen",
+        payload_kind=CapturePayloadKind.URL,
+        url="https://example.com/article",
+        intent=CaptureIntent.ENRICH,
+        operations=(CaptureOperation(kind=CaptureOperationKind.SUMMARIZE),),
+    )
+
+
+def test_a_summarize_operation_runs_enrichment_and_persists_a_profile(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    """Regression for S11-F05: an explicit `summarize` operation is executed, not just recorded --
+    acceptance (2) is observably met: the captured Article gets an enrichment profile."""
+    orchestrator, workspace_id = _orchestrator(
+        sqlite_connection,
+        work_planning_service=None,
+        enrichment_service=_enrichment_service(sqlite_connection),
+        extraction_service=_StubExtractionService(),
+    )
+
+    outcome, plan_outcome = orchestrator.submit(_summarize_envelope(workspace_id))
+
+    assert outcome.resource_id is not None
+    assert plan_outcome is None
+    resource = SqliteResourceRepository(sqlite_connection).get(outcome.resource_id)
+    assert resource is not None
+    profile = SqliteResourceEnrichmentProfileRepository(sqlite_connection).get_by_identifier(
+        workspace_id, resource.canonical_identifier
+    )
+    assert profile is not None
+    assert profile.current_version_number == 1
+
+
+def test_a_summarize_operation_stays_pending_when_enrichment_is_unconfigured(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    """Fail-soft (S11-F05): without an enrichment provider the capture still succeeds and the
+    operation stays pending -- never a hard failure, mirroring the unconfigured planning path."""
+    orchestrator, workspace_id = _orchestrator(sqlite_connection, work_planning_service=None)
+
+    outcome, plan_outcome = orchestrator.submit(_summarize_envelope(workspace_id))
+
+    assert outcome.resource_id is not None
+    assert plan_outcome is None
+    assert [operation.kind for operation in outcome.pending_operations] == [
+        CaptureOperationKind.SUMMARIZE
+    ]
+    resource = SqliteResourceRepository(sqlite_connection).get(outcome.resource_id)
+    assert resource is not None
+    profile = SqliteResourceEnrichmentProfileRepository(sqlite_connection).get_by_identifier(
+        workspace_id, resource.canonical_identifier
+    )
+    assert profile is None
+
+
+def test_a_replayed_summarize_operation_does_not_re_run_enrichment(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    """Regression for S11-F07: a redelivered update replays the capture (`was_replayed=True`) and
+    must not persist a second enrichment profile version or re-propose relations -- acceptance (3)
+    "replay idempotent" holds for the enrich path too."""
+    orchestrator, workspace_id = _orchestrator(
+        sqlite_connection,
+        work_planning_service=None,
+        enrichment_service=_enrichment_service(sqlite_connection),
+        extraction_service=_StubExtractionService(),
+    )
+    envelope = _summarize_envelope(workspace_id)
+
+    first_outcome, _first_plan = orchestrator.submit(envelope)
+    second_outcome, _second_plan = orchestrator.submit(envelope)
+
+    assert first_outcome.was_replayed is False
+    assert second_outcome.was_replayed is True
+    resource = SqliteResourceRepository(sqlite_connection).get(first_outcome.resource_id)
+    assert resource is not None
+    profile = SqliteResourceEnrichmentProfileRepository(sqlite_connection).get_by_identifier(
+        workspace_id, resource.canonical_identifier
+    )
+    assert profile is not None
+    assert profile.current_version_number == 1

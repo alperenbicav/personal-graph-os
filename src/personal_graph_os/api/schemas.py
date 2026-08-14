@@ -12,7 +12,7 @@ own separate copy of them.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, Field, StrictInt
 
@@ -55,8 +55,16 @@ from personal_graph_os.domain.resource import (
     ResourceLifecycleStatus,
 )
 from personal_graph_os.domain.schema import FieldType
+from personal_graph_os.domain.search import SearchResult
 from personal_graph_os.domain.views import FilterField, ProjectionQuery, ViewKind
-from personal_graph_os.domain.work_items import WorkItem
+from personal_graph_os.domain.work_items import (
+    WorkItem,
+    WorkItemChecklistItem,
+    WorkItemKind,
+    WorkItemPriority,
+    WorkItemStatus,
+    WorkItemType,
+)
 
 _MAX_DISCOVERY_CANDIDATES = 50
 _MAX_DISCOVERY_TEXT_LENGTH = 4000
@@ -195,6 +203,17 @@ class UpdateResourceRequest(BaseModel):
     clear_review_at: bool = False
     repository_label: RepositoryLabel | None = None
     clear_repository_label: bool = False
+
+
+class SearchResponse(BaseModel):
+    """Scoped search page (ST-12): the caller-visible results plus the stable pagination contract
+    the engine computed -- `total`/`has_more` describe the deduplicated, archived-filtered entity
+    set, so a UI can offer a correct "load more" from `offset`."""
+
+    results: list[SearchResult]
+    total: int
+    has_more: bool
+    offset: int
 
 
 class ResourceResponse(BaseModel):
@@ -394,6 +413,120 @@ class WorkPlanOutcomeResponse(BaseModel):
 class CaptureAndPlanResponse(BaseModel):
     capture: CaptureOutcomeResponse
     plan: WorkPlanOutcomeResponse | None
+
+
+class ClickUpImportRequest(BaseModel):
+    """Import one user-selected ClickUp task (EP-2026-012 ST-10). `task_id` is the stable
+    external id (`request_id == task.id`); `intent` selects raw (`save_raw`) or planned
+    (`plan_work`) capture exactly like the MCP `pgos_capture` tool."""
+
+    workspace_id: str
+    task_id: str
+    intent: CaptureIntent = CaptureIntent.SAVE_RAW
+    actor_name: str
+    repository_node_id: str | None = None
+
+
+class WorkItemResponse(BaseModel):
+    """A `WorkItem` plus its backing `Node`'s title/body, mirroring `ResourceResponse` (the
+    work item never carries its own copy of them)."""
+
+    id: str
+    workspace_id: str
+    node_id: str
+    kind: WorkItemKind
+    work_type: WorkItemType
+    status: WorkItemStatus
+    parent_id: str | None
+    repository_node_id: str | None
+    priority: WorkItemPriority | None
+    due_date: date | None
+    assignee: str | None
+    blockers: str | None
+    progress_percent: int | None
+    source: str
+    created_at: datetime
+    updated_at: datetime
+    title: str
+    body: str
+
+    @classmethod
+    def from_work_item_and_node(cls, work_item: WorkItem, node: Node) -> WorkItemResponse:
+        return cls(
+            id=work_item.id,
+            workspace_id=work_item.workspace_id,
+            node_id=work_item.node_id,
+            kind=work_item.kind,
+            work_type=work_item.work_type,
+            status=work_item.status,
+            parent_id=work_item.parent_id,
+            repository_node_id=work_item.repository_node_id,
+            priority=work_item.priority,
+            due_date=work_item.due_date,
+            assignee=work_item.assignee,
+            blockers=work_item.blockers,
+            progress_percent=work_item.progress_percent,
+            source=work_item.source,
+            created_at=work_item.created_at,
+            updated_at=work_item.updated_at,
+            title=node.title,
+            body=node.body,
+        )
+
+
+class WorkItemDetailResponse(BaseModel):
+    """Everything the Tasks workspace's detail pane needs in one round trip (ST-08): the work
+    item itself, its checklist, and the Wiki documents linked to its backing node."""
+
+    work_item: WorkItemResponse
+    checklist_items: list[WorkItemChecklistItem]
+    linked_documents: list[DocumentLink]
+
+
+class CreateWorkItemRequest(BaseModel):
+    workspace_id: str
+    kind: WorkItemKind
+    work_type: WorkItemType
+    title: str
+    body: str = ""
+    source: str
+    status: WorkItemStatus = WorkItemStatus.BACKLOG
+    parent_id: str | None = None
+    repository_node_id: str | None = None
+
+
+class UpdateWorkItemRequest(BaseModel):
+    work_type: WorkItemType | None = None
+    status: WorkItemStatus | None = None
+    priority: WorkItemPriority | None = None
+    due_date: date | None = None
+    assignee: str | None = None
+    blockers: str | None = None
+    progress_percent: StrictInt | None = Field(default=None, ge=0, le=100)
+    repository_node_id: str | None = None
+    clear_priority: bool = False
+    clear_due_date: bool = False
+    clear_assignee: bool = False
+    clear_blockers: bool = False
+    clear_progress_percent: bool = False
+    clear_repository_node_id: bool = False
+
+
+class CreateChecklistItemRequest(BaseModel):
+    label: str
+
+
+class UpdateChecklistItemRequest(BaseModel):
+    label: str | None = None
+    is_completed: bool | None = None
+
+
+class ReorderChecklistItemsRequest(BaseModel):
+    ordered_ids: list[str]
+
+
+class AttachWorkItemWikiLinkRequest(BaseModel):
+    document_id: str
 
 
 class CreateSavedViewRequest(BaseModel):

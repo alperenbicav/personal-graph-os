@@ -21,6 +21,8 @@ interface InspectorProps {
   onChangeBody: (body: string) => Promise<boolean>
   onChangeField: (fieldDefinitionId: string, value: unknown) => Promise<boolean>
   onArchive: () => void
+  goToLabel?: string | null
+  onGoTo?: () => void
 }
 
 function isEmpty(value: unknown): boolean {
@@ -231,6 +233,8 @@ export function Inspector({
   onChangeBody,
   onChangeField,
   onArchive,
+  goToLabel,
+  onGoTo,
 }: InspectorProps) {
   if (!node || !nodeType) {
     return (
@@ -315,6 +319,11 @@ export function Inspector({
       <button type="button" className="archive-button" onClick={onArchive}>
         Archive (Delete)
       </button>
+      {goToLabel && onGoTo && (
+        <button type="button" className="go-to-button" onClick={onGoTo}>
+          Go to {goToLabel}
+        </button>
+      )}
     </aside>
   )
 }

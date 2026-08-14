@@ -78,6 +78,32 @@ def test_text_envelope_rejects_declared_operations() -> None:
         )
 
 
+def test_external_item_payload_accepts_a_text_caption_and_declared_operations() -> None:
+    """ST-10 (review finding S10-F01): a structured external item may carry its own verbatim
+    body (`text`) and, for `plan_work`, a structurally declared `plan` operation -- it is never
+    re-parsed as a free-text channel message."""
+    envelope = _envelope(
+        CapturePayloadKind.EXTERNAL_ITEM,
+        url=None,
+        external_item_id="task-1",
+        text="Implement signup\n\nAdd OAuth login",
+        intent=CaptureIntent.PLAN_WORK,
+        operations=(CaptureOperation(kind=CaptureOperationKind.PLAN),),
+    )
+    assert envelope.text == "Implement signup\n\nAdd OAuth login"
+    assert envelope.operations[0].kind is CaptureOperationKind.PLAN
+
+
+def test_external_item_payload_rejects_a_url_together_with_the_item_id() -> None:
+    with pytest.raises(InvariantViolationError):
+        _envelope(
+            CapturePayloadKind.EXTERNAL_ITEM,
+            url="https://example.com/article",
+            external_item_id="task-1",
+            text="caption",
+        )
+
+
 def test_external_item_envelope_requires_external_item_id() -> None:
     with pytest.raises(InvariantViolationError):
         _envelope(CapturePayloadKind.EXTERNAL_ITEM)
