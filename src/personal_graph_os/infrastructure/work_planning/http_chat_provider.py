@@ -67,12 +67,15 @@ class WorkPlanningProviderResponseInvalidError(WorkPlanningError):
 @dataclass(frozen=True)
 class ChatCompletionsProviderConfig:
     """Everything needed to reach one configured chat-completions endpoint. `api_key` is never
-    logged, persisted, or otherwise surfaced outside the `Authorization` request header."""
+    logged, persisted, or otherwise surfaced outside the `Authorization` request header.
+    `reasoning_effort` (OpenAI `reasoning_effort` request field, e.g. `high`) is passed through
+    when set and omitted otherwise."""
 
     base_url: str
     api_key: str
     model_name: str
     timeout_seconds: float = 30.0
+    reasoning_effort: str | None = None
 
 
 class HttpChatWorkPlanningProvider:
@@ -116,7 +119,7 @@ class HttpChatWorkPlanningProvider:
 
     def _build_request_body(self, *, source_text: str, title: str) -> dict[str, object]:
         data_block = {"title": title, "source_text": source_text}
-        return {
+        request_body: dict[str, object] = {
             "model": self._config.model_name,
             "messages": [
                 {"role": "system", "content": _SYSTEM_PROMPT},
@@ -128,6 +131,9 @@ class HttpChatWorkPlanningProvider:
             ],
             "response_format": {"type": "json_object"},
         }
+        if self._config.reasoning_effort is not None:
+            request_body["reasoning_effort"] = self._config.reasoning_effort
+        return request_body
 
     def _to_work_plan_result(self, parsed: object) -> WorkPlanResult:
         try:

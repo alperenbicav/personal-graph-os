@@ -49,6 +49,53 @@ def _provider(handler) -> HttpChatEnrichmentProvider:
     return HttpChatEnrichmentProvider(config, transport=httpx.MockTransport(handler))
 
 
+def test_reasoning_effort_is_passed_through_when_configured() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return _chat_response(
+            {
+                "payload": {"summary": "a concise summary", "key_findings": ["finding one"]},
+                "tags": ["testing"],
+                "confidence": 0.85,
+                "proposed_relations": [],
+            }
+        )
+
+    provider = HttpChatEnrichmentProvider(
+        ChatCompletionsProviderConfig(
+            base_url="https://example.test",
+            api_key="test-key",
+            model_name="test-model",
+            reasoning_effort="high",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    provider.classify(extracted=_extracted_content())
+
+    assert captured["body"]["reasoning_effort"] == "high"
+
+
+def _extracted_content() -> ExtractedContent:
+    return ExtractedContent(
+        resource_kind=ResourceKind.ARTICLE,
+        canonical_identifier="https://example.com/a",
+        title="An article",
+        abstract="An abstract.",
+        evidence=(
+            ExtractionEvidence(
+                kind=EvidenceKind.METADATA_LOOKUP,
+                adapter_name="test-adapter",
+                source_reference="https://example.com/a",
+                content_hash=hash_content("content"),
+                byte_length=32,
+            ),
+        ),
+    )
+
+
 def _chat_response(payload: dict) -> httpx.Response:
     return httpx.Response(
         200,

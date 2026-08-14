@@ -38,6 +38,7 @@ _ENV_PROVIDER = "PGOS_ENRICHMENT_PROVIDER"
 _ENV_BASE_URL = "PGOS_ENRICHMENT_BASE_URL"
 _ENV_API_KEY = "PGOS_ENRICHMENT_API_KEY"
 _ENV_MODEL = "PGOS_ENRICHMENT_MODEL"
+_ENV_REASONING_EFFORT = "PGOS_ENRICHMENT_REASONING_EFFORT"
 
 
 class EnrichmentProviderConfigurationError(EnrichmentError):
@@ -87,6 +88,11 @@ def build_enrichment_provider_from_env(
         )
 
     return HttpChatEnrichmentProvider(
-        ChatCompletionsProviderConfig(base_url=base_url, api_key=api_key, model_name=model_name),
+        ChatCompletionsProviderConfig(
+            base_url=base_url,
+            api_key=api_key,
+            model_name=model_name,
+            reasoning_effort=(environ.get(_ENV_REASONING_EFFORT) or "").strip() or None,
+        ),
         transport=transport,
     )
