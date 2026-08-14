@@ -155,12 +155,33 @@ export interface PaperEnrichmentPayload {
   methodology: string | null
   limitations: string[]
   applicability: string | null
+  research_problem?: string | null
+  motivation?: string | null
+  related_work?: string | null
+  datasets_and_experiments?: string | null
+  key_results?: string[]
+  comparisons_and_ablations?: string | null
+  theoretical_contributions?: string | null
+  practical_contributions?: string | null
+  assumptions?: string | null
+  open_questions?: string[]
+  reproducibility?: string | null
+  key_terms?: string[]
+  figure_table_notes?: string | null
+  interpretation?: string | null
+  critical_analysis?: string | null
 }
 
 export interface ArticleEnrichmentPayload {
   summary: string
   key_findings: string[]
   applicability: string | null
+  research_problem?: string | null
+  motivation?: string | null
+  key_results?: string[]
+  practical_contributions?: string | null
+  open_questions?: string[]
+  critical_analysis?: string | null
 }
 
 export interface RepositoryEnrichmentPayload {

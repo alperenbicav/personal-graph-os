@@ -41,6 +41,8 @@ _ARXIV_CASES = [
     ("https://arxiv.org/abs/2401.00001v1", "arxiv:2401.00001"),
     ("https://arxiv.org/abs/2401.00001v2", "arxiv:2401.00001"),
     ("arxiv:2401.00001v3", "arxiv:2401.00001"),
+    ("https://arxiv.org/pdf/2607.18261", "arxiv:2607.18261"),
+    ("https://arxiv.org/pdf/2607.18261v2", "arxiv:2607.18261"),
 ]
 
 

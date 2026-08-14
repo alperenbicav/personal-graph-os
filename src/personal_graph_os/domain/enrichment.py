@@ -140,13 +140,33 @@ def truncate_authors(authors: tuple[str, ...]) -> tuple[str, ...]:
 
 
 class PaperEnrichmentPayload(BaseModel):
-    """Typed enrichment fields for `ResourceKind.PAPER`."""
+    """Typed enrichment fields for `ResourceKind.PAPER`.
+
+    The analytic fields beyond `summary`/`key_findings` are all optional so older profile
+    versions (stored JSON) keep parsing, and so a model that skips a section degrades
+    gracefully instead of failing validation.
+    """
 
     summary: str
     key_findings: tuple[str, ...] = ()
     methodology: str | None = None
     limitations: tuple[str, ...] = ()
     applicability: str | None = None
+    research_problem: str | None = None
+    motivation: str | None = None
+    related_work: str | None = None
+    datasets_and_experiments: str | None = None
+    key_results: tuple[str, ...] = ()
+    comparisons_and_ablations: str | None = None
+    theoretical_contributions: str | None = None
+    practical_contributions: str | None = None
+    assumptions: str | None = None
+    open_questions: tuple[str, ...] = ()
+    reproducibility: str | None = None
+    key_terms: tuple[str, ...] = ()
+    figure_table_notes: str | None = None
+    interpretation: str | None = None
+    critical_analysis: str | None = None
 
     @field_validator("summary")
     @classmethod
@@ -157,7 +177,13 @@ class PaperEnrichmentPayload(BaseModel):
             "PaperEnrichmentPayload.summary",
         )
 
-    @field_validator("key_findings", "limitations")
+    @field_validator(
+        "key_findings",
+        "limitations",
+        "key_results",
+        "open_questions",
+        "key_terms",
+    )
     @classmethod
     def _validate_lists(cls, value: tuple[str, ...], info: object) -> tuple[str, ...]:
         field_name = getattr(info, "field_name", "PaperEnrichmentPayload field")
@@ -168,7 +194,22 @@ class PaperEnrichmentPayload(BaseModel):
             field_label=f"PaperEnrichmentPayload.{field_name}",
         )
 
-    @field_validator("methodology", "applicability")
+    @field_validator(
+        "methodology",
+        "applicability",
+        "research_problem",
+        "motivation",
+        "related_work",
+        "datasets_and_experiments",
+        "comparisons_and_ablations",
+        "theoretical_contributions",
+        "practical_contributions",
+        "assumptions",
+        "reproducibility",
+        "figure_table_notes",
+        "interpretation",
+        "critical_analysis",
+    )
     @classmethod
     def _validate_optional_text(cls, value: str | None, info: object) -> str | None:
         field_name = getattr(info, "field_name", "PaperEnrichmentPayload field")
@@ -183,6 +224,12 @@ class ArticleEnrichmentPayload(BaseModel):
     summary: str
     key_findings: tuple[str, ...] = ()
     applicability: str | None = None
+    research_problem: str | None = None
+    motivation: str | None = None
+    key_results: tuple[str, ...] = ()
+    practical_contributions: str | None = None
+    open_questions: tuple[str, ...] = ()
+    critical_analysis: str | None = None
 
     @field_validator("summary")
     @classmethod
@@ -193,21 +240,29 @@ class ArticleEnrichmentPayload(BaseModel):
             "ArticleEnrichmentPayload.summary",
         )
 
-    @field_validator("key_findings")
+    @field_validator("key_findings", "key_results", "open_questions")
     @classmethod
-    def _validate_lists(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+    def _validate_lists(cls, value: tuple[str, ...], info: object) -> tuple[str, ...]:
+        field_name = getattr(info, "field_name", "ArticleEnrichmentPayload field")
         return _validate_bounded_collection(
             value,
             max_items=MAX_LIST_ITEMS,
             max_item_length=MAX_LIST_ITEM_LENGTH,
-            field_label="ArticleEnrichmentPayload.key_findings",
+            field_label=f"ArticleEnrichmentPayload.{field_name}",
         )
 
-    @field_validator("applicability")
+    @field_validator(
+        "applicability",
+        "research_problem",
+        "motivation",
+        "practical_contributions",
+        "critical_analysis",
+    )
     @classmethod
-    def _validate_optional_text(cls, value: str | None) -> str | None:
+    def _validate_optional_text(cls, value: str | None, info: object) -> str | None:
+        field_name = getattr(info, "field_name", "ArticleEnrichmentPayload field")
         return _validate_bounded_optional_text(
-            value, MAX_TEXT_FIELD_LENGTH, "ArticleEnrichmentPayload.applicability"
+            value, MAX_TEXT_FIELD_LENGTH, f"ArticleEnrichmentPayload.{field_name}"
         )
 
 

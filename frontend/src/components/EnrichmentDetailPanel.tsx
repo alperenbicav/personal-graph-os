@@ -7,29 +7,27 @@ interface EnrichmentDetailPanelProps {
   onGoToRelation?: (relation: ResourceDetail['relations'][number]) => void
 }
 
-function ListField({ label, values }: { label: string; values: string[] }) {
-  if (values.length === 0) return null
+function TextSection({ title, value }: { title: string; value: string | null | undefined }) {
+  if (!value) return null
   return (
-    <div className="field">
-      <span className="field-label">{label}</span>
-      <ul className="string-list enrichment-readonly-list">
-        {values.map((value, index) => (
-          <li key={index}>
-            <span>{value}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
+    <section className="enrichment-section">
+      <h3 className="enrichment-section-title">{title}</h3>
+      <p className="enrichment-paragraph">{value}</p>
+    </section>
   )
 }
 
-function TextField({ label, value }: { label: string; value: string | null }) {
-  if (!value) return null
+function ListSection({ title, values }: { title: string; values: string[] | null | undefined }) {
+  if (!values || values.length === 0) return null
   return (
-    <div className="field">
-      <span className="field-label">{label}</span>
-      <p className="field-value">{value}</p>
-    </div>
+    <section className="enrichment-section">
+      <h3 className="enrichment-section-title">{title}</h3>
+      <ul className="enrichment-findings">
+        {values.map((value, index) => (
+          <li key={index}>{value}</li>
+        ))}
+      </ul>
+    </section>
   )
 }
 
@@ -39,9 +37,41 @@ function EnrichmentPayloadSection({ detail }: { detail: ResourceDetail }) {
     return <p className="view-empty">No enrichment yet.</p>
   }
   const payload = enrichment.payload as unknown as Record<string, unknown>
-  const summary = (payload.summary as string) ?? null
-  const keyFindings = (payload.key_findings as string[]) ?? []
-  const capabilities = (payload.capabilities as string[]) ?? []
+  const str = (key: string): string | null => {
+    const value = payload[key]
+    return typeof value === 'string' && value.trim() ? value : null
+  }
+  const list = (key: string): string[] =>
+    Array.isArray(payload[key]) ? (payload[key] as string[]) : []
+  const summary = str('summary')
+  const keyFindings = list('key_findings')
+  const capabilities = list('capabilities')
+
+  const textSections: { title: string; value: string | null }[] = [
+    { title: 'Research problem', value: str('research_problem') },
+    { title: 'Motivation', value: str('motivation') },
+    { title: 'Related work', value: str('related_work') },
+    { title: 'Methodology', value: str('methodology') },
+    { title: 'Datasets & experiments', value: str('datasets_and_experiments') },
+    { title: 'Comparisons & ablations', value: str('comparisons_and_ablations') },
+    { title: 'Theoretical contributions', value: str('theoretical_contributions') },
+    { title: 'Practical contributions', value: str('practical_contributions') },
+    { title: 'Assumptions', value: str('assumptions') },
+    { title: 'Reproducibility', value: str('reproducibility') },
+    { title: 'Figure & table notes', value: str('figure_table_notes') },
+    { title: 'Interpretation', value: str('interpretation') },
+    { title: 'Critical analysis', value: str('critical_analysis') },
+    { title: 'Architecture', value: str('architecture_summary') },
+    { title: 'Applicability', value: str('applicability') },
+  ]
+  const listSections: { title: string; values: string[] }[] = [
+    { title: 'Key results', values: list('key_results') },
+    { title: 'Open questions', values: list('open_questions') },
+    { title: 'Key terms', values: list('key_terms') },
+    { title: 'Limitations', values: list('limitations') },
+    { title: 'Risks', values: list('risks') },
+    { title: 'Tech stack', values: list('tech_stack') },
+  ]
 
   return (
     <div className="enrichment-payload">
@@ -104,13 +134,16 @@ function EnrichmentPayloadSection({ detail }: { detail: ResourceDetail }) {
         </section>
       )}
 
-      <TextField label="Architecture" value={(payload.architecture_summary as string | null) ?? null} />
-      <TextField label="Methodology" value={(payload.methodology as string | null) ?? null} />
-      <ListField label="Limitations" values={(payload.limitations as string[]) ?? []} />
-      <ListField label="Risks" values={(payload.risks as string[]) ?? []} />
-      <TextField label="Applicability" value={(payload.applicability as string | null) ?? null} />
-      <ListField label="Tech stack" values={(payload.tech_stack as string[]) ?? []} />
-      <TextField label="Activity" value={(payload.activity_summary as string | null) ?? null} />
+      {textSections.map(
+        (section) =>
+          section.value && <TextSection key={section.title} title={section.title} value={section.value} />,
+      )}
+      {listSections.map(
+        (section) =>
+          section.values.length > 0 && (
+            <ListSection key={section.title} title={section.title} values={section.values} />
+          ),
+      )}
 
       {enrichment.cited_evidence.length > 0 && (
         <div className="field">

@@ -22,7 +22,8 @@ _DOI_URL_PATTERN = re.compile(
 _BARE_DOI_PATTERN = re.compile(r"^(?:doi:)?(10\.\d{4,9}/[^?#\s]+)(?:[?#].*)?$", re.IGNORECASE)
 
 _ARXIV_URL_PATTERN = re.compile(
-    r"^https?://arxiv\.org/abs/([a-z\-]*/?\d{4,7}(?:\.\d{4,5})?)(v\d+)?/?$", re.IGNORECASE
+    r"^https?://arxiv\.org/(?:abs|pdf)/([a-z\-]*/?\d{4,7}(?:\.\d{4,5})?)(?:v\d+)?/?$",
+    re.IGNORECASE,
 )
 _BARE_ARXIV_PATTERN = re.compile(r"^arxiv:([a-z\-]*/?\d{4,7}(?:\.\d{4,5})?)(v\d+)?$", re.IGNORECASE)
 

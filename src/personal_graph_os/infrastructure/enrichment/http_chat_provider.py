@@ -48,8 +48,21 @@ from personal_graph_os.domain.extraction import ExtractedContent
 # enough: gpt-5.6-luna echoed the input DATA block into `payload` instead of classifying, so the
 # contract is spelled out field-by-field here (and validated again by Pydantic after parsing).
 _PAYLOAD_FIELDS_BY_KIND = {
-    "paper": '"summary": string, "key_findings": [string, ...]',
-    "article": '"summary": string, "key_findings": [string, ...]',
+    "paper": (
+        '"summary": string, "key_findings": [string, ...], "methodology": string, '
+        '"research_problem": string, "motivation": string, "related_work": string, '
+        '"datasets_and_experiments": string, "key_results": [string, ...], '
+        '"comparisons_and_ablations": string, "theoretical_contributions": string, '
+        '"practical_contributions": string, "assumptions": string, '
+        '"open_questions": [string, ...], "reproducibility": string, "key_terms": [string, ...], '
+        '"figure_table_notes": string, "interpretation": string, "critical_analysis": string, '
+        '"limitations": [string, ...], "applicability": string'
+    ),
+    "article": (
+        '"summary": string, "key_findings": [string, ...], "research_problem": string, '
+        '"motivation": string, "key_results": [string, ...], "practical_contributions": string, '
+        '"open_questions": [string, ...], "critical_analysis": string, "applicability": string'
+    ),
     "github_repository": (
         '"summary": string, "capabilities": [string, ...], "architecture_summary": string'
     ),
