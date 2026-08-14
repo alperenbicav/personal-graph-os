@@ -83,8 +83,17 @@ class GraphAgent(Protocol):
         """Stable identity of the underlying chat provider."""
         ...
 
-    def run(self, *, user_message: str, actor_name: str, request_id: str) -> str:
-        """Answer `user_message`, optionally mutating the graph (attributed), bounded."""
+    def run(
+        self,
+        *,
+        user_message: str,
+        actor_name: str,
+        request_id: str,
+        attachment_image_data_url: str | None = None,
+    ) -> str:
+        """Answer `user_message`, optionally mutating the graph (attributed), bounded. When
+        `attachment_image_data_url` is set (a base64 data URL of a screenshot), the model also
+        sees the image (vision)."""
         ...
 
 

@@ -49,6 +49,20 @@ class TelegramUser(BaseModel):
     username: str | None = None
 
 
+class TelegramDocument(BaseModel):
+    file_id: str
+    file_name: str | None = None
+    mime_type: str | None = None
+    file_size: int | None = None
+
+
+class TelegramPhoto(BaseModel):
+    file_id: str
+    file_size: int | None = None
+    width: int | None = None
+    height: int | None = None
+
+
 class TelegramMessage(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -58,6 +72,8 @@ class TelegramMessage(BaseModel):
     from_: TelegramUser | None = Field(default=None, alias="from")
     text: str | None = None
     caption: str | None = None
+    document: TelegramDocument | None = None
+    photo: list[TelegramPhoto] | None = None
 
     @field_validator("text", "caption")
     @classmethod
@@ -72,6 +88,20 @@ class TelegramMessage(BaseModel):
         """The message's text, falling back to a media `caption` (S11-F02): a photo/document with
         a caption carrying a URL is capturable exactly like a plain-text message."""
         return self.text or self.caption
+
+    @property
+    def media_file(self) -> tuple[str, str, str | None] | None:
+        """The single best file attachment, if any: `(kind, file_id, file_name)` where `kind` is
+        `"image"` or `"document"`. For a photo, the largest available size is chosen. A document
+        whose mime type is an image is treated as an image."""
+        if self.photo:
+            largest = max(self.photo, key=lambda photo: photo.file_size or 0)
+            return ("image", largest.file_id, None)
+        if self.document is not None:
+            mime = (self.document.mime_type or "").lower()
+            kind = "image" if mime.startswith("image/") else "document"
+            return (kind, self.document.file_id, self.document.file_name)
+        return None
 
 
 class TelegramUpdate(BaseModel):
@@ -93,16 +123,22 @@ class TelegramClient(Protocol):
     ) -> tuple[TelegramUpdate, ...]: ...
     def send_message(self, chat_id: int, text: str) -> None: ...
     def is_chat_allowed(self, chat_id: int) -> bool: ...
+    def download_file(self, file_id: str) -> bytes:
+        """Download a file previously referenced by `file_id` (a photo/document) as raw bytes.
+        Raises the same channel errors as the other methods on failure."""
+        ...
 
 
 __all__ = [
     "TelegramAccessDeniedError",
     "TelegramChat",
     "TelegramClient",
+    "TelegramDocument",
     "TelegramError",
     "TelegramFetchFailedError",
     "TelegramMessage",
     "TelegramNotConfiguredError",
+    "TelegramPhoto",
     "TelegramRateLimitedError",
     "TelegramUpdate",
     "TelegramUser",

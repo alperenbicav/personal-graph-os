@@ -210,10 +210,23 @@ class AgentLoopService:
     def provider_name(self) -> str:
         return self._provider.name
 
-    def run(self, *, user_message: str, actor_name: str, request_id: str) -> str:
+    def run(
+        self,
+        *,
+        user_message: str,
+        actor_name: str,
+        request_id: str,
+        attachment_image_data_url: str | None = None,
+    ) -> str:
+        user_content: object = user_message
+        if attachment_image_data_url is not None:
+            user_content = [
+                {"type": "input_text", "text": user_message},
+                {"type": "input_image", "image_url": attachment_image_data_url},
+            ]
         input_items: list[dict[str, object]] = [
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
+            {"role": "user", "content": user_content},
         ]
         for _ in range(self._max_iterations):
             turn = self._provider.complete(input_items=input_items, tools=BOT_TOOLS)

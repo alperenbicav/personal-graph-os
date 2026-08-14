@@ -148,6 +148,7 @@ from personal_graph_os.infrastructure.extraction.github_metadata_adapter import 
 )
 from personal_graph_os.infrastructure.extraction.html_article_parser import HtmlArticleParser
 from personal_graph_os.infrastructure.extraction.http_content_fetcher import HttpContentFetcher
+from personal_graph_os.infrastructure.extraction.pdf_text import extract_pdf_text
 from personal_graph_os.infrastructure.local_file_store import LocalManagedFileStore
 from personal_graph_os.infrastructure.mcp.auth import with_bearer_token
 from personal_graph_os.infrastructure.mcp.gateway import AgentGatewayService
@@ -600,6 +601,7 @@ def create_app(
         default_workspace.id,
         lambda: SqliteResearchUnitOfWork(connection),
         agent_loop=agent_loop,
+        pdf_text_extractor=extract_pdf_text,
     )
     app.state.telegram_poller = (
         TelegramPoller(telegram_client, app.state.telegram_service)

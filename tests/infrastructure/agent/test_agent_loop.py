@@ -278,6 +278,26 @@ def test_capture_url_calls_gateway_with_enrichment_operations() -> None:
     ]
 
 
+def test_image_attachment_is_sent_as_a_vision_input_part() -> None:
+    provider = ScriptedProvider([AgentChatTurn(final_text="I see a signup form.")])
+    loop = _make_loop(provider, StubGateway())
+
+    answer = loop.run(
+        user_message="What is on this screenshot?",
+        actor_name="tg",
+        request_id="1",
+        attachment_image_data_url="data:image/png;base64,AAAA",
+    )
+
+    assert answer == "I see a signup form."
+    user_item = provider.calls[0][1]
+    parts = user_item["content"]
+    assert isinstance(parts, list)
+    assert parts[0] == {"type": "input_text", "text": "What is on this screenshot?"}
+    assert parts[1]["type"] == "input_image"
+    assert parts[1]["image_url"] == "data:image/png;base64,AAAA"
+
+
 def test_loop_budget_is_bounded() -> None:
     gateway = StubGateway()
     provider = ScriptedProvider(

@@ -27,9 +27,11 @@ from personal_graph_os.application.capture_planning_orchestrator import (
     CapturePlanningOrchestrator,
 )
 from personal_graph_os.application.capture_service import CaptureOutcome
+from personal_graph_os.application.pdf_adapters import PdfTextExtractor
 from personal_graph_os.application.research_unit_of_work import ResearchUnitOfWork
 from personal_graph_os.application.telegram_adapters import (
     TelegramClient,
+    TelegramError,
     TelegramMessage,
     TelegramNotConfiguredError,
     TelegramUpdate,
@@ -84,12 +86,14 @@ class TelegramService:
         workspace_id: WorkspaceId,
         unit_of_work_factory: Callable[[], ResearchUnitOfWork],
         agent_loop: GraphAgent | None = None,
+        pdf_text_extractor: PdfTextExtractor | None = None,
     ) -> None:
         self._telegram_client = telegram_client
         self._capture_planning_orchestrator = capture_planning_orchestrator
         self._workspace_id = workspace_id
         self._unit_of_work_factory = unit_of_work_factory
         self._agent_loop = agent_loop
+        self._pdf_text_extractor = pdf_text_extractor
 
     def current_offset(self) -> int | None:
         """The next `getUpdates` offset: one past the last confirmed `update_id`, or `None` on a
@@ -117,6 +121,9 @@ class TelegramService:
         if not client.is_chat_allowed(message.chat.id):
             self._advance_cursor(update.update_id)
             return TelegramUpdateOutcome.SKIPPED_DISALLOWED
+
+        if message.media_file is not None and self._agent_loop is not None:
+            return self._answer_media_via_agent(client, message, update.update_id)
 
         content = message.content
         if content is None:
@@ -191,6 +198,81 @@ class TelegramService:
             actor_name=actor_name,
             request_id=str(update_id),
         )
+        client.send_message(message.chat.id, answer)
+        self._advance_cursor(update_id)
+        return TelegramUpdateOutcome.AGENT_ANSWERED
+
+    def _answer_media_via_agent(
+        self,
+        client: TelegramClient,
+        message: TelegramMessage,
+        update_id: int,
+    ) -> TelegramUpdateOutcome:
+        """A photo/document attachment with an agent configured: download the file, hand it to
+        the bounded graph agent (vision for images, extracted PDF text for documents), and reply
+        with its analysis. A failed download/analysis must leave the update pending so the next
+        poll retries it instead of silently dropping the attachment."""
+        loop = self._agent_loop
+        if loop is None:  # pragma: no cover - guarded by caller
+            raise AssertionError("agent loop must be configured")
+        media = message.media_file
+        if media is None:  # pragma: no cover - guarded by caller
+            raise AssertionError("media message must carry a file")
+        kind, file_id, file_name = media
+        content = message.content
+        text = content or (
+            "Analyze this image and describe what it shows in detail."
+            if kind == "image"
+            else "Analyze this document and summarize its contents in detail."
+        )
+        actor_name = (
+            message.from_.username
+            if message.from_ and message.from_.username
+            else TELEGRAM_ACTOR_NAME
+        )
+        try:
+            file_bytes = client.download_file(file_id)
+        except TelegramError:
+            client.send_message(
+                message.chat.id,
+                "I could not download that file. Please try again or send a URL.",
+            )
+            self._advance_cursor(update_id)
+            return TelegramUpdateOutcome.AGENT_ANSWERED
+
+        if kind == "image":
+            import base64
+
+            data_url = f"data:image/png;base64,{base64.b64encode(file_bytes).decode('ascii')}"
+            answer = loop.run(
+                user_message=text,
+                actor_name=actor_name,
+                request_id=str(update_id),
+                attachment_image_data_url=data_url,
+            )
+        else:
+            if self._pdf_text_extractor is None:
+                client.send_message(
+                    message.chat.id,
+                    "I could not read that document: PDF extraction is not configured on this "
+                    "instance. Send a URL or paste the text instead.",
+                )
+                self._advance_cursor(update_id)
+                return TelegramUpdateOutcome.AGENT_ANSWERED
+            pdf_text = self._pdf_text_extractor(file_bytes)
+            if not pdf_text:
+                client.send_message(
+                    message.chat.id,
+                    "I could not read any text from that document. Please send a readable "
+                    "PDF or a URL.",
+                )
+                self._advance_cursor(update_id)
+                return TelegramUpdateOutcome.AGENT_ANSWERED
+            answer = loop.run(
+                user_message=f"{text}\n\n--- DOCUMENT TEXT ---\n{pdf_text}",
+                actor_name=actor_name,
+                request_id=str(update_id),
+            )
         client.send_message(message.chat.id, answer)
         self._advance_cursor(update_id)
         return TelegramUpdateOutcome.AGENT_ANSWERED

@@ -90,6 +90,38 @@ class HttpTelegramClient:
 
         self._parse_response("sendMessage", response)
 
+    def download_file(self, file_id: str) -> bytes:
+        """Download a file referenced by `file_id` (a photo/document) via `getFile` + the file
+        endpoint. The file path is fetched over the token-carrying base URL, so transport errors
+        are never stringified (S11-F04); the bytes themselves carry no token."""
+        file_url = f"{self._base_url}/getFile"
+        try:
+            response = self._client.get(file_url, params={"file_id": file_id})
+        except httpx.HTTPError:
+            raise TelegramFetchFailedError("Telegram getFile failed: transport error") from None
+        payload = self._parse_response("getFile", response)
+        result = payload.get("result")
+        file_path = result.get("file_path") if isinstance(result, dict) else None
+        if not isinstance(file_path, str) or not file_path:
+            raise TelegramFetchFailedError(
+                "Telegram getFile returned no file_path for the requested file"
+            )
+
+        api_root = self._base_url.split("/bot", 1)[0]
+        bot_suffix = self._base_url[self._base_url.index("/bot") :]
+        download_url = f"{api_root}/file{bot_suffix}/{file_path}"
+        try:
+            file_response = self._client.get(download_url)
+        except httpx.HTTPError:
+            raise TelegramFetchFailedError(
+                "Telegram file download failed: transport error"
+            ) from None
+        if file_response.status_code != 200:
+            raise TelegramFetchFailedError(
+                f"Telegram file download returned HTTP {file_response.status_code}"
+            )
+        return file_response.content
+
     def _parse_response(self, method: str, response: httpx.Response) -> dict[str, object]:
         if response.status_code in (401, 403):
             raise TelegramAccessDeniedError(

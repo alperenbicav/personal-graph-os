@@ -101,6 +101,8 @@ def _service(
     workspace_id: WorkspaceId | None = None,
     enrichment_service: object | None = None,
     extraction_service: object | None = None,
+    agent_loop: object | None = None,
+    pdf_text_extractor: object | None = None,
 ) -> tuple[TelegramService, FakeTelegramClient, WorkspaceId]:
     workspace_repository = SqliteWorkspaceRepository(sqlite_connection)
     if workspace_id is None:
@@ -135,6 +137,8 @@ def _service(
         orchestrator,
         resolved_workspace_id,
         unit_of_work_factory,
+        agent_loop=agent_loop,  # type: ignore[arg-type]
+        pdf_text_extractor=pdf_text_extractor,  # type: ignore[arg-type]
     )
     return telegram_service, resolved_client, resolved_workspace_id  # type: ignore[return-value]
 
@@ -515,3 +519,101 @@ def test_a_redelivered_summarize_message_does_not_re_enrich(
     )
     assert profile is not None
     assert profile.current_version_number == 1
+
+
+class _FakeGraphAgent:
+    """`GraphAgent` stub that records calls and returns a canned answer."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    @property
+    def provider_name(self) -> str:
+        return "stub"
+
+    def run(
+        self,
+        *,
+        user_message: str,
+        actor_name: str,
+        request_id: str,
+        attachment_image_data_url: str | None = None,
+    ) -> str:
+        self.calls.append(
+            {
+                "user_message": user_message,
+                "actor_name": actor_name,
+                "request_id": request_id,
+                "image": attachment_image_data_url,
+            }
+        )
+        return "I analyzed it."
+
+
+def _file_media_update(
+    *,
+    update_id: int = 21,
+    photo_file_id: str | None = None,
+    document: dict[str, object] | None = None,
+) -> TelegramUpdate:
+    return TelegramUpdate(
+        update_id=update_id,
+        message=TelegramMessage(
+            message_id=update_id,
+            date=1720000000,
+            chat={"id": 1},
+            from_=TelegramUser(id=99, username="alperen"),
+            photo=[{"file_id": photo_file_id, "file_size": 10, "width": 2, "height": 2}]
+            if photo_file_id
+            else None,
+            document=document,
+        ),
+    )
+
+
+def test_image_attachment_is_analyzed_via_the_agent_loop(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    agent = _FakeGraphAgent()
+    update = _file_media_update(photo_file_id="photo-1")
+    client = FakeTelegramClient((update,), file_bytes={"photo-1": b"fake-image-bytes"})
+    service, _client, _ws = _service(sqlite_connection, client=client, agent_loop=agent)
+
+    outcome = service.process_update(update)
+
+    assert outcome is TelegramUpdateOutcome.AGENT_ANSWERED
+    assert agent.calls[0]["request_id"] == "21"
+    assert agent.calls[0]["actor_name"] == "alperen"
+    assert agent.calls[0]["image"] == "data:image/png;base64,ZmFrZS1pbWFnZS1ieXRlcw=="
+    assert client.outbox == ((1, "I analyzed it."),)
+
+
+def test_pdf_document_attachment_hands_extracted_text_to_the_agent(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    from tests.infrastructure.extraction.test_pdf_text import _text_pdf
+
+    agent = _FakeGraphAgent()
+    update = _file_media_update(
+        document={
+            "file_id": "doc-1",
+            "file_name": "paper.pdf",
+            "mime_type": "application/pdf",
+        }
+    )
+    from personal_graph_os.infrastructure.extraction.pdf_text import extract_pdf_text
+
+    client = FakeTelegramClient((update,), file_bytes={"doc-1": _text_pdf("Hello PDF World")})
+    service, _client, _ws = _service(
+        sqlite_connection, client=client, agent_loop=agent, pdf_text_extractor=extract_pdf_text
+    )
+
+    outcome = service.process_update(update)
+
+    assert outcome is TelegramUpdateOutcome.AGENT_ANSWERED
+    assert agent.calls[0]["request_id"] == "21"
+    message = agent.calls[0]["user_message"]
+    assert isinstance(message, str)
+    assert "Hello PDF World" in message
+    assert "--- DOCUMENT TEXT ---" in message
+    assert client.outbox == ((1, "I analyzed it."),)
