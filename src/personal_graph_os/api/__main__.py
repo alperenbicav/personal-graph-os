@@ -9,6 +9,7 @@ developer explicitly opts into it for a separate Vite dev server.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import uvicorn
 
@@ -22,6 +23,37 @@ from personal_graph_os.api.app import (
 
 LOOPBACK_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def load_dotenv(dotenv_path: Path | None = None) -> None:
+    """Load `KEY=VALUE` pairs from a `.env` file into `os.environ`.
+
+    Never overrides a value already present in the environment, ignores blank lines and
+    `#`-comments, strips surrounding whitespace and one layer of matching quotes from values,
+    and never prints any value. Missing or empty files are a no-op. The default file is the
+    repository-root `.env`, falling back to the current working directory's `.env`.
+    """
+    candidates = [dotenv_path] if dotenv_path is not None else [
+        _REPO_ROOT / ".env",
+        Path.cwd() / ".env",
+    ]
+    for candidate in candidates:
+        if candidate is None or not candidate.is_file():
+            continue
+        for line in candidate.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, raw_value = stripped.split("=", 1)
+            key = key.strip()
+            if not key or key in os.environ:
+                continue
+            value = raw_value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                value = value[1:-1]
+            os.environ[key] = value
+        return
 
 
 def _env_list(name: str) -> list[str] | None:
@@ -33,6 +65,7 @@ def _env_list(name: str) -> list[str] | None:
 
 
 def main() -> None:
+    load_dotenv()
     trusted_hosts = _env_list("PGOS_TRUSTED_HOSTS") or DEFAULT_TRUSTED_HOSTS
     if os.environ.get("PGOS_DEV_CORS", "").strip().lower() in {"1", "true", "yes"}:
         cors_origins = _env_list("PGOS_DEV_CORS_ORIGINS") or DEV_FRONTEND_ORIGINS
