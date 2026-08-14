@@ -37,7 +37,7 @@ const emptyDashboard: ResearchDashboard = {
 describe('ResearchView', () => {
   it('shows a loading message when the dashboard has not loaded yet', () => {
     render(
-      <ResearchView dashboard={null} resources={[]} selectedNodeId={null} onSelectNode={vi.fn()} onCreateResource={vi.fn()} />,
+      <ResearchView dashboard={null} resources={[]} selectedNodeId={null} onSelectNode={vi.fn()} onCreateResource={vi.fn()} onArchiveResource={vi.fn()} onDeleteResource={vi.fn()} />,
     )
     expect(screen.getByText(/loading research dashboard/i)).toBeInTheDocument()
   })
@@ -52,6 +52,8 @@ describe('ResearchView', () => {
         selectedNodeId={null}
         onSelectNode={vi.fn()}
         onCreateResource={vi.fn()}
+        onArchiveResource={vi.fn()}
+        onDeleteResource={vi.fn()}
       />,
     )
 
@@ -75,6 +77,8 @@ describe('ResearchView', () => {
         selectedNodeId={null}
         onSelectNode={onSelectNode}
         onCreateResource={vi.fn()}
+        onArchiveResource={vi.fn()}
+        onDeleteResource={vi.fn()}
       />,
     )
 
@@ -99,6 +103,8 @@ describe('ResearchView', () => {
         selectedNodeId={null}
         onSelectNode={vi.fn()}
         onCreateResource={vi.fn()}
+        onArchiveResource={vi.fn()}
+        onDeleteResource={vi.fn()}
       />,
     )
 
@@ -120,6 +126,8 @@ describe('ResearchView', () => {
         selectedNodeId={null}
         onSelectNode={vi.fn()}
         onCreateResource={vi.fn()}
+        onArchiveResource={vi.fn()}
+        onDeleteResource={vi.fn()}
       />,
     )
 
@@ -151,6 +159,8 @@ describe('ResearchView', () => {
         selectedNodeId={null}
         onSelectNode={vi.fn()}
         onCreateResource={vi.fn()}
+        onArchiveResource={vi.fn()}
+        onDeleteResource={vi.fn()}
       />,
     )
 
@@ -171,6 +181,8 @@ describe('ResearchView', () => {
         selectedNodeId={null}
         onSelectNode={vi.fn()}
         onCreateResource={vi.fn()}
+        onArchiveResource={vi.fn()}
+        onDeleteResource={vi.fn()}
       />,
     )
 
@@ -189,6 +201,8 @@ describe('ResearchView', () => {
         selectedNodeId={null}
         onSelectNode={vi.fn()}
         onCreateResource={onCreateResource}
+        onArchiveResource={vi.fn()}
+        onDeleteResource={vi.fn()}
       />,
     )
 
@@ -215,6 +229,8 @@ describe('ResearchView', () => {
         selectedNodeId={null}
         onSelectNode={vi.fn()}
         onCreateResource={vi.fn()}
+        onArchiveResource={vi.fn()}
+        onDeleteResource={vi.fn()}
       />,
     )
 
@@ -228,5 +244,68 @@ describe('ResearchView', () => {
       target: { value: 'https://arxiv.org/abs/2401.00001' },
     })
     expect(screen.getByRole('button', { name: /^add$/i })).not.toBeDisabled()
+  })
+
+  it('archives a non-archived row without a confirmation step', async () => {
+    const paper = makeResource('r1', 'n1', 'A paper')
+    const onArchiveResource = vi.fn().mockResolvedValue(undefined)
+    render(
+      <ResearchView
+        dashboard={{ ...emptyDashboard, inbox: [paper] }}
+        resources={[paper]}
+        selectedNodeId={null}
+        onSelectNode={vi.fn()}
+        onCreateResource={vi.fn()}
+        onArchiveResource={onArchiveResource}
+        onDeleteResource={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Arşivle' }))
+    await Promise.resolve()
+
+    expect(onArchiveResource).toHaveBeenCalledWith('r1')
+  })
+
+  it('hides the archive action for an already archived row', () => {
+    const archived = { ...makeResource('r1', 'n1', 'Old paper'), lifecycle_status: 'archived' as const }
+    render(
+      <ResearchView
+        dashboard={{ ...emptyDashboard, unlinked: [archived] }}
+        resources={[archived]}
+        selectedNodeId={null}
+        onSelectNode={vi.fn()}
+        onCreateResource={vi.fn()}
+        onArchiveResource={vi.fn()}
+        onDeleteResource={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: 'Arşivle' })).not.toBeInTheDocument()
+  })
+
+  it('requires an explicit confirmation before hard-deleting a row', async () => {
+    const paper = makeResource('r1', 'n1', 'A paper')
+    const onDeleteResource = vi.fn().mockResolvedValue(undefined)
+    render(
+      <ResearchView
+        dashboard={{ ...emptyDashboard, inbox: [paper] }}
+        resources={[paper]}
+        selectedNodeId={null}
+        onSelectNode={vi.fn()}
+        onCreateResource={vi.fn()}
+        onArchiveResource={vi.fn()}
+        onDeleteResource={onDeleteResource}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sil' }))
+    expect(onDeleteResource).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Kalıcı sil' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Kalıcı sil' }))
+    await Promise.resolve()
+
+    expect(onDeleteResource).toHaveBeenCalledWith('r1')
   })
 })

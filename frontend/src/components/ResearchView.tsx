@@ -7,6 +7,8 @@ interface ResearchViewProps {
   selectedNodeId: string | null
   onSelectNode: (nodeId: string) => void
   onCreateResource: (title: string, rawSource: string, kind: ResourceKind) => Promise<Resource>
+  onArchiveResource: (resourceId: string) => Promise<void>
+  onDeleteResource: (resourceId: string) => Promise<void>
 }
 
 function CreatePaperOrArticleForm({
@@ -137,11 +139,18 @@ function ResourceRow({
   resource,
   isSelected,
   onSelect,
+  onArchiveResource,
+  onDeleteResource,
 }: {
   resource: Resource
   isSelected: boolean
   onSelect: (nodeId: string) => void
+  onArchiveResource: (resourceId: string) => Promise<void>
+  onDeleteResource: (resourceId: string) => Promise<void>
 }) {
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const isArchived = resource.lifecycle_status === 'archived'
+
   return (
     <div className="node-row" aria-current={isSelected}>
       <button type="button" className="node-row-title" onClick={() => onSelect(resource.node_id)}>
@@ -156,6 +165,27 @@ function ResourceRow({
         <span className="node-row-type">{resource.kind}</span>
         <span className="node-row-lifecycle">{resource.lifecycle_status}</span>
       </span>
+      <span className="node-row-actions">
+        {!isArchived && (
+          <button type="button" onClick={() => void onArchiveResource(resource.id)}>
+            Arşivle
+          </button>
+        )}
+        {confirmingDelete ? (
+          <span className="node-row-confirm">
+            <button type="button" onClick={() => void onDeleteResource(resource.id)}>
+              Kalıcı sil
+            </button>
+            <button type="button" onClick={() => setConfirmingDelete(false)}>
+              Vazgeç
+            </button>
+          </span>
+        ) : (
+          <button type="button" onClick={() => setConfirmingDelete(true)}>
+            Sil
+          </button>
+        )}
+      </span>
     </div>
   )
 }
@@ -166,6 +196,8 @@ export function ResearchView({
   selectedNodeId,
   onSelectNode,
   onCreateResource,
+  onArchiveResource,
+  onDeleteResource,
 }: ResearchViewProps) {
   const [bucket, setBucket] = useState<BucketKey>('all')
   const [kindFilter, setKindFilter] = useState<'' | ResourceKind>('')
@@ -267,6 +299,8 @@ export function ResearchView({
               resource={resource}
               isSelected={resource.node_id === selectedNodeId}
               onSelect={onSelectNode}
+              onArchiveResource={onArchiveResource}
+              onDeleteResource={onDeleteResource}
             />
           ))}
         </div>

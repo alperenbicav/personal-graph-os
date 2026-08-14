@@ -326,3 +326,25 @@ def test_get_resource_detail_reports_empty_relations_documents_and_provenance(
 def test_get_resource_detail_returns_404_for_an_unknown_resource(client: TestClient) -> None:
     response = client.get("/resources/does-not-exist/detail")
     assert response.status_code == 404
+
+
+def test_hard_delete_removes_resource_and_requires_confirmation(client: TestClient) -> None:
+    workspace_id = _workspace_id(client)
+    created = client.post(
+        "/resources",
+        json={
+            "workspace_id": workspace_id,
+            "title": "Disposable paper",
+            "raw_source": "https://arxiv.org/abs/2401.00200",
+        },
+    ).json()
+
+    mismatch = client.delete(f"/resources/{created['id']}/hard", params={"confirm_id": "wrong"})
+    assert mismatch.status_code == 422
+
+    ok = client.delete(f"/resources/{created['id']}/hard", params={"confirm_id": created["id"]})
+    assert ok.status_code == 204
+
+    assert client.get(f"/resources/{created['id']}").status_code == 404
+    node_id = created["node_id"]
+    assert client.delete(f"/nodes/{node_id}").status_code == 404

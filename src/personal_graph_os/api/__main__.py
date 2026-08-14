@@ -34,10 +34,14 @@ def load_dotenv(dotenv_path: Path | None = None) -> None:
     and never prints any value. Missing or empty files are a no-op. The default file is the
     repository-root `.env`, falling back to the current working directory's `.env`.
     """
-    candidates = [dotenv_path] if dotenv_path is not None else [
-        _REPO_ROOT / ".env",
-        Path.cwd() / ".env",
-    ]
+    candidates = (
+        [dotenv_path]
+        if dotenv_path is not None
+        else [
+            _REPO_ROOT / ".env",
+            Path.cwd() / ".env",
+        ]
+    )
     for candidate in candidates:
         if candidate is None or not candidate.is_file():
             continue

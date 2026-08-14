@@ -49,7 +49,15 @@ class ResearchDashboardService:
         self._research_settings = research_settings
 
     def _resources_for(self, workspace_id: WorkspaceId) -> tuple[Resource, ...]:
-        return self._resources.list_by_workspace(workspace_id)
+        # Archived research is dismissed: it must leave every built-in view (ST-04.4), so the
+        # resurfacing/filter logic never has to special-case it per bucket. `needs_takeaway`
+        # already excluded ARCHIVED; this makes the exclusion uniform for inbox/continue/stale/
+        # unlinked/applied too, which previously let an archived item linger in "All Research".
+        return tuple(
+            r
+            for r in self._resources.list_by_workspace(workspace_id)
+            if r.lifecycle_status is not ResourceLifecycleStatus.ARCHIVED
+        )
 
     def inbox(self, workspace_id: WorkspaceId) -> tuple[Resource, ...]:
         return tuple(

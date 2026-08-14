@@ -477,6 +477,45 @@ function App() {
     [workspace],
   )
 
+  const handleArchiveResource = useCallback(
+    async (resourceId: string): Promise<void> => {
+      try {
+        const archived = await api.archiveResource(resourceId)
+        setResources((current) => current.map((r) => (r.id === archived.id ? archived : r)))
+        if (workspace) await refreshActiveViewData(workspace.id, activeView)
+      } catch (error) {
+        setActionError(`Could not archive that research item: ${messageFor(error)}`)
+      }
+    },
+    [workspace, activeView, refreshActiveViewData],
+  )
+
+  const handleDeleteResource = useCallback(
+    async (resourceId: string): Promise<void> => {
+      try {
+        await api.deleteResource(resourceId)
+        setResources((current) => current.filter((r) => r.id !== resourceId))
+        setResearchDashboard((current) =>
+          current
+            ? {
+                ...current,
+                inbox: current.inbox.filter((r) => r.id !== resourceId),
+                continue_reading: current.continue_reading.filter((r) => r.id !== resourceId),
+                stale: current.stale.filter((r) => r.id !== resourceId),
+                needs_takeaway: current.needs_takeaway.filter((r) => r.id !== resourceId),
+                unlinked: current.unlinked.filter((r) => r.id !== resourceId),
+                applied: current.applied.filter((r) => r.id !== resourceId),
+              }
+            : null,
+        )
+        if (workspace) await refreshActiveViewData(workspace.id, activeView)
+      } catch (error) {
+        setActionError(`Could not delete that research item: ${messageFor(error)}`)
+      }
+    },
+    [workspace, activeView, refreshActiveViewData],
+  )
+
   const handleCreateWorkItem = useCallback(
     async (input: api.CreateWorkItemInput): Promise<WorkItem> => {
       const workItem = await api.createWorkItem(input)
@@ -880,6 +919,8 @@ function App() {
               selectedNodeId={selectedNodeId}
               onSelectNode={setSelectedNodeId}
               onCreateResource={handleCreateResource}
+              onArchiveResource={handleArchiveResource}
+              onDeleteResource={handleDeleteResource}
             />
           </div>
         )}

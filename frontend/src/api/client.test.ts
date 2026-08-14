@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, getWorkspace } from './client'
+import { ApiError, deleteResource, getWorkspace } from './client'
 import { clearSession, commitToken, getToken, onSessionUnauthorized } from './session'
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -60,5 +60,18 @@ describe('request()', () => {
     await expect(getWorkspace()).rejects.toBeInstanceOf(ApiError)
 
     expect(getToken()).toBe('good-token')
+  })
+})
+
+describe('deleteResource()', () => {
+  it('issues a hard DELETE with the resource id echoed as confirm_id', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(200, null))
+
+    await deleteResource('res-123')
+
+    const [url, init] = vi.mocked(fetch).mock.calls[0]
+    expect(String(url)).toContain('/resources/res-123/hard')
+    expect(String(url)).toContain('confirm_id=res-123')
+    expect(init?.method).toBe('DELETE')
   })
 })

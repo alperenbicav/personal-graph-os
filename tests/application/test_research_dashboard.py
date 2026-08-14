@@ -154,3 +154,20 @@ def test_applied_returns_only_applied_resources(sqlite_connection: sqlite3.Conne
 
     assert results == {applied.id}
     assert inbox.id not in results
+
+
+def test_archived_resources_disappear_from_every_bucket(
+    sqlite_connection: sqlite3.Connection,
+) -> None:
+    dashboard, resource_service, _wf, _settings, workspace_id = _fixture(sqlite_connection)
+    archived = _capture_resource(resource_service, workspace_id, "1")
+    resource_service.archive(archived.id)
+    live = _capture_resource(resource_service, workspace_id, "2")
+
+    assert archived.id not in {r.id for r in dashboard.inbox(workspace_id)}
+    assert archived.id not in {r.id for r in dashboard.continue_reading(workspace_id)}
+    assert archived.id not in {r.id for r in dashboard.stale(workspace_id, as_of=datetime.now(UTC))}
+    assert archived.id not in {r.id for r in dashboard.needs_takeaway(workspace_id)}
+    assert archived.id not in {r.id for r in dashboard.unlinked(workspace_id)}
+    assert archived.id not in {r.id for r in dashboard.applied(workspace_id)}
+    assert live.id in {r.id for r in dashboard.inbox(workspace_id)}

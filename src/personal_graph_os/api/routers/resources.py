@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 
 from personal_graph_os.api.dependencies import (
     get_node_repository,
@@ -146,3 +146,20 @@ def archive_resource(
 ) -> ResourceResponse:
     resource = resource_service.archive(ResourceId(resource_id))
     return _combine(resource, nodes)
+
+
+@router.delete("/{resource_id}/hard", response_model=None, status_code=204)
+def hard_delete_resource(
+    resource_id: str,
+    confirm_id: str,
+    resource_service: ResourceService = Depends(get_resource_service),
+) -> None:
+    """Irrecoverable removal of a research resource and its backing node (ST-09). The caller
+    must confirm by echoing the resource id -- the same destructive gate the MCP tool applies --
+    so a stray UI click can never destroy a resource."""
+    if confirm_id != resource_id:
+        raise HTTPException(
+            status_code=422,
+            detail="confirm_id must match the resource id being deleted",
+        )
+    resource_service.delete(ResourceId(resource_id))

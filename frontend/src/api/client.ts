@@ -428,6 +428,12 @@ export function archiveResource(resourceId: string): Promise<Resource> {
   return request(`/resources/${encodeURIComponent(resourceId)}`, { method: 'DELETE' })
 }
 
+export function deleteResource(resourceId: string): Promise<void> {
+  return request(`/resources/${encodeURIComponent(resourceId)}/hard?confirm_id=${encodeURIComponent(resourceId)}`, {
+    method: 'DELETE',
+  })
+}
+
 export function listDocuments(
   workspaceId: string,
   filters?: { collectionId?: string; includeArchived?: boolean },
