@@ -58,7 +58,7 @@ test.describe('ST-09.2 accessibility acceptance (real server, real build)', () =
       await page.goto(`http://127.0.0.1:${port}/app/`)
       await page.getByLabel(/access token/i).fill(token)
       await page.getByRole('button', { name: /^unlock$/i }).click()
-      await expect(page.getByPlaceholder(/capture a task, note, or link/i)).toBeVisible()
+      await expect(page.getByPlaceholder(/new node title/i)).toBeVisible()
       // Confirm version A's service worker is actually installed and controlling this page
       // before rebuilding — otherwise the next build's registration would just be a first
       // install, never a real "update".
@@ -101,22 +101,23 @@ test.describe('ST-09.2 accessibility acceptance (real server, real build)', () =
 
     await page.getByLabel(/access token/i).fill(token)
     await page.getByRole('button', { name: /^unlock$/i }).click()
-    const captureInput = page.getByPlaceholder(/capture a task, note, or link/i)
-    await expect(captureInput).toBeVisible()
+    const titleInput = page.getByPlaceholder(/new node title/i)
+    await expect(titleInput).toBeVisible()
 
-    // Two captured, placed nodes: enough for a real canvas, table/Kanban/timeline rows,
-    // a real drag-to-connect gesture, and an inspector selection.
+    // Two created nodes: enough for a real canvas, typed create flows, a real drag-to-connect
+    // gesture, and an inspector selection (ST-08: per-tab typed create replaces the old global
+    // quick-capture bar).
     const firstTitle = `Accessibility node A ${Date.now()}`
-    await captureInput.fill(firstTitle)
-    await page.getByRole('button', { name: /^add$/i }).click()
+    await titleInput.fill(firstTitle)
+    await page.getByRole('button', { name: /add node/i }).click()
     await expect(page.getByText(firstTitle).first()).toBeVisible()
 
     const secondTitle = `Accessibility node B ${Date.now()}`
-    await captureInput.fill(secondTitle)
-    await page.getByRole('button', { name: /^add$/i }).click()
+    await titleInput.fill(secondTitle)
+    await page.getByRole('button', { name: /add node/i }).click()
     await expect(page.getByText(secondTitle).first()).toBeVisible()
 
-    await assertNoSeriousOrCriticalViolations(page, 'canvas')
+    await assertNoSeriousOrCriticalViolations(page, 'graph canvas')
 
     // Object selection + inspector: click the canvas's keyboard-operable object-list entry
     // (ST-09 09.2's synchronized listbox), not a raw React Flow node — this proves the
@@ -154,14 +155,11 @@ test.describe('ST-09.2 accessibility acceptance (real server, real build)', () =
     await page.keyboard.press('Escape')
     await expect(page.getByRole('dialog', { name: /edit schema/i })).toBeHidden()
 
-    await navigateTo(page, 'Table')
-    await assertNoSeriousOrCriticalViolations(page, 'table view')
+    await navigateTo(page, 'Tasks')
+    await assertNoSeriousOrCriticalViolations(page, 'tasks view')
 
-    await navigateTo(page, 'Kanban')
-    await assertNoSeriousOrCriticalViolations(page, 'kanban view')
-
-    await navigateTo(page, 'Timeline')
-    await assertNoSeriousOrCriticalViolations(page, 'timeline view')
+    await navigateTo(page, 'Wiki')
+    await assertNoSeriousOrCriticalViolations(page, 'wiki view')
 
     await navigateTo(page, 'Search')
     const searchView = page.locator('.search-view')
@@ -179,9 +177,6 @@ test.describe('ST-09.2 accessibility acceptance (real server, real build)', () =
 
     await navigateTo(page, 'Repositories')
     await assertNoSeriousOrCriticalViolations(page, 'repositories view')
-
-    await navigateTo(page, 'Discovery')
-    await assertNoSeriousOrCriticalViolations(page, 'discovery view')
 
     await navigateTo(page, 'Activity')
     await assertNoSeriousOrCriticalViolations(page, 'activity/undo view')
@@ -210,14 +205,15 @@ test.describe('ST-09.2 accessibility acceptance (real server, real build)', () =
     await expect(page.getByRole('button', { name: /^unlock$/i })).toBeFocused()
     await page.keyboard.press('Enter')
 
-    const captureInput = page.getByPlaceholder(/capture a task, note, or link/i)
-    await expect(captureInput).toBeVisible()
+    const titleInput = page.getByPlaceholder(/new node title/i)
+    await expect(titleInput).toBeVisible()
 
-    // Keyboard-only capture: focus the title input directly (its exact tab-order position
-    // depends on unrelated toolbar controls, which is not what this flow is proving).
+    // Keyboard-only typed create (ST-08): focus the Graph tab's title input directly (its exact
+    // tab-order position depends on unrelated toolbar controls, which is not what this flow is
+    // proving) and submit with Enter.
     const title = `Keyboard-only node ${Date.now()}`
-    await captureInput.focus()
-    await captureInput.fill(title)
+    await titleInput.focus()
+    await titleInput.fill(title)
     await page.keyboard.press('Enter')
     await expect(page.getByText(title).first()).toBeVisible()
 

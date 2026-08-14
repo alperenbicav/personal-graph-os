@@ -36,14 +36,15 @@ test.describe('ST-08.3 remote-access acceptance (real server, real build)', () =
     await page.getByLabel(/access token/i).fill(token)
     await page.getByRole('button', { name: /^unlock$/i }).click()
 
-    // Unlock succeeded: the token screen is gone and the dashboard's capture bar is visible.
+    // Unlock succeeded: the token screen is gone and the Graph tab's typed create-node input
+    // (ST-08: the TopBar global capture was replaced by per-tab typed create flows) is visible.
     await expect(page.getByLabel(/access token/i)).toBeHidden()
-    const captureInput = page.getByPlaceholder(/capture a task, note, or link/i)
-    await expect(captureInput).toBeVisible()
+    const titleInput = page.getByPlaceholder(/new node title/i)
+    await expect(titleInput).toBeVisible()
 
     const title = `E2E acceptance node ${Date.now()}`
-    await captureInput.fill(title)
-    await page.getByRole('button', { name: /^add$/i }).click()
+    await titleInput.fill(title)
+    await page.getByRole('button', { name: /add node/i }).click()
     await expect(page.getByText(title).first()).toBeVisible()
 
     const downloadPromise = page.waitForEvent('download')

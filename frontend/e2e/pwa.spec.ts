@@ -59,7 +59,7 @@ test.describe('ST-08.2 PWA acceptance (real server, real build)', () => {
 
     await page.getByLabel(/access token/i).fill(token)
     await page.getByRole('button', { name: /^unlock$/i }).click()
-    await expect(page.getByPlaceholder(/capture a task, note, or link/i)).toBeVisible()
+    await expect(page.getByPlaceholder(/new node title/i)).toBeVisible()
 
     // Offline: the app shell must still load from the worker's cache, and the UI must show
     // an explicit backend-unavailable state rather than hang or silently show stale data.
@@ -70,6 +70,6 @@ test.describe('ST-08.2 PWA acceptance (real server, real build)', () => {
     // Reconnect: a plain reload recovers full functionality.
     await context.setOffline(false)
     await page.reload()
-    await expect(page.getByPlaceholder(/capture a task, note, or link/i)).toBeVisible()
+    await expect(page.getByPlaceholder(/new node title/i)).toBeVisible()
   })
 })

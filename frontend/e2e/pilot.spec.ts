@@ -121,14 +121,14 @@ async function unlock(page: Page, baseUrl: string, token: string) {
   await page.goto(`${baseUrl}/app/`)
   await page.getByLabel(/access token/i).fill(token)
   await page.getByRole('button', { name: /^unlock$/i }).click()
-  await expect(page.getByPlaceholder(/capture a task, note, or link/i)).toBeVisible()
+  await expect(page.getByPlaceholder(/new node title/i)).toBeVisible()
 }
 
 async function captureNode(page: Page, typeName: string, title: string) {
-  await page.getByLabel(/^capture type$/i).selectOption({ label: typeName })
-  const captureInput = page.getByPlaceholder(/capture a task, note, or link/i)
-  await captureInput.fill(title)
-  await page.getByRole('button', { name: /^add$/i }).click()
+  await page.getByLabel(/^node type$/i).selectOption({ label: typeName })
+  const titleInput = page.getByPlaceholder(/new node title/i)
+  await titleInput.fill(title)
+  await page.getByRole('button', { name: /add node/i }).click()
   await expect(page.getByText(title).first()).toBeVisible()
 }
 
@@ -153,7 +153,6 @@ test.describe('ST-09.4 complete pilot journey and recovery (real server, real bu
     const discoveryCandidateUrl = `https://example.com/pilot-discovery-${Date.now()}`
     const attachmentContent = 'pilot attachment content'
     const attachmentFileName = 'pilot-attachment.txt'
-    const savedViewName = `Pilot saved view ${Date.now()}`
 
     try {
       serverA = await spawnPilotServer(path.join(workspaceDirA, 'graph.db'))
@@ -249,25 +248,19 @@ test.describe('ST-09.4 complete pilot journey and recovery (real server, real bu
       })
       await expect(page.getByText(attachmentFileName)).toBeVisible()
 
-      // 7. Research/discovery: a real Discovery import (preview, then confirmed apply) — the
-      // only real way to create a backing `Resource`, not just a Node (product decision #1).
-      await navigateTo(page, 'Discovery')
-      await page
-        .getByRole('textbox', { name: /instruction/i })
-        .fill('pilot journey discovery import')
-      await page
-        .getByRole('textbox', { name: /candidates/i })
-        .fill(`${discoveryCandidateUrl} | Pilot discovery candidate`)
-      await page.getByRole('button', { name: /^preview$/i }).click()
-      await expect(page.getByText('Pilot discovery candidate')).toBeVisible()
-      await page.getByRole('button', { name: /^confirm import$/i }).click()
-      await expect(page.getByText(/imported 1/i)).toBeVisible()
-
+      // 7. Research: a real typed create through the Research view's form (ST-08: Discovery and
+      // the global capture were removed; every writable tab owns a typed create flow) — the only
+      // real way to create a backing `Resource`, not just a Node (product decision #1).
       await navigateTo(page, 'Research')
+      await page.getByRole('button', { name: /new paper\/article/i }).click()
+      const researchCreate = page.getByRole('form', { name: /create paper or article/i })
+      await researchCreate.getByPlaceholder('Title').fill('Pilot discovery candidate')
+      await researchCreate.getByPlaceholder(/source url/i).fill(discoveryCandidateUrl)
+      await researchCreate.getByRole('button', { name: /^add$/i }).click()
       await expect(page.getByText('Pilot discovery candidate').first()).toBeVisible()
 
-      // A distinctive marker node, captured last, to search for by name after restore.
-      await navigateTo(page, 'Canvas')
+      // A distinctive marker node, created last, to search for by name after restore.
+      await navigateTo(page, 'Graph')
       await captureNode(page, 'Note', markerTitle)
 
       // 8. Activity and safe undo: undo the status edit from step 5 through the real
@@ -287,13 +280,6 @@ test.describe('ST-09.4 complete pilot journey and recovery (real server, real bu
       await page.getByRole('button', { name: /download export/i }).click()
       const download = await downloadPromise
       expect(download.suggestedFilename()).toMatch(/\.zip$/)
-
-      // 10. Saved views: create one through the real Table view's Saved views panel
-      // (ST09-F02 — user-approved minimal UI addition, not REST/MCP-only coverage).
-      await navigateTo(page, 'Table')
-      await page.getByPlaceholder(/saved view name/i).fill(savedViewName)
-      await page.getByRole('button', { name: /^save view$/i }).click()
-      await expect(page.getByText(savedViewName)).toBeVisible()
 
       // Independent verification (ST09-F04-style): re-read real REST state rather than
       // trusting only the UI's own optimistic view, before tearing the server down.
@@ -319,13 +305,6 @@ test.describe('ST-09.4 complete pilot journey and recovery (real server, real bu
         })
       ).json()
       expect(nodesA.some((node: { title: string }) => node.title === markerTitle)).toBe(true)
-      const savedViewsA = await (
-        await restClientA.get(`${serverA.baseUrl}/saved-views`, {
-          params: { workspace_id: workspaceA.id },
-          headers: { Authorization: `Bearer ${serverA.token}` },
-        })
-      ).json()
-      expect(savedViewsA.some((view: { name: string }) => view.name === savedViewName)).toBe(true)
       await stopPilotServer(serverA)
 
       // Real recovery drill: back up the stopped workspace, restore into a fresh empty
@@ -369,10 +348,7 @@ test.describe('ST-09.4 complete pilot journey and recovery (real server, real bu
       await navigateTo(restoredPage, 'Research')
       await expect(restoredPage.getByText('Pilot discovery candidate').first()).toBeVisible()
 
-      await navigateTo(restoredPage, 'Table')
-      await expect(restoredPage.getByText(savedViewName)).toBeVisible()
-
-      await navigateTo(restoredPage, 'Canvas')
+      await navigateTo(restoredPage, 'Graph')
       await restoredPage.getByRole('option', { name: new RegExp(targetTitle) }).click()
       await expect(restoredPage.getByText(attachmentFileName)).toBeVisible()
 
@@ -399,13 +375,6 @@ test.describe('ST-09.4 complete pilot journey and recovery (real server, real bu
         })
       ).json()
       expect(nodesB.some((node: { title: string }) => node.title === markerTitle)).toBe(true)
-      const savedViewsB = await (
-        await restClientB.get(`${serverB.baseUrl}/saved-views`, {
-          params: { workspace_id: workspaceB.id },
-          headers: { Authorization: `Bearer ${serverB.token}` },
-        })
-      ).json()
-      expect(savedViewsB.some((view: { name: string }) => view.name === savedViewName)).toBe(true)
 
       await restoredPage.close()
     } finally {

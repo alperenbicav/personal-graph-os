@@ -46,11 +46,11 @@ test.describe('ST-08 session security acceptance (real server, real browser)', (
     await page.goto(`http://127.0.0.1:${port}/app/`)
     await page.getByLabel(/access token/i).fill(token)
     await page.getByRole('button', { name: /^unlock$/i }).click()
-    await expect(page.getByPlaceholder(/capture a task, note, or link/i)).toBeVisible()
+    await expect(page.getByPlaceholder(/new node title/i)).toBeVisible()
 
     // Same tab, real reload: the verified token was committed, so it stays unlocked.
     await page.reload()
-    await expect(page.getByPlaceholder(/capture a task, note, or link/i)).toBeVisible()
+    await expect(page.getByPlaceholder(/new node title/i)).toBeVisible()
 
     // A new tab opened via `window.open` from this already-unlocked tab has an opener
     // relationship but always starts with an empty history entry: it must show the unlock
