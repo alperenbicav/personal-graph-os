@@ -79,6 +79,7 @@ from personal_graph_os.domain.resource import (
     ResourceKind,
     ResourceLifecycleStatus,
 )
+from personal_graph_os.domain.resource_content import ResourceContent
 from personal_graph_os.domain.schema import (
     EdgeType,
     FieldDefinition,
@@ -714,6 +715,50 @@ class SqliteResourceRepository:
                 if row["repository_label"] is not None
                 else None
             ),
+        )
+
+
+class SqliteResourceContentRepository:
+    """One derived source-content row per resource (EP-2026-012 ST-13); a refresh replaces the
+    row wholesale, so upsert-with-commit is the only write path."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get_by_resource(self, resource_id: ResourceId) -> ResourceContent | None:
+        row = self._connection.execute(
+            "SELECT * FROM resource_content WHERE resource_id = ?", (resource_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def save(self, content: ResourceContent) -> None:
+        with self._connection:
+            self._connection.execute(
+                "INSERT INTO resource_content "
+                "(resource_id, workspace_id, body_markdown, content_hash, adapter_name, "
+                " retrieved_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (resource_id) DO UPDATE SET body_markdown = excluded.body_markdown, "
+                "content_hash = excluded.content_hash, adapter_name = excluded.adapter_name, "
+                "retrieved_at = excluded.retrieved_at",
+                (
+                    content.resource_id,
+                    content.workspace_id,
+                    content.body_markdown,
+                    content.content_hash,
+                    content.adapter_name,
+                    content.retrieved_at.isoformat(),
+                ),
+            )
+
+    def _hydrate(self, row: sqlite3.Row) -> ResourceContent:
+        return ResourceContent(
+            resource_id=ResourceId(row["resource_id"]),
+            workspace_id=WorkspaceId(row["workspace_id"]),
+            body_markdown=row["body_markdown"],
+            content_hash=row["content_hash"],
+            adapter_name=row["adapter_name"],
+            retrieved_at=datetime.fromisoformat(row["retrieved_at"]),
         )
 
 

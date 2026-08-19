@@ -54,6 +54,7 @@ from personal_graph_os.domain.resource import (
     ResourceKind,
     ResourceLifecycleStatus,
 )
+from personal_graph_os.domain.resource_content import ResourceContent
 from personal_graph_os.domain.schema import FieldType
 from personal_graph_os.domain.search import SearchResult
 from personal_graph_os.domain.views import FilterField, ProjectionQuery, ViewKind
@@ -331,6 +332,27 @@ class ResourceDetailResponse(BaseModel):
                 if detail.provenance is not None
                 else None
             ),
+        )
+
+
+class ResourceContentResponse(BaseModel):
+    """A resource's persisted source content (EP-2026-012 ST-13): the bounded body text plus
+    the provenance of the fetch that read it."""
+
+    resource_id: str
+    body_markdown: str
+    content_hash: str
+    adapter_name: str
+    retrieved_at: datetime
+
+    @classmethod
+    def from_content(cls, content: ResourceContent) -> ResourceContentResponse:
+        return cls(
+            resource_id=content.resource_id,
+            body_markdown=content.body_markdown,
+            content_hash=content.content_hash,
+            adapter_name=content.adapter_name,
+            retrieved_at=content.retrieved_at,
         )
 
 

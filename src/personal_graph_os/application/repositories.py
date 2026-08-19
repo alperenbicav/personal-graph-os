@@ -61,6 +61,7 @@ from personal_graph_os.domain.resource import (
     ResourceKind,
     ResourceLifecycleStatus,
 )
+from personal_graph_os.domain.resource_content import ResourceContent
 from personal_graph_os.domain.schema import Workspace
 from personal_graph_os.domain.search import SearchEntityType, SearchHit, SearchScope
 from personal_graph_os.domain.views import ContextPack, SavedView
@@ -147,6 +148,15 @@ class SavedViewRepository(Protocol):
     def list_by_workspace(self, workspace_id: WorkspaceId) -> tuple[SavedView, ...]: ...
     def delete(self, saved_view_id: SavedViewId) -> None: ...
     def delete_without_commit(self, saved_view_id: SavedViewId) -> None: ...
+
+
+class ResourceContentRepository(Protocol):
+    """One persisted source-content row per resource (EP-2026-012 ST-13): derived evidence,
+    replaced wholesale on refresh, so an upsert is the only write and there is no
+    `save_without_commit` — content never joins a multi-table unit-of-work aggregate."""
+
+    def get_by_resource(self, resource_id: ResourceId) -> ResourceContent | None: ...
+    def save(self, content: ResourceContent) -> None: ...
 
 
 class DiscoveryRunRepository(Protocol):
