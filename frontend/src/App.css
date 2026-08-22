@@ -2860,3 +2860,103 @@ select.status-select {
   border-color: var(--brass) !important;
   box-shadow: inset 3px 0 0 var(--brass);
 }
+
+/* ---------- Activity: day-grouped audit feed (EP-2026-013 ST-07) ---------- */
+
+.activity-feed {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s5);
+}
+
+.activity-day {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.activity-day-label {
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--slate);
+}
+
+.activity-row-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.activity-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  appearance: none;
+  border: none;
+  border-left: 2px solid var(--line);
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: var(--text-md);
+  text-align: left;
+  padding: 9px var(--s3);
+  cursor: pointer;
+}
+
+.activity-row:hover {
+  background: var(--line-soft);
+  color: var(--ink);
+}
+
+.activity-timeline-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--slate-faint);
+  flex-shrink: 0;
+}
+
+.activity-row[data-undoable='true'] .activity-timeline-dot {
+  background: var(--teal);
+}
+
+.activity-row-action {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.activity-row-entity {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.activity-row-occurred-at {
+  margin-left: auto;
+  color: var(--slate-faint);
+  font-size: var(--text-xs);
+  flex-shrink: 0;
+}
+
+.activity-row-detail {
+  margin: 0 0 var(--s2) 18px;
+  padding: var(--s3) var(--s4);
+  border-left: 2px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.activity-row-detail pre {
+  max-height: 320px;
+  overflow: auto;
+  background: var(--paper);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  padding: var(--s3);
+  font-size: var(--text-xs);
+}
