@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
+
+import pytest
 
 from personal_graph_os.application.capture_planning_orchestrator import (
     CapturePlanningOrchestrator,
@@ -157,3 +160,38 @@ def test_run_backs_off_and_recovers_after_a_rate_limit(
     poller.run(should_stop)
 
     assert calls == 2
+
+
+def test_run_survives_an_unexpected_error_and_logs_it(
+    sqlite_connection: sqlite3.Connection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A non-Telegram failure (e.g. a database hiccup) must not silently kill polling for
+    the rest of the process lifetime: the loop logs it with its traceback and continues."""
+    calls = 0
+
+    class _BrokenThenWorkingClient(FakeTelegramClient):
+        def get_updates(self, *, offset, timeout_seconds):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("simulated unexpected failure")
+            return ()
+
+    fake_client = _BrokenThenWorkingClient(updates=())
+    service, _workspace_id = _service(sqlite_connection, fake_client)
+    poller = TelegramPoller(fake_client, service, idle_sleep_seconds=0.0, backoff_seconds=0.0)
+    iterations = 0
+
+    def should_stop() -> bool:
+        nonlocal iterations
+        iterations += 1
+        return iterations >= 3
+
+    with caplog.at_level(logging.ERROR, logger="personal_graph_os.application.telegram_poller"):
+        poller.run(should_stop)
+
+    assert calls == 2  # polling continued past the failure
+    failure_records = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(failure_records) == 1
+    assert "Unexpected telegram poller failure" in failure_records[0].getMessage()
+    assert failure_records[0].exc_info is not None

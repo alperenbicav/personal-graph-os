@@ -5,6 +5,7 @@ as a FastAPI app for the local frontend.
 from __future__ import annotations
 
 import os
+import sqlite3
 import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -596,11 +597,26 @@ def create_app(
         if agent_chat_provider is not None
         else None
     )
+    # The poller runs on its own daemon thread, so it gets its own SQLite connection: sharing
+    # the request connection would let the thread's BEGIN/commit interleave with a request's
+    # transaction on the same handle (the `db_lock` is an anyio.Lock a foreign thread cannot
+    # acquire). WAL + `busy_timeout` serialize cross-connection writers at the database level.
+    telegram_connection: sqlite3.Connection | None = (
+        open_connection(database_path, check_same_thread=False)
+        if telegram_client is not None
+        else None
+    )
+
+    def _telegram_unit_of_work() -> SqliteResearchUnitOfWork:
+        assert telegram_connection is not None  # only built when the client exists
+        return SqliteResearchUnitOfWork(telegram_connection)
+
+    app.state.telegram_connection = telegram_connection
     app.state.telegram_service = TelegramService(
         telegram_client,
         app.state.capture_planning_orchestrator,
         default_workspace.id,
-        lambda: SqliteResearchUnitOfWork(connection),
+        _telegram_unit_of_work,
         agent_loop=agent_loop,
         pdf_text_extractor=extract_pdf_text,
     )
@@ -638,6 +654,8 @@ def create_app(
             if telegram_thread is not None:
                 telegram_stop.set()
                 telegram_thread.join(timeout=_TELEGRAM_POLLER_JOIN_TIMEOUT_SECONDS)
+            if app.state.telegram_connection is not None:
+                app.state.telegram_connection.close()
 
     app.router.lifespan_context = _lifespan
     # A plain Starlette `Route` wrapping a raw ASGI app, not `Mount`: `Mount`'s path pattern

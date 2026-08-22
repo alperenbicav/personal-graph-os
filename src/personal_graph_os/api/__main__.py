@@ -8,6 +8,7 @@ developer explicitly opts into it for a separate Vite dev server.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -69,6 +70,10 @@ def _env_list(name: str) -> list[str] | None:
 
 
 def main() -> None:
+    # Surface application log records (e.g. telegram poller failures) without double-configuring
+    # when another entry point already set handlers up.
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO)
     load_dotenv()
     trusted_hosts = _env_list("PGOS_TRUSTED_HOSTS") or DEFAULT_TRUSTED_HOSTS
     if os.environ.get("PGOS_DEV_CORS", "").strip().lower() in {"1", "true", "yes"}:
