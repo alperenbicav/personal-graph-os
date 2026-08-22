@@ -44,7 +44,7 @@ describe('SearchView', () => {
 
     render(<SearchView onSearch={onSearch} selectedNodeId={null} onSelectNode={vi.fn()} />)
 
-    fireEvent.change(screen.getByPlaceholderText(/search titles/i), { target: { value: 'attention' } })
+    fireEvent.change(screen.getByLabelText('Search'), { target: { value: 'attention' } })
     fireEvent.click(screen.getByRole('button', { name: /search/i }))
 
     await waitFor(() => expect(onSearch).toHaveBeenCalledWith('attention', 'all', 0))
@@ -56,7 +56,7 @@ describe('SearchView', () => {
     const onSearch = vi.fn().mockResolvedValue(page([], 0, 0))
     render(<SearchView onSearch={onSearch} selectedNodeId={null} onSelectNode={vi.fn()} />)
 
-    fireEvent.change(screen.getByPlaceholderText(/search titles/i), { target: { value: 'nothing' } })
+    fireEvent.change(screen.getByLabelText('Search'), { target: { value: 'nothing' } })
     fireEvent.click(screen.getByRole('button', { name: /search/i }))
 
     expect(await screen.findByText(/no matches/i)).toBeInTheDocument()
@@ -73,7 +73,7 @@ describe('SearchView', () => {
       />,
     )
 
-    fireEvent.change(screen.getByPlaceholderText(/search titles/i), { target: { value: 'attention' } })
+    fireEvent.change(screen.getByLabelText('Search'), { target: { value: 'attention' } })
     fireEvent.click(screen.getByRole('button', { name: /search/i }))
 
     fireEvent.click(await screen.findByRole('button', { name: /attention is all you need/i }))
@@ -87,7 +87,7 @@ describe('SearchView', () => {
 
     render(<SearchView onSearch={onSearch} selectedNodeId={null} onSelectNode={vi.fn()} />)
 
-    fireEvent.change(screen.getByPlaceholderText(/search titles/i), { target: { value: 'match' } })
+    fireEvent.change(screen.getByLabelText('Search'), { target: { value: 'match' } })
     fireEvent.click(screen.getByRole('button', { name: /search/i }))
 
     const loadMore = await screen.findByRole('button', { name: /load more/i })
