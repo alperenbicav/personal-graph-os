@@ -1,11 +1,12 @@
 """A provider-neutral `WorkPlanningProvider` backed by an OpenAI-compatible chat-completions HTTP
 endpoint (EP-2026-012 ST-05, review finding S5-R01), mirroring
-`infrastructure.enrichment.http_chat_provider.HttpChatEnrichmentProvider` exactly: same
-`ChatCompletionsProviderConfig` shape, same prompt/data separation (captured text is one clearly
-labeled untrusted `DATA` block, never concatenated into the system prompt or treated as
-instructions), and the response is parsed and validated through the exact same typed
-`WorkPlanResult`/nested-proposal models every other provider produces (`domain.work_planning`),
-so a malformed or manipulated response is rejected by Pydantic validation, never trusted as-is.
+`infrastructure.enrichment.http_chat_provider.HttpChatEnrichmentProvider`: same shared
+`ChatCompletionsProviderConfig`/client plumbing (`infrastructure.llm_chat`, ST-06), same
+prompt/data separation (captured text is one clearly labeled untrusted `DATA` block, never
+concatenated into the system prompt or treated as instructions), and the response is parsed and
+validated through the exact same typed `WorkPlanResult`/nested-proposal models every other
+provider produces (`domain.work_planning`), so a malformed or manipulated response is rejected
+by Pydantic validation, never trusted as-is.
 
 No live call is wired into any composition root by this module alone: constructing this class
 requires an explicit `base_url`/`api_key`, and every test in
@@ -17,7 +18,6 @@ separately-approved scope.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 
 import httpx
 from pydantic import ValidationError
@@ -33,6 +33,13 @@ from personal_graph_os.domain.work_planning import (
     WorkPlanningError,
     WorkPlanResult,
 )
+from personal_graph_os.infrastructure.llm_chat import (
+    ChatCompletionsProviderConfig,
+    complete_json_via_chat_completions,
+    open_chat_completions_client,
+)
+
+__all__ = ["ChatCompletionsProviderConfig", "HttpChatWorkPlanningProvider"]
 
 _WORK_TYPE_VALUES = ", ".join(f'"{value.value}"' for value in WorkItemType)
 
@@ -64,20 +71,6 @@ class WorkPlanningProviderResponseInvalidError(WorkPlanningError):
     fails the domain model's own validation."""
 
 
-@dataclass(frozen=True)
-class ChatCompletionsProviderConfig:
-    """Everything needed to reach one configured chat-completions endpoint. `api_key` is never
-    logged, persisted, or otherwise surfaced outside the `Authorization` request header.
-    `reasoning_effort` (OpenAI `reasoning_effort` request field, e.g. `high`) is passed through
-    when set and omitted otherwise."""
-
-    base_url: str
-    api_key: str
-    model_name: str
-    timeout_seconds: float = 30.0
-    reasoning_effort: str | None = None
-
-
 class HttpChatWorkPlanningProvider:
     def __init__(
         self,
@@ -86,12 +79,7 @@ class HttpChatWorkPlanningProvider:
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self._config = config
-        self._client = httpx.Client(
-            base_url=config.base_url,
-            timeout=config.timeout_seconds,
-            headers={"Authorization": f"Bearer {config.api_key}"},
-            transport=transport,
-        )
+        self._client = open_chat_completions_client(config, transport=transport)
 
     @property
     def name(self) -> str:
@@ -99,21 +87,13 @@ class HttpChatWorkPlanningProvider:
 
     def classify(self, *, source_text: str, title: str) -> WorkPlanResult:
         request_body = self._build_request_body(source_text=source_text, title=title)
-        try:
-            response = self._client.post("/chat/completions", json=request_body)
-            response.raise_for_status()
-        except httpx.HTTPError as error:
-            raise WorkPlanningProviderUnavailableError(
-                f"chat completions request to {self._config.base_url!r} failed: {error}"
-            ) from error
-
-        try:
-            message_content = response.json()["choices"][0]["message"]["content"]
-            parsed = json.loads(message_content)
-        except (KeyError, IndexError, TypeError, ValueError) as error:
-            raise WorkPlanningProviderResponseInvalidError(
-                f"chat completions response was not the expected shape: {error}"
-            ) from error
+        parsed = complete_json_via_chat_completions(
+            self._client,
+            base_url=self._config.base_url,
+            request_body=request_body,
+            unavailable_error=WorkPlanningProviderUnavailableError,
+            invalid_response_error=WorkPlanningProviderResponseInvalidError,
+        )
 
         return self._to_work_plan_result(parsed)
 

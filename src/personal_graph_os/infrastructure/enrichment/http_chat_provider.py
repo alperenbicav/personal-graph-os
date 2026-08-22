@@ -3,8 +3,9 @@ endpoint (EP-2026-012 ST-04, review finding S4-R03).
 
 Works against any OpenAI-compatible `/chat/completions` endpoint -- OpenAI itself, an
 Anthropic-compatible gateway, or a self-hosted vLLM/Ollama server -- configured entirely by
-`ChatCompletionsProviderConfig` (`base_url`/`api_key`/`model_name`), so no vendor SDK dependency
-is added: `httpx` (already a runtime dependency for extraction, `application/extraction_adapters`)
+`ChatCompletionsProviderConfig` (`base_url`/`api_key`/`model_name`, shared with the other chat
+providers through `infrastructure.llm_chat`, ST-06), so no vendor SDK dependency is added:
+`httpx` (already a runtime dependency for extraction, `application/extraction_adapters`)
 is enough, and swapping the configured endpoint/model never requires a new implementation.
 
 Prompt/data separation: the captured source's title/abstract/body/topics are serialized into one
@@ -28,7 +29,6 @@ network. Live paid execution remains separate, future, separately-approved scope
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 
 import httpx
 from pydantic import ValidationError
@@ -42,6 +42,13 @@ from personal_graph_os.domain.enrichment import (
     payload_type_for_kind,
 )
 from personal_graph_os.domain.extraction import ExtractedContent
+from personal_graph_os.infrastructure.llm_chat import (
+    ChatCompletionsProviderConfig,
+    complete_json_via_chat_completions,
+    open_chat_completions_client,
+)
+
+__all__ = ["ChatCompletionsProviderConfig", "HttpChatEnrichmentProvider"]
 
 # The exact `payload` object the model must emit for each enrichable kind. A live-provider
 # verification surfaced that a generic "...fields for the {kind} kind..." placeholder was not
@@ -92,21 +99,6 @@ class EnrichmentProviderResponseInvalidError(EnrichmentError):
     fails the domain model's own validation."""
 
 
-@dataclass(frozen=True)
-class ChatCompletionsProviderConfig:
-    """Everything needed to reach one configured chat-completions endpoint. `api_key` is never
-    logged, persisted, or otherwise surfaced outside the `Authorization` request header.
-    `reasoning_effort` (OpenAI `reasoning_effort` request field, e.g. `high`) is passed through
-    when set and omitted otherwise, so a reasoning-capable model can be tuned without changing
-    callers."""
-
-    base_url: str
-    api_key: str
-    model_name: str
-    timeout_seconds: float = 30.0
-    reasoning_effort: str | None = None
-
-
 class HttpChatEnrichmentProvider:
     def __init__(
         self,
@@ -115,12 +107,7 @@ class HttpChatEnrichmentProvider:
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self._config = config
-        self._client = httpx.Client(
-            base_url=config.base_url,
-            timeout=config.timeout_seconds,
-            headers={"Authorization": f"Bearer {config.api_key}"},
-            transport=transport,
-        )
+        self._client = open_chat_completions_client(config, transport=transport)
 
     @property
     def name(self) -> str:
@@ -129,21 +116,13 @@ class HttpChatEnrichmentProvider:
     def classify(self, *, extracted: ExtractedContent) -> EnrichmentResult:
         evidence_content_hashes = tuple(evidence.content_hash for evidence in extracted.evidence)
         request_body = self._build_request_body(extracted)
-        try:
-            response = self._client.post("/chat/completions", json=request_body)
-            response.raise_for_status()
-        except httpx.HTTPError as error:
-            raise EnrichmentProviderUnavailableError(
-                f"chat completions request to {self._config.base_url!r} failed: {error}"
-            ) from error
-
-        try:
-            message_content = response.json()["choices"][0]["message"]["content"]
-            parsed = json.loads(message_content)
-        except (KeyError, IndexError, TypeError, ValueError) as error:
-            raise EnrichmentProviderResponseInvalidError(
-                f"chat completions response was not the expected shape: {error}"
-            ) from error
+        parsed = complete_json_via_chat_completions(
+            self._client,
+            base_url=self._config.base_url,
+            request_body=request_body,
+            unavailable_error=EnrichmentProviderUnavailableError,
+            invalid_response_error=EnrichmentProviderResponseInvalidError,
+        )
 
         return self._to_enrichment_result(extracted, evidence_content_hashes, parsed)
 

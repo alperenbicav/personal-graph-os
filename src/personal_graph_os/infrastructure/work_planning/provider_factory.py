@@ -1,5 +1,5 @@
 """Fail-closed runtime composition for the configured `WorkPlanningProvider` (EP-2026-012 ST-05,
-review finding S5-R01), mirroring `infrastructure.enrichment.provider_factory` exactly.
+review finding S5-R01), mirroring `infrastructure.enrichment.provider_factory`.
 
 `WorkPlanningService` never chooses a provider implementation itself; this module is the one
 composition point the product's REST composition root (`api/app.py`) calls to obtain one, using
@@ -23,6 +23,10 @@ import httpx
 
 from personal_graph_os.application.work_planning_adapters import WorkPlanningProvider
 from personal_graph_os.domain.work_planning import WorkPlanningError
+from personal_graph_os.infrastructure.llm_chat import (
+    LlmChatSettingsError,
+    parse_provider_settings,
+)
 from personal_graph_os.infrastructure.work_planning.http_chat_provider import (
     ChatCompletionsProviderConfig,
     HttpChatWorkPlanningProvider,
@@ -30,12 +34,6 @@ from personal_graph_os.infrastructure.work_planning.http_chat_provider import (
 
 _HTTP_CHAT_PROVIDER_NAME = "http_chat"
 _SUPPORTED_PROVIDER_NAMES = frozenset({_HTTP_CHAT_PROVIDER_NAME})
-
-_ENV_PROVIDER = "PGOS_WORK_PLANNING_PROVIDER"
-_ENV_BASE_URL = "PGOS_WORK_PLANNING_BASE_URL"
-_ENV_API_KEY = "PGOS_WORK_PLANNING_API_KEY"
-_ENV_MODEL = "PGOS_WORK_PLANNING_MODEL"
-_ENV_REASONING_EFFORT = "PGOS_WORK_PLANNING_REASONING_EFFORT"
 
 
 class WorkPlanningProviderConfigurationError(WorkPlanningError):
@@ -58,39 +56,31 @@ def build_work_planning_provider_from_env(
     Raises `WorkPlanningProviderConfigurationError` if `PGOS_WORK_PLANNING_PROVIDER` names an
     unrecognized provider, or a recognized one is missing a required setting.
     """
-    provider_name = (environ.get(_ENV_PROVIDER) or "").strip()
-    if not provider_name:
+    try:
+        settings = parse_provider_settings(
+            environ,
+            env_prefix="WORK_PLANNING",
+            supported_provider_names=_SUPPORTED_PROVIDER_NAMES,
+        )
+    except LlmChatSettingsError as error:
+        if error.unsupported:
+            raise WorkPlanningProviderConfigurationError(
+                f"{error.provider_env}={error.provider_value!r} is not a supported work-planning "
+                f"provider (supported: {sorted(error.supported)})"
+            ) from error
+        raise WorkPlanningProviderConfigurationError(
+            f"{error.provider_env}={_HTTP_CHAT_PROVIDER_NAME} requires {error.missing}, none of "
+            "which may be empty"
+        ) from error
+
+    if settings is None:
         return None
-    if provider_name not in _SUPPORTED_PROVIDER_NAMES:
-        raise WorkPlanningProviderConfigurationError(
-            f"{_ENV_PROVIDER}={provider_name!r} is not a supported work-planning provider "
-            f"(supported: {sorted(_SUPPORTED_PROVIDER_NAMES)})"
-        )
-
-    base_url = (environ.get(_ENV_BASE_URL) or "").strip()
-    api_key = (environ.get(_ENV_API_KEY) or "").strip()
-    model_name = (environ.get(_ENV_MODEL) or "").strip()
-    missing = [
-        name
-        for name, value in (
-            (_ENV_BASE_URL, base_url),
-            (_ENV_API_KEY, api_key),
-            (_ENV_MODEL, model_name),
-        )
-        if not value
-    ]
-    if missing:
-        raise WorkPlanningProviderConfigurationError(
-            f"{_ENV_PROVIDER}={_HTTP_CHAT_PROVIDER_NAME} requires {missing}, none of which may "
-            "be empty"
-        )
-
     return HttpChatWorkPlanningProvider(
         ChatCompletionsProviderConfig(
-            base_url=base_url,
-            api_key=api_key,
-            model_name=model_name,
-            reasoning_effort=(environ.get(_ENV_REASONING_EFFORT) or "").strip() or None,
+            base_url=settings.base_url,
+            api_key=settings.api_key,
+            model_name=settings.model_name,
+            reasoning_effort=settings.reasoning_effort,
         ),
         transport=transport,
     )
