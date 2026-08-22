@@ -857,6 +857,16 @@ function App() {
               resources={resources}
               selectedNodeId={selectedNodeId}
               onSelectNode={setSelectedNodeId}
+              onClearSelection={() => setSelectedNodeId(null)}
+              onUpdateDetail={handleUpdateResource}
+              renderEnrichment={(resource) => (
+                <EnrichmentDetailPanel
+                  key={`enrichment-${resource.id}`}
+                  resourceId={resource.id}
+                  onLoadDetail={api.getResourceDetail}
+                  onGoToRelation={handleGoToRelation}
+                />
+              )}
               onSetLabel={handleSetRepositoryLabel}
               onCreateResource={(title, rawSource) =>
                 handleCreateResource(title, rawSource, 'github_repository')

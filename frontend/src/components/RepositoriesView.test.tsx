@@ -40,6 +40,8 @@ describe('RepositoriesView', () => {
       <RepositoriesView
         resources={resources}
         selectedNodeId={null}
+        onClearSelection={() => undefined}
+        onUpdateDetail={vi.fn().mockResolvedValue(true)}
         onSelectNode={vi.fn()}
         onSetLabel={vi.fn()}
         onCreateResource={vi.fn()}
@@ -59,6 +61,8 @@ describe('RepositoriesView', () => {
       <RepositoriesView
         resources={resources}
         selectedNodeId={null}
+        onClearSelection={() => undefined}
+        onUpdateDetail={vi.fn().mockResolvedValue(true)}
         onSelectNode={vi.fn()}
         onSetLabel={vi.fn()}
         onCreateResource={vi.fn()}
@@ -77,6 +81,8 @@ describe('RepositoriesView', () => {
       <RepositoriesView
         resources={resources}
         selectedNodeId={null}
+        onClearSelection={() => undefined}
+        onUpdateDetail={vi.fn().mockResolvedValue(true)}
         onSelectNode={onSelectNode}
         onSetLabel={vi.fn()}
         onCreateResource={vi.fn()}
@@ -94,6 +100,8 @@ describe('RepositoriesView', () => {
       <RepositoriesView
         resources={resources}
         selectedNodeId={null}
+        onClearSelection={() => undefined}
+        onUpdateDetail={vi.fn().mockResolvedValue(true)}
         onSelectNode={vi.fn()}
         onSetLabel={onSetLabel}
         onCreateResource={vi.fn()}
@@ -112,6 +120,8 @@ describe('RepositoriesView', () => {
       <RepositoriesView
         resources={[]}
         selectedNodeId={null}
+        onClearSelection={() => undefined}
+        onUpdateDetail={vi.fn().mockResolvedValue(true)}
         onSelectNode={vi.fn()}
         onSetLabel={vi.fn()}
         onCreateResource={onCreateResource}
