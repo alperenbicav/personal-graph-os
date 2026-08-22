@@ -95,6 +95,7 @@ export function WikiView({
   const [createError, setCreateError] = useState<string | null>(null)
   const [newLinkTargetId, setNewLinkTargetId] = useState('')
   const [isTagEditorOpen, setIsTagEditorOpen] = useState(false)
+  const [collapsedCollections, setCollapsedCollections] = useState<Set<string>>(new Set())
 
   async function refreshTaxonomy() {
     const [loadedCollections, loadedTags] = await Promise.all([onLoadCollections(), onLoadTags()])
@@ -284,20 +285,75 @@ export function WikiView({
           <p className="view-empty">No pages here yet.</p>
         ) : (
           <div className="list-view">
-            {visibleDocuments.map((document) => (
-              <button
-                key={document.id}
-                type="button"
-                className="node-row wiki-page-row"
-                aria-current={document.id === selectedDocumentId}
-                onClick={() => selectDocument(document.id)}
-              >
-                <span className="node-row-title">{document.title}</span>
-                <span className="node-row-meta">
-                  <span className="node-row-type">{document.kind}</span>
-                </span>
-              </button>
-            ))}
+            {(() => {
+              // Notion-style grouping (ST-10 review P3): pages live under their collection as a
+              // collapsible section; 'all' shows every group, 'uncategorized' its own.
+              type Group = { key: string; label: string; pages: typeof visibleDocuments }
+              const groups: Group[] =
+                collectionFilter === 'all'
+                  ? [
+                      ...collections.map((collection) => ({
+                        key: `c-${collection.id}`,
+                        label: collection.name,
+                        pages: visibleDocuments.filter(
+                          (document) => document.collection_id === collection.id,
+                        ),
+                      })),
+                      {
+                        key: 'c-uncategorized',
+                        label: 'Uncategorized',
+                        pages: visibleDocuments.filter(
+                          (document) => document.collection_id === null,
+                        ),
+                      },
+                    ].filter((group) => group.pages.length > 0)
+                  : [{ key: collectionFilter, label: '', pages: visibleDocuments }]
+
+              const toggleCollapsed = (key: string) =>
+                setCollapsedCollections((current) => {
+                  const next = new Set(current)
+                  if (next.has(key)) next.delete(key)
+                  else next.add(key)
+                  return next
+                })
+
+              return groups.map((group) => {
+                const isCollapsed = collapsedCollections.has(group.key)
+                return (
+                  <div key={group.key} className="wiki-page-group">
+                    {group.label && (
+                      <button
+                        type="button"
+                        className="wiki-group-header"
+                        aria-expanded={!isCollapsed}
+                        onClick={() => toggleCollapsed(group.key)}
+                      >
+                        <span className={`wiki-group-chevron${isCollapsed ? ' wiki-group-chevron-collapsed' : ''}`} aria-hidden>
+                          ▾
+                        </span>
+                        {group.label}
+                        <span className="wiki-group-count">{group.pages.length}</span>
+                      </button>
+                    )}
+                    {!isCollapsed &&
+                      group.pages.map((document) => (
+                        <button
+                          key={document.id}
+                          type="button"
+                          className="node-row wiki-page-row"
+                          aria-current={document.id === selectedDocumentId}
+                          onClick={() => selectDocument(document.id)}
+                        >
+                          <span className="node-row-title">{document.title}</span>
+                          <span className="node-row-meta">
+                            <span className="node-row-type">{document.kind}</span>
+                          </span>
+                        </button>
+                      ))}
+                  </div>
+                )
+              })
+            })()}
           </div>
         )}
       </aside>

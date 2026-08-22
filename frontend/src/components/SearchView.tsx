@@ -30,9 +30,17 @@ interface SearchViewProps {
   onSearch: (query: string, scope: SearchScope, offset: number) => Promise<SearchResponse>
   selectedNodeId: string | null
   onSelectNode: (nodeId: string) => void
+  /** Called when the user opens a result; lets the shell route to the right tab.
+   * Falls back to onSelectNode(result.node.id) when absent. */
+  onActivateResult?: (result: SearchResult) => void
 }
 
-export function SearchView({ onSearch, selectedNodeId, onSelectNode }: SearchViewProps) {
+export function SearchView({
+  onSearch,
+  selectedNodeId,
+  onSelectNode,
+  onActivateResult,
+}: SearchViewProps) {
   const [query, setQuery] = useState('')
   const [scope, setScope] = useState<SearchScope>('all')
   const [results, setResults] = useState<SearchResult[]>([])
@@ -84,7 +92,34 @@ export function SearchView({ onSearch, selectedNodeId, onSelectNode }: SearchVie
   }
 
   function openResult(result: SearchResult) {
+    if (onActivateResult) {
+      onActivateResult(result)
+      return
+    }
     if (result.node?.id) onSelectNode(result.node.id)
+  }
+
+  function changeScope(next: SearchScope) {
+    setScope(next)
+    // Re-run immediately when a query is already present so scope feels live (ST-06 review).
+    if (hasSearched && query.trim()) {
+      void (async () => {
+        setIsSearching(true)
+        try {
+          const page = await onSearch(query.trim(), next, 0)
+          setResults(page.results)
+          setHasMore(page.has_more)
+          setNextOffset(page.offset + page.results.length)
+          setTotal(page.total)
+          setActiveIndex(page.results.length > 0 ? 0 : -1)
+          setError(null)
+        } catch (searchError) {
+          setError(searchError instanceof Error ? searchError.message : String(searchError))
+        } finally {
+          setIsSearching(false)
+        }
+      })()
+    }
   }
 
   function handleInputKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
@@ -150,7 +185,7 @@ export function SearchView({ onSearch, selectedNodeId, onSelectNode }: SearchVie
               ariaLabel="Search scope"
               options={SCOPES.map((option) => ({ value: option.value, label: option.label }))}
               value={scope}
-              onChange={(value) => setScope(value)}
+              onChange={changeScope}
             />
             <button type="button" className="primary-action" onClick={runSearch} disabled={isSearching || !query.trim()}>
               Search
@@ -163,7 +198,7 @@ export function SearchView({ onSearch, selectedNodeId, onSelectNode }: SearchVie
             aria-label="Scope"
             className="wiki-chip-select"
             value={scope}
-            onChange={(event) => setScope(event.target.value as SearchScope)}
+            onChange={(event) => changeScope(event.target.value as SearchScope)}
           >
             {SCOPES.map((option) => (
               <option key={option.value} value={option.value}>

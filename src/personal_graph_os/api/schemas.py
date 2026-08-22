@@ -665,11 +665,22 @@ class ActivityEventSummary(BaseModel):
     # re-review) -- `None` while it still can be. See
     # `activity_recording.undo_disabled_reason` for the shared taxonomy REST/undo/UI all use.
     disabled_reason: str | None
+    # Human-readable subject for feed rendering (EP-2026-013 ST-10 review finding): derived
+    # from the recorded snapshot's title/name so the UI never shows a raw UUID.
+    entity_title: str | None = None
 
     @classmethod
     def from_domain(
         cls, event: ActivityEvent, *, is_already_reversed: bool
     ) -> ActivityEventSummary:
+        entity_title: str | None = None
+        for state in (event.after_state, event.before_state):
+            if not isinstance(state, dict):
+                continue
+            candidate = state.get("title") or state.get("name")
+            if isinstance(candidate, str) and candidate.strip():
+                entity_title = candidate.strip()
+                break
         return cls(
             id=event.id,
             workspace_id=event.workspace_id,
@@ -684,6 +695,7 @@ class ActivityEventSummary(BaseModel):
             occurred_at=event.occurred_at,
             reverses_event_id=event.reverses_event_id,
             disabled_reason=undo_disabled_reason(event, is_already_reversed=is_already_reversed),
+            entity_title=entity_title,
         )
 
 

@@ -82,7 +82,7 @@ function CreatePaperOrArticleForm({
       />
       <select
         aria-label="Kind"
-        className="wiki-chip-select"
+        className="chip-select"
         value={kind}
         onChange={(event) => setKind(event.target.value as 'paper' | 'article')}
       >
@@ -300,7 +300,7 @@ export function ResearchView({
     return (
       <div className="research-detail-page" aria-label="Research detail">
         <div className="tasks-detail-top">
-          <button type="button" className="tasks-back" onClick={onClearSelection}>
+          <button type="button" className="back-link" onClick={onClearSelection}>
             ← Back to library
           </button>
           <Pill tone={LIFECYCLE_TONE[selectedResource.lifecycle_status]}>
@@ -310,7 +310,7 @@ export function ResearchView({
           {!isArchived && (
             <button
               type="button"
-              className="wiki-options-button"
+              className="options-button"
               style={{ marginLeft: 'auto' }}
               onClick={() => void onArchiveResource(selectedResource.id)}
             >
@@ -328,7 +328,7 @@ export function ResearchView({
               href={selectedResource.source_url}
               target="_blank"
               rel="noreferrer"
-              className="tasks-back"
+              className="back-link"
             >
               Open source ↗
             </a>
@@ -386,7 +386,7 @@ export function ResearchView({
       <div className="research-filter-bar">
         <select
           aria-label="Filter by type"
-          className="wiki-chip-select"
+          className="chip-select"
           value={kindFilter}
           onChange={(event) => setKindFilter(event.target.value as '' | ResourceKind)}
         >
@@ -398,7 +398,7 @@ export function ResearchView({
         </select>
         <select
           aria-label="Filter by read state"
-          className="wiki-chip-select"
+          className="chip-select"
           value={readStateFilter}
           onChange={(event) => setReadStateFilter(event.target.value as '' | ResourceLifecycleStatus)}
         >

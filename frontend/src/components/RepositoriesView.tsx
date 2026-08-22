@@ -167,7 +167,7 @@ function RepositoryRow({
       </div>
       <select
         aria-label={`Ownership label for ${resource.title}`}
-        className="wiki-chip-select"
+        className="chip-select"
         value={resource.repository_label ?? ''}
         onChange={(event) => onSetLabel(resource.id, event.target.value as RepositoryLabel)}
       >
@@ -214,7 +214,7 @@ export function RepositoriesView({
     return (
       <div className="research-detail-page" aria-label="Repository detail">
         <div className="tasks-detail-top">
-          <button type="button" className="tasks-back" onClick={onClearSelection}>
+          <button type="button" className="back-link" onClick={onClearSelection}>
             ← Back to shelf
           </button>
           {selectedRepository.repository_label && (
@@ -235,7 +235,7 @@ export function RepositoriesView({
               href={selectedRepository.source_url}
               target="_blank"
               rel="noreferrer"
-              className="tasks-back"
+              className="back-link"
             >
               Open on GitHub ↗
             </a>

@@ -1,5 +1,3 @@
-import { useState } from 'react'
-
 export type AppView =
   | 'graph'
   | 'tasks'
@@ -64,44 +62,23 @@ interface NavTabsProps {
   onSelectView: (view: AppView) => void
 }
 
+/** Primary navigation (EP-2026-013 ST-10 review): descriptions moved from persistent ⓘ
+ * buttons to native tooltips — less header noise for daily power users, same discoverability
+ * on hover/focus. */
 export function NavTabs({ activeView, onSelectView }: NavTabsProps) {
-  const [openInfoFor, setOpenInfoFor] = useState<AppView | null>(null)
-
   return (
     <nav className="nav-tabs" aria-label="Workspace views">
       {TABS.map((tab) => (
-        <div className="nav-tab-group" key={tab.id}>
-          <button
-            type="button"
-            className="nav-tab"
-            aria-current={tab.id === activeView}
-            onClick={() => {
-              onSelectView(tab.id)
-              setOpenInfoFor(null)
-            }}
-          >
-            {tab.label}
-          </button>
-          <button
-            type="button"
-            className="nav-tab-info"
-            aria-label={`About ${tab.label}`}
-            aria-expanded={openInfoFor === tab.id}
-            onClick={() =>
-              setOpenInfoFor((current) => (current === tab.id ? null : tab.id))
-            }
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') setOpenInfoFor(null)
-            }}
-          >
-            ⓘ
-          </button>
-          {openInfoFor === tab.id && (
-            <div className="nav-tab-info-popover" role="note">
-              {tab.description}
-            </div>
-          )}
-        </div>
+        <button
+          key={tab.id}
+          type="button"
+          className="nav-tab"
+          aria-current={tab.id === activeView}
+          title={tab.description}
+          onClick={() => onSelectView(tab.id)}
+        >
+          {tab.label}
+        </button>
       ))}
     </nav>
   )

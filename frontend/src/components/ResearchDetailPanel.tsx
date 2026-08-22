@@ -156,6 +156,7 @@ export function ResearchDetailPanel({ resource, onUpdate }: ResearchDetailPanelP
           type="number"
           min={0}
           max={100}
+          placeholder="0"
           value={progressDraft}
           onChange={(event) => setProgressDraft(event.target.value)}
           onBlur={() => {

@@ -767,6 +767,33 @@ function App() {
               }
               selectedNodeId={selectedNodeId}
               onSelectNode={setSelectedNodeId}
+              onActivateResult={(result) => {
+                // Route to the owning tab so the result is actually visible (ST-06 review P1).
+                const targetScope = result.scope
+                if (targetScope === 'wiki') {
+                  setActiveView('wiki')
+                  if (result.node?.id) setSelectedNodeId(result.node.id)
+                  return
+                }
+                if (targetScope === 'tasks') {
+                  setActiveView('tasks')
+                  const match = workItems.find((entry) => entry.node_id === result.node?.id)
+                  if (match) setSelectedWorkItemId(match.id)
+                  return
+                }
+                if (targetScope === 'research' || targetScope === 'repositories') {
+                  setActiveView(targetScope)
+                  if (result.node?.id) setSelectedNodeId(result.node.id)
+                  return
+                }
+                // graph / all: node-backed results live on the canvas
+                if (result.node?.id) {
+                  setSelectedNodeId(result.node.id)
+                  setActiveView('graph')
+                } else if (result.document) {
+                  setActiveView('wiki')
+                }
+              }}
             />
           </div>
         )}

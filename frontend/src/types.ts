@@ -445,6 +445,7 @@ export interface ActivityEventSummary {
   is_undoable: boolean
   occurred_at: string
   reverses_event_id: string | null
+  entity_title?: string | null
   disabled_reason:
     | 'snapshot_omitted_oversized'
     | 'unsupported_action'

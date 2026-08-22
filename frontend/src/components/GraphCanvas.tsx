@@ -5,6 +5,7 @@ import {
   type Connection,
   Controls,
   Panel,
+  useReactFlow,
   useStore,
   type Edge,
   type Node,
@@ -27,6 +28,25 @@ import type {
 } from '../types'
 import { CanvasObjectList } from './CanvasObjectList'
 import { TypedNode, type TypedNodeData } from './nodes/TypedNode'
+
+/** Reset zoom/pan to fit every placed node (EP-2026-013 ST-10 review P3-10). */
+function FitViewButton() {
+  const { fitView } = useReactFlow()
+  return (
+    <Panel position="bottom-right">
+      <button
+        type="button"
+        className="zoom-badge zoom-fit-button"
+        aria-label="Fit view"
+        title="Fit to canvas"
+        onClick={() => void fitView({ padding: 0.2, duration: 200 })}
+      >
+        ⊡ Fit
+      </button>
+    </Panel>
+  )
+}
+
 
 /** Live zoom percentage in the canvas corner (EP-2026-013 ST-08). */
 function ZoomBadge() {
@@ -223,6 +243,7 @@ export function GraphCanvas({
         <Background variant={BackgroundVariant.Dots} color="var(--line)" gap={22} size={1.4} />
         <Controls showInteractive={false} />
         <ZoomBadge />
+        <FitViewButton />
       </ReactFlow>
     </div>
   )
