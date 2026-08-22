@@ -1708,7 +1708,7 @@ select.status-select {
 }
 
 .wiki-updated {
-  color: var(--slate-faint);
+  color: var(--slate);
   font-size: var(--text-xs);
   margin-left: auto;
 }
@@ -2707,7 +2707,7 @@ select.status-select {
 }
 
 .research-row-date {
-  color: var(--slate-faint);
+  color: var(--slate);
   font-size: var(--text-xs);
 }
 
@@ -2937,7 +2937,7 @@ select.status-select {
 
 .activity-row-occurred-at {
   margin-left: auto;
-  color: var(--slate-faint);
+  color: var(--slate);
   font-size: var(--text-xs);
   flex-shrink: 0;
 }
