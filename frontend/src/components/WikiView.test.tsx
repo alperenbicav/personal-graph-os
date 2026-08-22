@@ -72,14 +72,15 @@ describe('WikiView', () => {
     fireEvent.click(row)
 
     await waitFor(() => expect(props.onLoadDetail).toHaveBeenCalledWith('doc-1'))
-    expect(await screen.findByRole('heading', { name: 'My first page' })).toBeInTheDocument()
+    const titleInput = (await screen.findByLabelText('Page title')) as HTMLInputElement
+    expect(titleInput.value).toBe('My first page')
   })
 
   it('creates a page through the create-page modal', async () => {
     const props = baseProps()
     render(<WikiView {...props} />)
 
-    fireEvent.click(await screen.findByRole('button', { name: '+ New page' }))
+    fireEvent.click((await screen.findAllByRole('button', { name: '+ New page' }))[0])
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'New page' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
 
@@ -93,7 +94,7 @@ describe('WikiView', () => {
   it('disables create until a title is entered', async () => {
     render(<WikiView {...baseProps()} />)
 
-    fireEvent.click(await screen.findByRole('button', { name: '+ New page' }))
+    fireEvent.click((await screen.findAllByRole('button', { name: '+ New page' }))[0])
 
     expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled()
   })
@@ -103,7 +104,7 @@ describe('WikiView', () => {
     render(<WikiView {...props} />)
 
     fireEvent.click(await screen.findByText('My first page'))
-    await screen.findByRole('heading', { name: 'My first page' })
+    await screen.findByLabelText('Page title')
 
     const editor = screen.getByLabelText('Page body (Markdown)') as HTMLTextAreaElement
     expect(screen.getByRole('button', { name: /^save$/i })).toBeDisabled()
@@ -129,6 +130,7 @@ describe('WikiView', () => {
     render(<WikiView {...props} />)
 
     fireEvent.click(await screen.findByText('My first page'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Page details' }))
     const backlink = await screen.findByRole('button', { name: 'Referring page' })
     fireEvent.click(backlink)
 

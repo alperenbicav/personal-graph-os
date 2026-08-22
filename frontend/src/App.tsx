@@ -784,7 +784,6 @@ function App() {
         {activeView === 'wiki' && workspace && (
           <div className="view-frame">
             <WikiView
-              workspaceId={workspace.id}
               onLoadDocuments={(collectionId) => api.listDocuments(workspace.id, { collectionId })}
               onLoadDetail={(documentId) => api.getDocumentDetail(documentId)}
               onLoadVersions={(documentId) => api.listDocumentVersions(documentId)}
