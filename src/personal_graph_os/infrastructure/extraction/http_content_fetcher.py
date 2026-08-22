@@ -13,8 +13,10 @@ only on the `ContentFetcher` protocol and never construct an `httpx`/`httpcore` 
 from __future__ import annotations
 
 import ipaddress
+import logging
 import socket
 import ssl
+import time
 import typing
 from collections.abc import Callable, Iterable, Iterator
 from types import TracebackType
@@ -25,6 +27,8 @@ import httpx
 
 from personal_graph_os.application.extraction_adapters import FetchedResource
 from personal_graph_os.domain.extraction import SourceAccessDeniedError, SourceFetchFailedError
+
+logger = logging.getLogger(__name__)
 
 # httpcore is used directly (a custom `NetworkBackend`/`ConnectionPool`), not merely as an
 # httpx implementation detail, so it is declared as an explicit runtime dependency in
@@ -217,6 +221,8 @@ class HttpContentFetcher:
         max_redirects: int = 5,
         resolve_hostname: Callable[[str], tuple[str, ...]] | None = None,
         user_agent: str = _DEFAULT_USER_AGENT,
+        max_transport_retries: int = 1,
+        transport_retry_backoff_seconds: float = 0.5,
     ) -> None:
         self._resolve_hostname = resolve_hostname or _resolve_hostname_via_dns
         effective_transport = transport or _PinnedHttpTransport(
@@ -228,6 +234,8 @@ class HttpContentFetcher:
         self._max_content_length_bytes = max_content_length_bytes
         self._max_redirects = max_redirects
         self._user_agent = user_agent
+        self._max_transport_retries = max(0, max_transport_retries)
+        self._transport_retry_backoff_seconds = max(0.0, transport_retry_backoff_seconds)
 
     def fetch(self, url: str, *, accept: str | None = None) -> FetchedResource:
         requested_url = url
@@ -264,11 +272,32 @@ class HttpContentFetcher:
         _resolve_and_validate(self._resolve_hostname, hostname)
 
     def _send(self, url: str, *, headers: dict[str, str]) -> httpx.Response:
-        try:
-            request = self._client.build_request("GET", url, headers=headers)
-            return self._client.send(request, stream=True)
-        except httpx.HTTPError as error:
-            raise SourceFetchFailedError(f"fetching {url!r} failed: {error}") from error
+        # One bounded retry on transport-level failures only (connection reset, timeout, DNS
+        # hiccup): metadata lookups are free idempotent GETs, and a single transient blip should
+        # not fail a capture. HTTP status failures are never retried.
+        last_error: httpx.HTTPError | None = None
+        for attempt in range(self._max_transport_retries + 1):
+            try:
+                request = self._client.build_request("GET", url, headers=headers)
+                return self._client.send(request, stream=True)
+            except httpx.TransportError as error:
+                last_error = error
+                if attempt < self._max_transport_retries:
+                    logger.warning(
+                        "fetch of %r hit a transport error (%s); retrying (attempt %d/%d)",
+                        url,
+                        error,
+                        attempt + 1,
+                        self._max_transport_retries,
+                    )
+                    if self._transport_retry_backoff_seconds:
+                        time.sleep(self._transport_retry_backoff_seconds)
+            except httpx.HTTPError as error:
+                raise SourceFetchFailedError(f"fetching {url!r} failed: {error}") from error
+        raise SourceFetchFailedError(
+            f"fetching {url!r} failed after {self._max_transport_retries + 1} attempts: "
+            f"{last_error}"
+        ) from last_error
 
     def _to_fetched_resource(
         self, requested_url: str, final_url: str, response: httpx.Response

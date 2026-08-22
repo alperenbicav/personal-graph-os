@@ -258,3 +258,51 @@ def test_pinned_transport_performs_a_real_request_over_loopback() -> None:
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+def test_a_transient_transport_error_is_retried_once_and_then_succeeds() -> None:
+    attempts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise httpx.ConnectError("connection reset")
+        return httpx.Response(200, content=b"recovered", headers={"content-type": "text/plain"})
+
+    fetcher = _fetcher(handler, transport_retry_backoff_seconds=0.0)
+    result = fetcher.fetch("https://example.com/article")
+
+    assert result.body == b"recovered"
+    assert len(attempts) == 2
+
+
+def test_a_persistent_transport_error_fails_after_the_bounded_attempts() -> None:
+    attempts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        raise httpx.ReadTimeout("timed out")
+
+    fetcher = _fetcher(
+        handler,
+        max_transport_retries=2,
+        transport_retry_backoff_seconds=0.0,
+    )
+
+    with pytest.raises(SourceFetchFailedError, match="after 3 attempts"):
+        fetcher.fetch("https://example.com/article")
+    assert len(attempts) == 3
+
+
+def test_an_http_status_failure_is_never_retried() -> None:
+    attempts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        return httpx.Response(500, content=b"")
+
+    fetcher = _fetcher(handler, transport_retry_backoff_seconds=0.0)
+
+    with pytest.raises(SourceFetchFailedError):
+        fetcher.fetch("https://example.com/article")
+    assert len(attempts) == 1

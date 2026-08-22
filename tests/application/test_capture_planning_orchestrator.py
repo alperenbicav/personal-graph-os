@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
+
+import pytest
 
 from personal_graph_os.application.capture_planning_orchestrator import (
     CapturePlanningOrchestrator,
@@ -21,6 +24,7 @@ from personal_graph_os.domain.capture import (
 from personal_graph_os.domain.extraction import (
     EvidenceKind,
     ExtractedContent,
+    ExtractionError,
     ExtractionEvidence,
     hash_content,
 )
@@ -384,3 +388,32 @@ def test_a_replayed_summarize_operation_does_not_re_run_enrichment(
     )
     assert profile is not None
     assert profile.current_version_number == 1
+
+
+def test_an_extraction_failure_is_logged_and_leaves_the_operation_pending(
+    sqlite_connection: sqlite3.Connection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Fail-soft stays fail-soft, but it is no longer silent: a swallowed extraction failure
+    logs a warning carrying the request id so operators can see why enrichment never ran."""
+    class _FailingExtractionService:
+        def extract(self, *, resource_kind, canonical_identifier, source_url):
+            raise ExtractionError("simulated extraction outage")
+
+    orchestrator, workspace_id = _orchestrator(
+        sqlite_connection,
+        work_planning_service=None,
+        enrichment_service=_enrichment_service(sqlite_connection),
+        extraction_service=_FailingExtractionService(),
+    )
+    envelope = _summarize_envelope(workspace_id)
+
+    logger_name = "personal_graph_os.application.capture_planning_orchestrator"
+    with caplog.at_level(logging.WARNING, logger=logger_name):
+        outcome, plan_outcome = orchestrator.submit(envelope)
+
+    assert outcome.resource_id is not None
+    assert plan_outcome is None
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert envelope.request_id in warnings[0].getMessage()
+    assert "extraction failed" in warnings[0].getMessage()
