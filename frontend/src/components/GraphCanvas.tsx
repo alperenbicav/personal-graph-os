@@ -4,6 +4,8 @@ import {
   BackgroundVariant,
   type Connection,
   Controls,
+  Panel,
+  useStore,
   type Edge,
   type Node,
   type NodeMouseHandler,
@@ -25,6 +27,16 @@ import type {
 } from '../types'
 import { CanvasObjectList } from './CanvasObjectList'
 import { TypedNode, type TypedNodeData } from './nodes/TypedNode'
+
+/** Live zoom percentage in the canvas corner (EP-2026-013 ST-08). */
+function ZoomBadge() {
+  const zoom = useStore((state) => state.transform[2])
+  return (
+    <Panel position="bottom-right">
+      <span className="zoom-badge">{Math.round(zoom * 100)}%</span>
+    </Panel>
+  )
+}
 
 const NODE_TYPES = { typedNode: TypedNode }
 
@@ -210,6 +222,7 @@ export function GraphCanvas({
       >
         <Background variant={BackgroundVariant.Dots} color="var(--line)" gap={22} size={1.4} />
         <Controls showInteractive={false} />
+        <ZoomBadge />
       </ReactFlow>
     </div>
   )
