@@ -5,6 +5,7 @@ import { ActivityView } from './components/ActivityView'
 import { CanvasRail } from './components/CanvasRail'
 import { ConnectEdgeModal, type PendingConnection } from './components/ConnectEdgeModal'
 import { CreateNodeControl } from './components/CreateNodeControl'
+import { NewCanvasModal } from './components/NewCanvasModal'
 import { EnrichmentDetailPanel } from './components/EnrichmentDetailPanel'
 import { GraphCanvas } from './components/GraphCanvas'
 import { Inspector, type RelationRow } from './components/Inspector'
@@ -61,6 +62,8 @@ function App() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [focusDepth, setFocusDepth] = useState(0)
   const [pendingConnection, setPendingConnection] = useState<PendingConnection | null>(null)
+  const [isNewCanvasModalOpen, setIsNewCanvasModalOpen] = useState(false)
+  const [archiveArmed, setArchiveArmed] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [isSchemaEditorOpen, setIsSchemaEditorOpen] = useState(false)
@@ -649,28 +652,38 @@ function App() {
   )
 
   const handleArchiveSelected = useCallback(async () => {
+    if (!archiveArmed) {
+      // Two-step confirmation (ST-08): the first activation arms; only the second archives.
+      setArchiveArmed(true)
+      return
+    }
+
     if (!selectedNodeId) return
     try {
       await api.archiveNode(selectedNodeId)
       setNodes((current) => current.filter((node) => node.id !== selectedNodeId))
       setSelectedNodeId(null)
+      setArchiveArmed(false)
     } catch (error) {
       setActionError(`Could not archive that object: ${messageFor(error)}`)
+      setArchiveArmed(false)
     }
-  }, [selectedNodeId])
+  }, [selectedNodeId, archiveArmed])
 
-  const handleCreateCanvas = useCallback(async () => {
-    if (!workspace) return
-    const name = window.prompt('Name the new canvas')?.trim()
-    if (!name) return
-    try {
-      const canvas = await api.createCanvas(workspace.id, name)
-      setCanvases((current) => [...current, canvas])
-      setActiveCanvasId(canvas.id)
-    } catch (error) {
-      setActionError(`Could not create canvas "${name}": ${messageFor(error)}`)
-    }
-  }, [workspace])
+  const handleCreateCanvasConfirmed = useCallback(
+    async (name: string) => {
+      if (!workspace) return
+      try {
+        const canvas = await api.createCanvas(workspace.id, name)
+        setCanvases((current) => [...current, canvas])
+        setActiveCanvasId(canvas.id)
+        setIsNewCanvasModalOpen(false)
+      } catch (error) {
+        setActionError(`Could not create canvas "${name}": ${messageFor(error)}`)
+      }
+    },
+    [workspace],
+  )
 
   const handleRequestConnect = useCallback(
     (sourceNodeId: string, targetNodeId: string) => {
@@ -710,6 +723,7 @@ function App() {
 
       if (event.key === 'Escape') {
         setSelectedNodeId(null)
+        setArchiveArmed(false)
         return
       }
       if ((event.key === 'Delete' || event.key === 'Backspace') && selectedNodeId) {
@@ -719,9 +733,13 @@ function App() {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selectedNodeId, handleArchiveSelected])
+  }, [selectedNodeId, archiveArmed, handleArchiveSelected])
 
-  if (!isUnlocked) {
+    useEffect(() => {
+    setArchiveArmed(false)
+  }, [selectedNodeId])
+
+if (!isUnlocked) {
     return <UnlockScreen onUnlocked={() => setIsUnlocked(true)} />
   }
 
@@ -782,7 +800,7 @@ function App() {
             canvases={canvases}
             activeCanvasId={activeCanvasId}
             onSelectCanvas={setActiveCanvasId}
-            onCreateCanvas={handleCreateCanvas}
+            onCreateCanvas={() => setIsNewCanvasModalOpen(true)}
           />
         )}
 
@@ -835,11 +853,25 @@ function App() {
 
             <div className="legend">
               <div className="legend-row">
-                <span className="legend-swatch" style={{ background: 'var(--teal)' }} />
+                <span
+                  className="legend-swatch"
+                  style={{
+                    background:
+                      workspace?.node_types.find((t) => t.system_key === 'task')?.color_hex ??
+                      'var(--teal)',
+                  }}
+                />
                 Task
               </div>
               <div className="legend-row">
-                <span className="legend-swatch" style={{ background: 'var(--brass)' }} />
+                <span
+                  className="legend-swatch"
+                  style={{
+                    background:
+                      workspace?.node_types.find((t) => t.name.toLowerCase() === 'project')
+                        ?.color_hex ?? 'var(--brass)',
+                  }}
+                />
                 Project
               </div>
               <div className="legend-row">
@@ -973,6 +1005,7 @@ function App() {
               onChangeBody={handleChangeBody}
               onChangeField={handleChangeField}
               onArchive={handleArchiveSelected}
+              archiveArmed={archiveArmed}
               goToLabel={goToTarget?.label ?? null}
               onGoTo={handleGoToProjected}
             />
@@ -1004,6 +1037,13 @@ function App() {
           </div>
         )}
       </div>
+
+      {isNewCanvasModalOpen && (
+        <NewCanvasModal
+          onConfirm={(name) => void handleCreateCanvasConfirmed(name)}
+          onCancel={() => setIsNewCanvasModalOpen(false)}
+        />
+      )}
 
       {pendingConnection && (
         <ConnectEdgeModal

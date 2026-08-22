@@ -170,8 +170,8 @@ export function GraphCanvas({
   if (nodes.length === 0) {
     return (
       <div className="empty-canvas-hint">
-        Nothing captured yet on “{canvas.name}.” Use quick capture above to add your first
-        object.
+        Nothing captured yet on “{canvas.name}.” Use the capture field in the canvas toolbar
+        to add your first object.
       </div>
     )
   }

@@ -13,6 +13,7 @@ export interface ReferenceableNode {
 }
 
 interface InspectorProps {
+  archiveArmed?: boolean
   node: GraphNode | null
   nodeType: NodeType | undefined
   relations: RelationRow[]
@@ -224,7 +225,7 @@ function DescriptionField({ nodeId, body, onCommit }: DescriptionFieldProps) {
   )
 }
 
-export function Inspector({
+export function Inspector({ archiveArmed = false,
   node,
   nodeType,
   relations,
@@ -316,8 +317,12 @@ export function Inspector({
         </div>
       </div>
 
-      <button type="button" className="archive-button" onClick={onArchive}>
-        Archive (Delete)
+      <button
+        type="button"
+        className={archiveArmed ? 'archive-button archive-button-armed' : 'archive-button'}
+        onClick={onArchive}
+      >
+        {archiveArmed ? 'Confirm archive' : 'Archive'}
       </button>
       {goToLabel && onGoTo && (
         <button type="button" className="go-to-button" onClick={onGoTo}>

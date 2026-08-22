@@ -168,21 +168,21 @@ function ResourceRow({
       <span className="node-row-actions">
         {!isArchived && (
           <button type="button" onClick={() => void onArchiveResource(resource.id)}>
-            Arşivle
+            Archive
           </button>
         )}
         {confirmingDelete ? (
           <span className="node-row-confirm">
             <button type="button" onClick={() => void onDeleteResource(resource.id)}>
-              Kalıcı sil
+              Delete forever
             </button>
             <button type="button" onClick={() => setConfirmingDelete(false)}>
-              Vazgeç
+              Cancel
             </button>
           </span>
         ) : (
           <button type="button" onClick={() => setConfirmingDelete(true)}>
-            Sil
+            Delete…
           </button>
         )}
       </span>

@@ -819,6 +819,11 @@ select.status-select {
   cursor: pointer;
 }
 
+.archive-button-armed {
+  background: var(--coral);
+  color: #fff;
+}
+
 .archive-button:hover {
   filter: brightness(1.1);
 }
