@@ -9,6 +9,7 @@ from personal_graph_os.application.capture_service import CaptureService
 from personal_graph_os.application.semantic_schema import ensure_semantic_schema
 from personal_graph_os.application.services import ResourceService, new_workspace
 from personal_graph_os.application.telegram_adapters import (
+    TelegramChat,
     TelegramMessage,
     TelegramRateLimitedError,
     TelegramUpdate,
@@ -34,7 +35,7 @@ def _update(update_id: int) -> TelegramUpdate:
         message=TelegramMessage(
             message_id=update_id,
             date=1720000000,
-            chat={"id": 1},
+            chat=TelegramChat(id=1),
             from_=TelegramUser(id=99, is_bot=False),
             text="https://example.com/article",
         ),

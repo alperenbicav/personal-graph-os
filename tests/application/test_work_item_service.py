@@ -855,9 +855,9 @@ def test_rest_created_work_item_is_search_indexed(sqlite_connection: sqlite3.Con
     )
 
     hits = search_service.search(workspace.id, "distinctive searchable phrase").results
-    assert any(hit.node.title == "Searchable epic" for hit in hits)
+    assert any(hit.node is not None and hit.node.title == "Searchable epic" for hit in hits)
 
     service.delete(workspace.id, created.id)
 
     hits = search_service.search(workspace.id, "distinctive searchable phrase").results
-    assert not any(hit.node.title == "Searchable epic" for hit in hits)
+    assert not any(hit.node is not None and hit.node.title == "Searchable epic" for hit in hits)

@@ -11,6 +11,7 @@ import threading
 from collections.abc import AsyncGenerator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -23,6 +24,19 @@ from pydantic import AnyUrl
 from personal_graph_os.api.app import create_app
 from personal_graph_os.domain.graph import Node
 from personal_graph_os.domain.identifiers import NodeTypeId, WorkspaceId
+
+
+def _structured(result: types.CallToolResult) -> dict[str, Any]:
+    content = result.structuredContent
+    assert content is not None
+    return content
+
+
+def _first_text(result: types.CallToolResult) -> str:
+    content = result.content[0]
+    assert isinstance(content, types.TextContent)
+    return content.text
+
 
 
 def _free_port() -> int:
@@ -164,8 +178,7 @@ def test_real_client_calls_get_workspace_tool(running_server: _RunningServer) ->
     result = asyncio.run(_call_get_workspace(running_server))
 
     assert result.isError is False
-    assert result.structuredContent is not None
-    assert result.structuredContent["name"] == "Personal"
+    assert _structured(result)["name"] == "Personal"
 
 
 async def _call_get_node(server: _RunningServer, node_id: str) -> types.CallToolResult:
@@ -193,9 +206,8 @@ def test_real_client_get_node_bounds_a_pre_existing_oversized_row(
     result = asyncio.run(_call_get_node(running_server, oversized_node.id))
 
     assert result.isError is False
-    assert result.structuredContent is not None
-    assert len(result.structuredContent["body"].encode("utf-8")) <= 64 * 1024
-    field_values_bytes = len(json.dumps(result.structuredContent["field_values"]).encode("utf-8"))
+    assert len(_structured(result)["body"].encode("utf-8")) <= 64 * 1024
+    field_values_bytes = len(json.dumps(_structured(result)["field_values"]).encode("utf-8"))
     assert field_values_bytes <= 64 * 1024 + 2_000
 
 
@@ -251,14 +263,12 @@ def test_real_client_create_node_is_attributed_and_replay_safe(
     first, replay = asyncio.run(_call_create_node_twice(running_server))
 
     assert first.isError is False
-    assert first.structuredContent is not None
-    assert first.structuredContent["replayed"] is False
-    created_node_id = first.structuredContent["node"]["id"]
+    assert _structured(first)["replayed"] is False
+    created_node_id = _structured(first)["node"]["id"]
 
     assert replay.isError is False
-    assert replay.structuredContent is not None
-    assert replay.structuredContent["replayed"] is True
-    assert replay.structuredContent["node"]["id"] == created_node_id
+    assert _structured(replay)["replayed"] is True
+    assert _structured(replay)["node"]["id"] == created_node_id
 
 
 async def _call_create_node_replay_in_a_fresh_session(
@@ -287,13 +297,11 @@ def test_real_client_create_node_replay_survives_a_new_session(
     first, replay = asyncio.run(_call_create_node_replay_in_a_fresh_session(running_server))
 
     assert first.isError is False
-    assert first.structuredContent is not None
-    assert first.structuredContent["replayed"] is False
+    assert _structured(first)["replayed"] is False
 
     assert replay.isError is False
-    assert replay.structuredContent is not None
-    assert replay.structuredContent["replayed"] is True
-    assert replay.structuredContent["node"]["id"] == first.structuredContent["node"]["id"]
+    assert _structured(replay)["replayed"] is True
+    assert _structured(replay)["node"]["id"] == _structured(first)["node"]["id"]
 
 
 async def _call_create_node_with_a_changed_reason(
@@ -364,18 +372,15 @@ def test_real_client_preview_import_is_read_only_and_apply_import_is_replay_safe
     )
 
     assert preview.isError is False
-    assert preview.structuredContent is not None
-    assert preview.structuredContent["candidates"][0]["decision"] == "create"
+    assert _structured(preview)["candidates"][0]["decision"] == "create"
 
     assert first_apply.isError is False
-    assert first_apply.structuredContent is not None
-    assert first_apply.structuredContent["replayed"] is False
-    run_id = first_apply.structuredContent["run"]["id"]
+    assert _structured(first_apply)["replayed"] is False
+    run_id = _structured(first_apply)["run"]["id"]
 
     assert replay_apply.isError is False
-    assert replay_apply.structuredContent is not None
-    assert replay_apply.structuredContent["replayed"] is True
-    assert replay_apply.structuredContent["run"]["id"] == run_id
+    assert _structured(replay_apply)["replayed"] is True
+    assert _structured(replay_apply)["run"]["id"] == run_id
 
 
 async def _create_context_pack_then_read_its_resource(
@@ -393,8 +398,7 @@ async def _create_context_pack_then_read_its_resource(
                 "request_id": "acceptance-context-pack-source",
             },
         )
-        assert created.structuredContent is not None
-        node_id = created.structuredContent["node"]["id"]
+        node_id = _structured(created)["node"]["id"]
         pack_result = await session.call_tool(
             "pgos_create_context_pack",
             {
@@ -407,8 +411,7 @@ async def _create_context_pack_then_read_its_resource(
                 "request_id": "acceptance-context-pack-1",
             },
         )
-        assert pack_result.structuredContent is not None
-        pack_id = pack_result.structuredContent["context_pack"]["id"]
+        pack_id = _structured(pack_result)["context_pack"]["id"]
         resource = await session.read_resource(AnyUrl(f"pgos://context-packs/{pack_id}"))
         return pack_result, resource
 
@@ -419,12 +422,11 @@ def test_real_client_creates_context_pack_and_reads_its_materialized_resource(
     pack_result, resource = asyncio.run(_create_context_pack_then_read_its_resource(running_server))
 
     assert pack_result.isError is False
-    assert pack_result.structuredContent is not None
     assert len(resource.contents) == 1
     content = resource.contents[0]
     assert isinstance(content, types.TextResourceContents)
     materialized = json.loads(content.text)
-    expected_id = pack_result.structuredContent["context_pack"]["id"]
+    expected_id = _structured(pack_result)["context_pack"]["id"]
     assert materialized["context_pack"]["id"] == expected_id
     assert len(materialized["nodes"]) == 1
 
@@ -442,8 +444,7 @@ async def _create_node_via_mcp(server: _RunningServer, title: str, request_id: s
                 "request_id": request_id,
             },
         )
-        assert result.structuredContent is not None
-        return result.structuredContent["node"]["id"]
+        return _structured(result)["node"]["id"]
 
 
 def test_real_client_node_created_via_mcp_is_visible_via_rest(
@@ -503,7 +504,7 @@ def test_real_client_concurrent_tool_calls_do_not_deadlock(
 
     assert all(result.isError is False for result in results)
     node_ids = {
-        result.structuredContent["node"]["id"]
+        _structured(result)["node"]["id"]
         for result in results
         if result.structuredContent is not None
     }
@@ -532,8 +533,7 @@ def test_real_client_node_content_resembling_instructions_is_returned_as_inert_t
     result = asyncio.run(_create())
 
     assert result.isError is False
-    assert result.structuredContent is not None
-    assert result.structuredContent["node"]["title"] == injected_title
+    assert _structured(result)["node"]["title"] == injected_title
 
 
 def test_context_pack_survives_a_server_restart(tmp_path: Path) -> None:
@@ -545,8 +545,7 @@ def test_context_pack_survives_a_server_restart(tmp_path: Path) -> None:
         pack_result, _ = asyncio.run(_create_context_pack_then_read_its_resource(first_server))
     finally:
         first_server.stop()
-    assert pack_result.structuredContent is not None
-    pack_id = pack_result.structuredContent["context_pack"]["id"]
+    pack_id = _structured(pack_result)["context_pack"]["id"]
 
     second_app = create_app(db_path)
     second_server = _RunningServer(second_app, _free_port())
@@ -564,8 +563,7 @@ def test_context_pack_survives_a_server_restart(tmp_path: Path) -> None:
         second_server.stop()
 
     assert after_restart.isError is False
-    assert after_restart.structuredContent is not None
-    assert after_restart.structuredContent["id"] == pack_id
+    assert _structured(after_restart)["id"] == pack_id
 
 
 async def _initialize_with_wrong_token(server: _RunningServer) -> None:
@@ -599,7 +597,7 @@ async def _call_work_item_lifecycle(server: _RunningServer) -> list[types.CallTo
                 "request_id": "wi-req-1",
             },
         )
-        work_item_id = create.structuredContent["work_item"]["id"]
+        work_item_id = _structured(create)["work_item"]["id"]
         update = await session.call_tool(
             "pgos_update_work_item",
             {
@@ -645,19 +643,18 @@ def test_real_client_work_item_lifecycle_is_attributed_and_replay_safe(
     create, update, archive, listed, delete = asyncio.run(_call_work_item_lifecycle(running_server))
 
     assert create.isError is False
-    assert create.structuredContent["replayed"] is False
-    work_item_id = create.structuredContent["work_item"]["id"]
+    assert _structured(create)["replayed"] is False
+    work_item_id = _structured(create)["work_item"]["id"]
 
-    assert update.structuredContent["work_item"]["status"] == "in_progress"
-    assert update.structuredContent["work_item"]["priority"] == "high"
+    assert _structured(update)["work_item"]["status"] == "in_progress"
+    assert _structured(update)["work_item"]["priority"] == "high"
 
-    assert archive.structuredContent["recoverable"] is True
-    assert archive.structuredContent["work_item"]["is_archived"] is True
+    assert _structured(archive)["recoverable"] is True
+    assert _structured(archive)["work_item"]["is_archived"] is True
 
-    assert listed.structuredContent is not None
-    assert all(item["id"] != work_item_id for item in listed.structuredContent["work_items"])
+    assert all(item["id"] != work_item_id for item in _structured(listed)["work_items"])
 
-    assert delete.structuredContent["recoverable"] is False
+    assert _structured(delete)["recoverable"] is False
 
 
 def test_real_client_hard_delete_requires_confirmation(running_server: _RunningServer) -> None:
@@ -675,7 +672,7 @@ def test_real_client_hard_delete_requires_confirmation(running_server: _RunningS
                     "request_id": "wi-guard-1",
                 },
             )
-            work_item_id = create.structuredContent["work_item"]["id"]
+            work_item_id = _structured(create)["work_item"]["id"]
             return await session.call_tool(
                 "pgos_delete_work_item",
                 {
@@ -690,4 +687,4 @@ def test_real_client_hard_delete_requires_confirmation(running_server: _RunningS
 
     result = asyncio.run(call_without_confirm(running_server))
     assert result.isError is True
-    assert "destructive" in result.content[0].text
+    assert "destructive" in _first_text(result)

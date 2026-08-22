@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import httpx
 
@@ -58,7 +59,7 @@ def test_complete_returns_final_text() -> None:
 
 
 def test_complete_parses_tool_calls_and_sends_responses_shape() -> None:
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content)
@@ -112,7 +113,7 @@ def test_complete_parses_tool_calls_and_sends_responses_shape() -> None:
 
 
 def test_complete_omits_tools_and_reasoning_when_unconfigured() -> None:
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content)

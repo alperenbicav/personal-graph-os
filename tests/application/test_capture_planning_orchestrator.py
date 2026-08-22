@@ -376,6 +376,7 @@ def test_a_replayed_summarize_operation_does_not_re_run_enrichment(
 
     assert first_outcome.was_replayed is False
     assert second_outcome.was_replayed is True
+    assert first_outcome.resource_id is not None
     resource = SqliteResourceRepository(sqlite_connection).get(first_outcome.resource_id)
     assert resource is not None
     profile = SqliteResourceEnrichmentProfileRepository(sqlite_connection).get_by_identifier(

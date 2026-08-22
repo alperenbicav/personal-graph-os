@@ -91,6 +91,7 @@ from personal_graph_os.application.file_service import (
 )
 from personal_graph_os.application.projections import ProjectionService
 from personal_graph_os.application.research_dashboard import ResearchDashboardService
+from personal_graph_os.application.resource_content_service import ResourceContentNotFoundError
 from personal_graph_os.application.resource_detail_service import ResourceDetailService
 from personal_graph_os.application.search_service import SearchService
 from personal_graph_os.application.services import (
@@ -738,6 +739,7 @@ def create_app(
         StatusDefinitionNotFoundError,
         EdgeTypeNotFoundError,
         ResourceNotFoundError,
+        ResourceContentNotFoundError,
         SavedViewNotFoundError,
         WorkflowStepNodeTypeMissingError,
         FileServiceNodeNotFoundError,

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from personal_graph_os.domain.errors import DomainError
 
@@ -69,7 +69,9 @@ class TelegramMessage(BaseModel):
     message_id: int
     date: int
     chat: TelegramChat
-    from_: TelegramUser | None = Field(default=None, alias="from")
+    from_: TelegramUser | None = Field(
+        default=None, validation_alias=AliasChoices("from", "from_")
+    )
     text: str | None = None
     caption: str | None = None
     document: TelegramDocument | None = None
