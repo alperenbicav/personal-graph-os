@@ -447,6 +447,18 @@ function App() {
     [selectedNodeId],
   )
 
+  const handleRenameWorkItem = useCallback(
+    async (workItem: WorkItem, title: string) => {
+      const updated = await api.updateNode(workItem.node_id, { title })
+      setNodes((current) => current.map((node) => (node.id === updated.id ? updated : node)))
+      setWorkItems((current) =>
+        current.map((entry) => (entry.id === workItem.id ? { ...entry, title } : entry)),
+      )
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+
   const {
     handleCreateWorkItem,
     handleUpdateWorkItem,
@@ -776,6 +788,7 @@ function App() {
               onRemoveChecklistItem={handleRemoveChecklistItem}
               onReorderChecklistItems={handleReorderChecklistItems}
               onAttachDocument={handleAttachWorkItemDocument}
+            onRenameWorkItem={handleRenameWorkItem}
               onDetachDocument={handleDetachWorkItemDocument}
             />
           </div>
