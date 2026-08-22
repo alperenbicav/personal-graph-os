@@ -505,13 +505,6 @@ def create_app(
         lambda: SqliteResearchUnitOfWork(connection),
     )
     telegram_client = build_telegram_client_from_env(os.environ, transport=telegram_transport)
-    app.state.telegram_poller = None
-    app.state.telegram_service = TelegramService(
-        telegram_client,
-        app.state.capture_planning_orchestrator,
-        default_workspace.id,
-        lambda: SqliteResearchUnitOfWork(connection),
-    )
 
     app.state.export_service = ExportService(
         workspace_repository,
