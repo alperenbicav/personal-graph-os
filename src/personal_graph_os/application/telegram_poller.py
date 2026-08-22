@@ -8,6 +8,7 @@ failure so the cursor never skips a failed update). `run()` is the thin producti
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable
 
@@ -17,6 +18,8 @@ from personal_graph_os.application.telegram_adapters import (
     TelegramRateLimitedError,
 )
 from personal_graph_os.application.telegram_service import TelegramService
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_POLL_TIMEOUT_SECONDS = 25
 _DEFAULT_BACKOFF_SECONDS = 3.0
@@ -60,11 +63,22 @@ class TelegramPoller:
         """Poll until `should_stop()` returns True, backing off on Telegram failures/rate limits.
 
         Runs in the caller's thread (the app wires it onto a daemon thread in the lifespan).
+        Any unexpected exception is logged with its traceback and the loop backs off and
+        continues: a single failing poll batch must never silently kill polling for the rest
+        of the process lifetime.
         """
         while not should_stop():
             try:
                 self.poll_once()
-            except (TelegramRateLimitedError, TelegramError):
+            except TelegramRateLimitedError:
+                logger.warning("Telegram rate limit hit; backing off %.1fs", self._backoff_seconds)
+                time.sleep(self._backoff_seconds)
+            except TelegramError as error:
+                logger.warning("Telegram poll failed (%s); retrying in %.1fs", error,
+                               self._backoff_seconds)
+                time.sleep(self._backoff_seconds)
+            except Exception:
+                logger.exception("Unexpected telegram poller failure; continuing after backoff")
                 time.sleep(self._backoff_seconds)
             else:
                 time.sleep(self._idle_sleep_seconds)

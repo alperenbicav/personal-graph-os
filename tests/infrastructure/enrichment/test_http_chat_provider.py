@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import httpx
 import pytest
@@ -50,7 +51,7 @@ def _provider(handler) -> HttpChatEnrichmentProvider:
 
 
 def test_reasoning_effort_is_passed_through_when_configured() -> None:
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content)

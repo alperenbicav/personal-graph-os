@@ -70,6 +70,14 @@ def _fixture(sqlite_connection: sqlite3.Connection):
     return node_service, resource_service, search_service, workspace.id, task_type
 
 
+def _node_ids(results):
+    return [result.node.id for result in results if result.node is not None]
+
+
+def _node_titles(results):
+    return [result.node.title for result in results if result.node is not None]
+
+
 def test_capture_indexes_title_and_search_finds_it(sqlite_connection: sqlite3.Connection) -> None:
     node_service, _resource_service, search_service, workspace_id, task_type = _fixture(
         sqlite_connection
@@ -78,7 +86,7 @@ def test_capture_indexes_title_and_search_finds_it(sqlite_connection: sqlite3.Co
 
     results = search_service.search(workspace_id, "attention").results
 
-    assert [result.node.title for result in results] == ["Attention Is All You Need"]
+    assert _node_titles(results) == ["Attention Is All You Need"]
 
 
 def test_update_reindexes_so_search_reflects_the_new_title(
@@ -91,7 +99,7 @@ def test_update_reindexes_so_search_reflects_the_new_title(
     node_service.update(node.id, title="Renamed title")
 
     assert search_service.search(workspace_id, "old").results == ()
-    assert [r.node.title for r in search_service.search(workspace_id, "renamed").results] == [
+    assert _node_titles(search_service.search(workspace_id, "renamed").results) == [
         "Renamed title"
     ]
 
@@ -107,7 +115,7 @@ def test_archived_nodes_are_excluded_from_search_by_default(
 
     assert search_service.search(workspace_id, "findable").results == ()
     included = search_service.search(workspace_id, "findable", include_archived=True).results
-    assert [r.node.title for r in included] == ["Findable thing"]
+    assert _node_titles(included) == ["Findable thing"]
 
 
 def test_search_matches_resource_identity_and_returns_the_backing_node(
@@ -126,7 +134,7 @@ def test_search_matches_resource_identity_and_returns_the_backing_node(
     results = search_service.search(workspace_id, "arxiv").results
 
     assert len(results) == 1
-    assert results[0].node.id == resource.node_id
+    assert _node_ids(results) == [resource.node_id]
     assert results[0].resource is not None
     assert results[0].resource.id == resource.id
 
@@ -154,7 +162,7 @@ def test_search_finds_a_custom_text_field_value(sqlite_connection: sqlite3.Conne
 
     results = search_service.search(workspace_id, "ultrauniqueprobe").results
 
-    assert [r.node.id for r in results] == [node.id]
+    assert _node_ids(results) == [node.id]
 
 
 def test_search_ignores_a_non_text_field_value(sqlite_connection: sqlite3.Connection) -> None:
@@ -211,7 +219,7 @@ def test_backfill_reindexes_a_custom_text_field_value_after_a_restart(
     )
 
     results = search_service.search(workspace_id, "restartprobe").results
-    assert [r.node.id for r in results] == [node.id]
+    assert _node_ids(results) == [node.id]
 
 
 def test_search_is_workspace_scoped(sqlite_connection: sqlite3.Connection) -> None:
@@ -246,9 +254,7 @@ def test_schema_change_from_text_to_non_text_stops_the_value_from_matching(
     notes_field = next(f for f in task_type.field_definitions if f.name == "Notes")
     node = node_service.capture(workspace_id, task_type.id, "A task")
     node_service.update(node.id, field_values={notes_field.id: "schemaprobeone"})
-    assert [r.node.id for r in search_service.search(workspace_id, "schemaprobeone").results] == [
-        node.id
-    ]
+    assert _node_ids(search_service.search(workspace_id, "schemaprobeone").results) == [node.id]
 
     schema_service = _schema_service(sqlite_connection)
     schema_service.update_field_definition(
@@ -274,7 +280,7 @@ def test_schema_change_from_non_text_to_text_makes_the_value_searchable(
         workspace_id, task_type.id, priority_field.id, field_type=FieldType.TEXT
     )
 
-    assert [r.node.id for r in search_service.search(workspace_id, "high").results] == [node.id]
+    assert _node_ids(search_service.search(workspace_id, "high").results) == [node.id]
 
 
 def test_removing_an_unused_text_field_reindexes_affected_nodes_without_error(
@@ -292,9 +298,7 @@ def test_removing_an_unused_text_field_reindexes_affected_nodes_without_error(
     schema_service = _schema_service(sqlite_connection)
     schema_service.remove_field_definition(workspace_id, task_type.id, notes_field.id)
 
-    assert [r.node.id for r in search_service.search(workspace_id, "removable-field").results] == [
-        node.id
-    ]
+    assert _node_ids(search_service.search(workspace_id, "removable-field").results) == [node.id]
 
 
 def test_a_rejected_schema_change_does_not_alter_the_search_index(
@@ -313,9 +317,7 @@ def test_a_rejected_schema_change_does_not_alter_the_search_index(
             workspace_id, task_type.id, notes_field.id, field_type=FieldType.NUMBER
         )
 
-    assert [r.node.id for r in search_service.search(workspace_id, "schemaprobethree").results] == [
-        node.id
-    ]
+    assert _node_ids(search_service.search(workspace_id, "schemaprobethree").results) == [node.id]
 
 
 def test_schema_change_reindex_survives_a_restart(

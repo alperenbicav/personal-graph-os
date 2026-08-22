@@ -1,9 +1,10 @@
 """SQLite implementation of `ResearchUnitOfWork` using explicit `BEGIN`/`SAVEPOINT`.
 
-The HTTP API's single shared connection already serializes all request handling behind one
-`anyio.Lock` (see `personal_graph_os.api.app`), so this adapter does not need to defend against
-concurrent writers on the same connection — only against a partially applied multi-table write
-when a later step in the same operation fails.
+Concurrency model: the HTTP API's request connection serializes all request handling behind
+one `anyio.Lock` (see `personal_graph_os.api.app`), and the Telegram poller writes through its
+own connection. Cross-connection writers are serialized by SQLite itself (WAL journaling plus
+the `busy_timeout` set in `open_connection`), so this adapter only has to defend against a
+partially applied multi-table write when a later step in the same operation fails.
 """
 
 from __future__ import annotations

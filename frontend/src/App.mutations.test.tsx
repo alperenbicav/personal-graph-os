@@ -141,7 +141,9 @@ describe('status change and archive failure handling', () => {
 
     mockedApi.archiveNode.mockRejectedValue(new Error('archive failed'))
 
-    fireEvent.click(screen.getByRole('button', { name: /archive \(delete\)/i }))
+    // Two-step confirmation: first click arms, second click attempts the archive.
+    fireEvent.click(screen.getByRole('button', { name: 'Archive' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm archive' }))
 
     await screen.findByText(/could not archive that object/i)
     expect(screen.getByText('Write report')).toBeInTheDocument()

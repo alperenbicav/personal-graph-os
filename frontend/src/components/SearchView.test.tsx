@@ -98,3 +98,16 @@ describe('SearchView', () => {
     expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument()
   })
 })
+
+  it('renders an error state when the search request fails', async () => {
+    const onSearch = vi.fn().mockRejectedValue(new Error('index offline'))
+    render(<SearchView onSearch={onSearch} selectedNodeId={null} onSelectNode={() => {}} />)
+
+    fireEvent.change(screen.getByLabelText('Search'), { target: { value: 'attention' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(/search failed/i)
+      expect(screen.getByRole('alert')).toHaveTextContent('index offline')
+    })
+  })

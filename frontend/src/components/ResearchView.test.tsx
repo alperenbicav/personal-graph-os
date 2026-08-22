@@ -261,7 +261,7 @@ describe('ResearchView', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Arşivle' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Archive' }))
     await Promise.resolve()
 
     expect(onArchiveResource).toHaveBeenCalledWith('r1')
@@ -281,7 +281,7 @@ describe('ResearchView', () => {
       />,
     )
 
-    expect(screen.queryByRole('button', { name: 'Arşivle' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Archive' })).not.toBeInTheDocument()
   })
 
   it('requires an explicit confirmation before hard-deleting a row', async () => {
@@ -299,11 +299,11 @@ describe('ResearchView', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Sil' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete…' }))
     expect(onDeleteResource).not.toHaveBeenCalled()
-    expect(screen.getByRole('button', { name: 'Kalıcı sil' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete forever' })).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Kalıcı sil' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete forever' }))
     await Promise.resolve()
 
     expect(onDeleteResource).toHaveBeenCalledWith('r1')

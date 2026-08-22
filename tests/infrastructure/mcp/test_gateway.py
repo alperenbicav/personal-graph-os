@@ -682,7 +682,7 @@ def test_relation_proposal_re_accept_and_re_reject_are_guarded(
     sqlite_connection: sqlite3.Connection, tmp_path: Path
 ) -> None:
     """S9-F04: an already-resolved proposal cannot be re-accepted or (if applied) rejected."""
-    from personal_graph_os.domain.enrichment import RelationProposalStatus
+    from personal_graph_os.domain.enrichment import ProposedRelationKind, RelationProposalStatus
     from personal_graph_os.domain.extraction import EvidenceKind, ExtractionEvidence
 
     ctx = _fixture(sqlite_connection, tmp_path)
@@ -713,7 +713,9 @@ def test_relation_proposal_re_accept_and_re_reject_are_guarded(
 
     gateway._enrichment_service = EnrichmentService(
         SqliteWorkspaceRepository(sqlite_connection),
-        FakeEnrichmentProvider(auto_relate_to=(("Target", "relates_to", 0.5),)),
+        FakeEnrichmentProvider(
+            auto_relate_to=(("Target", ProposedRelationKind.RELATES_TO, 0.5),)
+        ),
         lambda: SqliteResearchUnitOfWork(sqlite_connection),
         auto_apply_confidence_threshold=0.8,
     )

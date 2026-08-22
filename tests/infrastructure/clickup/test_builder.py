@@ -33,6 +33,8 @@ def test_the_configured_base_url_is_used_for_requests() -> None:
         transport=httpx.MockTransport(handler),
     )
 
+    assert client is not None
+
     try:
         client.get_task("task-1")
     except ClickUpTaskNotFoundError:
@@ -52,6 +54,8 @@ def test_the_default_base_url_is_used_when_no_override_is_set() -> None:
         {"PGOS_CLICKUP_API_TOKEN": "secret-token"},
         transport=httpx.MockTransport(handler),
     )
+
+    assert client is not None
 
     try:
         client.get_task("task-1")

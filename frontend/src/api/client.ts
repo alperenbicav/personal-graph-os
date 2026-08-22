@@ -5,9 +5,6 @@ import type {
   Canvas,
   CanvasPlacement,
   Collection,
-  DiscoveryCandidateInput,
-  DiscoveryPreview,
-  DiscoveryRun,
   DocumentDetail,
   DocumentKind,
   DocumentLinkTargetType,
@@ -19,19 +16,15 @@ import type {
   GraphEdge,
   GraphNode,
   NodeType,
-  ProjectionItem,
-  ProjectionQuery,
   ResearchDashboard,
   Resource,
   ResourceDetail,
   ResourceKind,
   ResourceListFilters,
-  SavedView,
   SearchResponse,
   SearchScope,
   StatusDefinition,
   Tag,
-  ViewKind,
   WikiDocument,
   WorkflowChainStep,
   WorkItem,
@@ -42,7 +35,6 @@ import type {
   WorkItemStatus,
   WorkItemType,
   Workspace,
-  WorkspaceResearchSettings,
 } from '../types'
 import { getToken, reportUnauthorized } from './session'
 
@@ -511,10 +503,6 @@ export function addDocumentLink(
   })
 }
 
-export function removeDocumentLink(documentLinkId: string): Promise<void> {
-  return request(`/document-links/${encodeURIComponent(documentLinkId)}`, { method: 'DELETE' })
-}
-
 export function listCollections(workspaceId: string): Promise<Collection[]> {
   return request(`/collections?workspace_id=${encodeURIComponent(workspaceId)}`)
 }
@@ -532,10 +520,6 @@ export function createCollection(
 
 export function listTags(workspaceId: string): Promise<Tag[]> {
   return request(`/tags?workspace_id=${encodeURIComponent(workspaceId)}`)
-}
-
-export function createTag(workspaceId: string, name: string): Promise<Tag> {
-  return request('/tags', { method: 'POST', body: JSON.stringify({ workspace_id: workspaceId, name }) })
 }
 
 export function listWorkItems(workspaceId: string): Promise<WorkItem[]> {
@@ -700,64 +684,8 @@ export function undoActivityEvent(
   })
 }
 
-export function listSavedViews(workspaceId: string): Promise<SavedView[]> {
-  return request(`/saved-views?workspace_id=${encodeURIComponent(workspaceId)}`)
-}
-
-export function createSavedView(
-  workspaceId: string,
-  name: string,
-  viewKind: ViewKind,
-  query: ProjectionQuery = {},
-): Promise<SavedView> {
-  return request('/saved-views', {
-    method: 'POST',
-    body: JSON.stringify({ workspace_id: workspaceId, name, view_kind: viewKind, query }),
-  })
-}
-
-export function deleteSavedView(savedViewId: string): Promise<void> {
-  return request(`/saved-views/${encodeURIComponent(savedViewId)}`, { method: 'DELETE' })
-}
-
-interface ViewRequestBase {
-  workspace_id: string
-  query?: ProjectionQuery
-  saved_view_id?: string
-}
-
-export function evaluateTableView(payload: ViewRequestBase): Promise<ProjectionItem[]> {
-  return request('/views/table', { method: 'POST', body: JSON.stringify(payload) })
-}
-
-export function evaluateKanbanView(
-  payload: ViewRequestBase & { group_by: string },
-): Promise<Record<string, ProjectionItem[]>> {
-  return request('/views/kanban', { method: 'POST', body: JSON.stringify(payload) })
-}
-
-export function evaluateTimelineView(
-  payload: ViewRequestBase & { date_field: string },
-): Promise<ProjectionItem[]> {
-  return request('/views/timeline', { method: 'POST', body: JSON.stringify(payload) })
-}
-
 export function getResearchDashboard(workspaceId: string): Promise<ResearchDashboard> {
   return request(`/research/dashboard?workspace_id=${encodeURIComponent(workspaceId)}`)
-}
-
-export function getResearchSettings(workspaceId: string): Promise<WorkspaceResearchSettings> {
-  return request(`/research-settings?workspace_id=${encodeURIComponent(workspaceId)}`)
-}
-
-export function updateResearchSettings(
-  workspaceId: string,
-  staleAfterDays: number,
-): Promise<WorkspaceResearchSettings> {
-  return request(`/research-settings?workspace_id=${encodeURIComponent(workspaceId)}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ stale_after_days: staleAfterDays }),
-  })
 }
 
 export interface AdvanceWorkflowChainPatch {
@@ -778,34 +706,6 @@ export function advanceWorkflowChain(
       source_node_id: sourceNodeId,
       step,
       ...patch,
-    }),
-  })
-}
-
-export function previewDiscovery(
-  workspaceId: string,
-  instruction: string,
-  candidates: DiscoveryCandidateInput[],
-): Promise<DiscoveryPreview> {
-  return request('/discovery/preview', {
-    method: 'POST',
-    body: JSON.stringify({ workspace_id: workspaceId, instruction, candidates }),
-  })
-}
-
-export function applyDiscovery(
-  workspaceId: string,
-  agentIdentity: string,
-  instruction: string,
-  candidates: DiscoveryCandidateInput[],
-): Promise<DiscoveryRun> {
-  return request('/discovery/apply', {
-    method: 'POST',
-    body: JSON.stringify({
-      workspace_id: workspaceId,
-      agent_identity: agentIdentity,
-      instruction,
-      candidates,
     }),
   })
 }

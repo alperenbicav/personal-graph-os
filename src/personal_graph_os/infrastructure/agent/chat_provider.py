@@ -17,7 +17,6 @@ is separate, bounded, and recorded in WORK.md.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 
 import httpx
 
@@ -27,25 +26,23 @@ from personal_graph_os.application.agent_adapters import (
     AgentTool,
     AgentToolCall,
 )
+from personal_graph_os.infrastructure.llm_chat import (
+    ChatCompletionsProviderConfig,
+    open_chat_completions_client,
+)
 
-
-@dataclass(frozen=True)
-class AgentChatProviderConfig:
-    """Everything needed to reach one configured chat-completions endpoint. `api_key` is never
-    logged, persisted, or otherwise surfaced outside the `Authorization` request header."""
-
-    base_url: str
-    api_key: str
-    model_name: str
-    timeout_seconds: float = 30.0
-    reasoning_effort: str | None = None
+# The agent speaks the Responses API but shares the same config shape and client plumbing as the
+# other chat providers (ST-06); the name below predates that consolidation and is kept for the
+# module's existing callers.
+AgentChatProviderConfig = ChatCompletionsProviderConfig
 
 
 class AgentChatProvider:
-    """A minimal tool-calling client over an OpenAI-compatible `/chat/completions` endpoint.
+    """A minimal tool-calling client over an OpenAI-compatible `/v1/responses` endpoint.
 
-    The caller owns the conversation: it passes the full `messages` history (including any prior
-    `assistant` tool_calls and `tool` results) and receives one turn at a time.
+    The caller owns the conversation: it passes the full `input_items` history (including any
+    prior `function_call` items and their paired `reasoning` items) and receives one turn at a
+    time.
     """
 
     def __init__(
@@ -55,12 +52,7 @@ class AgentChatProvider:
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self._config = config
-        self._client = httpx.Client(
-            base_url=config.base_url,
-            timeout=config.timeout_seconds,
-            headers={"Authorization": f"Bearer {config.api_key}"},
-            transport=transport,
-        )
+        self._client = open_chat_completions_client(config, transport=transport)
 
     @property
     def name(self) -> str:

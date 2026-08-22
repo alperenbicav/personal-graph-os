@@ -132,12 +132,13 @@ describe('non-destructive error handling', () => {
     mockedApi.listNodes.mockResolvedValue([])
     mockedApi.listPlacements.mockResolvedValue([])
     mockedApi.createCanvas.mockRejectedValue(new Error('server exploded'))
-    vi.spyOn(window, 'prompt').mockReturnValue('New canvas')
 
     render(<App />)
     await screen.findByText('Personal Graph OS')
 
     fireEvent.click(screen.getByRole('button', { name: /new canvas/i }))
+    fireEvent.change(screen.getByLabelText('Canvas name'), { target: { value: 'New canvas' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create canvas' }))
 
     await screen.findByText(/could not create canvas/i)
     // Scoped to the canvas rail: "Research" is also this app's own nav tab label.

@@ -5,6 +5,7 @@ as a FastAPI app for the local frontend.
 from __future__ import annotations
 
 import os
+import sqlite3
 import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -91,6 +92,7 @@ from personal_graph_os.application.file_service import (
 )
 from personal_graph_os.application.projections import ProjectionService
 from personal_graph_os.application.research_dashboard import ResearchDashboardService
+from personal_graph_os.application.resource_content_service import ResourceContentNotFoundError
 from personal_graph_os.application.resource_detail_service import ResourceDetailService
 from personal_graph_os.application.search_service import SearchService
 from personal_graph_os.application.services import (
@@ -231,13 +233,23 @@ def create_app(
     trusted_hosts: list[str] | None = None,
     cors_origins: list[str] | None = None,
     static_dir: Path | str | None = None,
+    enable_docs: bool = False,
     enrichment_provider_transport: httpx.BaseTransport | None = None,
     work_planning_provider_transport: httpx.BaseTransport | None = None,
     clickup_transport: httpx.BaseTransport | None = None,
     telegram_transport: httpx.BaseTransport | None = None,
     agent_chat_transport: httpx.BaseTransport | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="Personal Graph OS API")
+    # The interactive docs surface (`/docs`, `/redoc`, `/openapi.json`) is served by FastAPI
+    # outside every router dependency, so bearer auth cannot cover it; it is disabled by
+    # default to keep "every route requires the token" true, and is an explicit local
+    # development opt-in (`PGOS_ENABLE_DOCS=1` in `api/__main__.py`).
+    app = FastAPI(
+        title="Personal Graph OS API",
+        docs_url="/docs" if enable_docs else None,
+        redoc_url="/redoc" if enable_docs else None,
+        openapi_url="/openapi.json" if enable_docs else None,
+    )
 
     # Both default to permissive/absent so `create_app(tmp_path)` keeps working for the
     # existing test suite and any programmatic embedding without a frontend build; the real
@@ -493,13 +505,6 @@ def create_app(
         lambda: SqliteResearchUnitOfWork(connection),
     )
     telegram_client = build_telegram_client_from_env(os.environ, transport=telegram_transport)
-    app.state.telegram_poller = None
-    app.state.telegram_service = TelegramService(
-        telegram_client,
-        app.state.capture_planning_orchestrator,
-        default_workspace.id,
-        lambda: SqliteResearchUnitOfWork(connection),
-    )
 
     app.state.export_service = ExportService(
         workspace_repository,
@@ -595,11 +600,26 @@ def create_app(
         if agent_chat_provider is not None
         else None
     )
+    # The poller runs on its own daemon thread, so it gets its own SQLite connection: sharing
+    # the request connection would let the thread's BEGIN/commit interleave with a request's
+    # transaction on the same handle (the `db_lock` is an anyio.Lock a foreign thread cannot
+    # acquire). WAL + `busy_timeout` serialize cross-connection writers at the database level.
+    telegram_connection: sqlite3.Connection | None = (
+        open_connection(database_path, check_same_thread=False)
+        if telegram_client is not None
+        else None
+    )
+
+    def _telegram_unit_of_work() -> SqliteResearchUnitOfWork:
+        assert telegram_connection is not None  # only built when the client exists
+        return SqliteResearchUnitOfWork(telegram_connection)
+
+    app.state.telegram_connection = telegram_connection
     app.state.telegram_service = TelegramService(
         telegram_client,
         app.state.capture_planning_orchestrator,
         default_workspace.id,
-        lambda: SqliteResearchUnitOfWork(connection),
+        _telegram_unit_of_work,
         agent_loop=agent_loop,
         pdf_text_extractor=extract_pdf_text,
     )
@@ -637,6 +657,8 @@ def create_app(
             if telegram_thread is not None:
                 telegram_stop.set()
                 telegram_thread.join(timeout=_TELEGRAM_POLLER_JOIN_TIMEOUT_SECONDS)
+            if app.state.telegram_connection is not None:
+                app.state.telegram_connection.close()
 
     app.router.lifespan_context = _lifespan
     # A plain Starlette `Route` wrapping a raw ASGI app, not `Mount`: `Mount`'s path pattern
@@ -738,6 +760,7 @@ def create_app(
         StatusDefinitionNotFoundError,
         EdgeTypeNotFoundError,
         ResourceNotFoundError,
+        ResourceContentNotFoundError,
         SavedViewNotFoundError,
         WorkflowStepNodeTypeMissingError,
         FileServiceNodeNotFoundError,

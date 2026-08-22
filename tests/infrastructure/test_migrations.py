@@ -73,6 +73,7 @@ _ALL_MIGRATION_NAMES = (
     "0017_work_item_archive.sql",
     "0018_channel_sync_and_external_url.sql",
     "0019_search_scope.sql",
+    "0020_resource_content.sql",
 )
 
 
@@ -135,6 +136,7 @@ def test_upgrading_an_existing_0001_database_preserves_ids_and_data() -> None:
         "0017_work_item_archive.sql",
         "0018_channel_sync_and_external_url.sql",
         "0019_search_scope.sql",
+        "0020_resource_content.sql",
     )
 
     resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()
@@ -355,6 +357,7 @@ def test_upgrading_an_existing_0007_database_preserves_resources_and_nodes() -> 
         "0017_work_item_archive.sql",
         "0018_channel_sync_and_external_url.sql",
         "0019_search_scope.sql",
+        "0020_resource_content.sql",
     )
 
     resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()
@@ -418,6 +421,7 @@ def test_upgrading_a_pre_0011_database_with_duplicate_edges_keeps_one_canonical_
         "0017_work_item_archive.sql",
         "0018_channel_sync_and_external_url.sql",
         "0019_search_scope.sql",
+        "0020_resource_content.sql",
     )
 
     rows = connection.execute(
@@ -632,7 +636,7 @@ def test_0019_backfills_the_search_scope_from_the_canonical_tables() -> None:
     connection.row_factory = sqlite3.Row
     applied_migration_names(connection)
     versions = resources.files("personal_graph_os.infrastructure.sqlite.migrations.versions")
-    pre_0019 = [name for name in _ALL_MIGRATION_NAMES if not name.startswith("0019")]
+    pre_0019 = _ALL_MIGRATION_NAMES[:18]
     for name in pre_0019:
         apply_migration_script(connection, name, (versions / name).read_text(encoding="utf-8"))
 
@@ -680,7 +684,10 @@ def test_0019_backfills_the_search_scope_from_the_canonical_tables() -> None:
 
     newly_applied = run_migrations(connection)
 
-    assert newly_applied == ("0019_search_scope.sql",)
+    assert newly_applied == (
+        "0019_search_scope.sql",
+        "0020_resource_content.sql",
+    )
     rows = connection.execute(
         "SELECT entity_type, entity_id, scope FROM search_documents ORDER BY entity_id, entity_type"
     ).fetchall()

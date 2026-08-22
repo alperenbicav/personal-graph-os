@@ -2,7 +2,7 @@
 
 A **local-first, graph-first personal workspace**. Every task, note, project, decision,
 research resource, and file lives as a typed node or edge in one canonical SQLite database on
-your own machine. Canvas, Table, Kanban, Timeline, Search, Research, and Activity are all just
+your own machine. Canvas, Tasks (Kanban), Wiki, Research, Repositories, Search, and Activity are all just
 different *views* (projections) over that same data — nothing is duplicated or converted
 between them.
 
@@ -47,7 +47,7 @@ between two tools and they drift apart.
 
 Personal Graph OS instead keeps **one typed graph of nodes and edges** as the single source of
 truth. A "task" and a "research note" are both just nodes with a schema; every view (Canvas,
-Table, Kanban, Timeline, Search) reads that same graph and renders it differently — there is no
+Tasks, Research, Search) reads that same graph and renders it differently — there is no
 second copy to keep in sync, and no export/import step between your task list and your notes.
 
 ## Core concepts
@@ -59,7 +59,7 @@ second copy to keep in sync, and no export/import step between your task list an
 | **Node type / Field / Status** | User-editable schema. You can add new node types, custom fields (text/number/boolean/date/select/URL/file path/object reference), and custom statuses through the Schema editor — no code change needed. |
 | **Canvas / Placement** | A node can be placed on one or more canvases at an (x, y) position — the visual graph view. A node doesn't have to be placed anywhere to exist. |
 | **Resource** | The backing record for anything you're *researching* (an article, a repo, a paper). A Resource always owns exactly one Node (graph/content/archive lives on the node; research lifecycle lives on the Resource). |
-| **Discovery** | Import external candidates (a list of URLs/titles you already have) as Resources + Nodes, with a preview step before you commit. This app never fetches URLs or searches the web itself. |
+| **Discovery** | Import external candidates (a list of URLs/titles you already have) as Resources + Nodes, with a preview step before you commit. Discovery itself never fetches anything; separate opt-in capture features do fetch — see [Network-facing features](#network-facing-features). |
 | **Saved view** | A named, reusable projection (view kind + filter/sort) you can re-open later. |
 | **Attachment** | A file you upload, copied into the workspace's managed storage and checksummed. |
 | **File reference** | A *non-copying* pointer to a file that lives elsewhere (e.g. in a git repository on your machine) — recorded by machine name + relative path, optionally verified against an absolute path. |
@@ -72,8 +72,8 @@ second copy to keep in sync, and no export/import step between your task list an
   workspace, keyboard-operable object list as an accessible alternative to dragging.
 - **Schema editor** — add/edit node types, fields (8 field types including `object_reference`
   and `select`), statuses, and edge types, all from the UI.
-- **Structured views** — Table, Kanban (grouped by status), and Timeline (grouped by date),
-  each a live projection of the same graph, with saved views.
+- **Structured views** — the Tasks tab renders work items grouped Kanban-style; every view is
+  a live projection of the same graph.
 - **Research workflow** — a dashboard of resources by lifecycle status, discovery
   preview/import, a guided "next step" workflow chain (Resource → Takeaway → Decision → Task →
   Implementation) and a detail panel per resource.
@@ -88,6 +88,8 @@ second copy to keep in sync, and no export/import step between your task list an
 - **Agent-native MCP server** — the same data, exposed as bounded, authenticated MCP tools so
   an AI agent can read, capture, connect, import, and build Context Packs — with idempotent
   mutations (safe to retry) and full attribution in the activity log.
+- **Network-facing features (all opt-in, off by default)** — see
+  [Network-facing features](#network-facing-features).
 - **Desktop PWA** — installable, works offline for the app shell, same-origin auth, with an
   update-ready prompt when a new build is deployed.
 - **Remote access (optional)** — documented pattern for reaching your own instance from another
@@ -225,8 +227,9 @@ Use the nav tabs to switch between:
 - **Discovery**: paste a list of candidates, one per line — `identifier | title | description
   (optional)` (identifier is typically a URL) — along with an instruction string, click
   **Preview** to see what would be imported, then **Confirm import**. This is the only way a
-  Resource gets created from external candidates — the app never fetches or searches the web on
-  your behalf.
+  Resource gets created from external candidates through Discovery itself. Separately,
+  opt-in capture features (resource reader, enrichment, agent bot) may fetch the specific URL
+  of a resource you captured — see [Network-facing features](#network-facing-features).
 - **Research**: a dashboard of every Resource by lifecycle status, with a detail panel per
   resource and a guided **workflow chain** button that proposes the next step (e.g. turn a
   reviewed resource's takeaway into a Decision, then a Task, then an Implementation) instead of
@@ -269,6 +272,7 @@ every one is optional and has a safe local default.
 | `PGOS_TRUSTED_HOSTS` | `127.0.0.1,localhost` | Comma-separated `Host` header allowlist. Requests with any other `Host` get `400`. Add your proxy's hostname here for remote access — see below. |
 | `PGOS_DEV_CORS` | unset | Set to `1`/`true`/`yes` to enable CORS, only for local development against a separately-hosted Vite dev server. Never set this for a production/remote deployment. |
 | `PGOS_DEV_CORS_ORIGINS` | Vite's default dev origins | Comma-separated origin allowlist, only consulted when `PGOS_DEV_CORS` is enabled. |
+| `PGOS_ENABLE_DOCS` | unset | Set to `1`/`true`/`yes` to serve FastAPI's interactive docs (`/docs`, `/redoc`, `/openapi.json`). These routes are not bearer-protected, so this is for local development only — never behind remote access. |
 
 The bearer token itself is **never** an environment variable or a build-time value — it's
 generated on first run and persisted as a file (`api-token`, mode `0600`) next to the database.
@@ -387,10 +391,28 @@ ownership, header handling (never log `Authorization`), streaming/timeout requir
 **Never** bind the backend itself to a non-loopback address, forward its port directly, or put
 the token in a URL/query string/build artifact.
 
+## Network-facing features
+
+Personal Graph OS is local-first, and every feature that reaches the internet is **opt-in via
+environment variables and disabled by default** (see `.env.example` for the full list):
+
+| Feature | Env switch | What it does when enabled |
+|---|---|---|
+| Resource content reader | always available for a captured resource's own URL | Fetches the page/DOI/arXiv/GitHub metadata behind **Refresh content**, SSRF-guarded (public hosts only), size- and redirect-capped, one bounded retry on transport errors |
+| Enrichment (LLM) | `PGOS_ENRICHMENT_PROVIDER=http_chat` | Classifies extracted content into structured profiles and proposes relations; the model call runs outside any database transaction |
+| Work planning (LLM) | `PGOS_WORK_PLANNING_PROVIDER=http_chat` | Breaks a captured note into an Epic → Story → Task plan proposal when it is actually justified |
+| Telegram ingress + agent bot | `PGOS_TELEGRAM_ENABLED=1` (+ token/allowlist) | Long-polls your bot: URLs are captured; free-form text/images/PDFs are answered by the tool-calling agent when `PGOS_AGENT_CHAT_PROVIDER` is set |
+| ClickUp import | `PGOS_CLICKUP_API_TOKEN` | Imports a single ClickUp task as a capture (read-only API use) |
+
+Nothing sends your graph data anywhere except these explicitly configured calls; export/backup
+never contains your bearer token.
+
 ## Security model
 
 - **Every** route (including reads) requires `Authorization: Bearer <token>` — there is no
-  unauthenticated surface, even for a loopback-only process.
+  unauthenticated surface, even for a loopback-only process. The interactive docs surface
+  (`/docs`, `/redoc`, `/openapi.json`) is served by FastAPI outside that auth and is therefore
+  **disabled by default**; set `PGOS_ENABLE_DOCS=1` for local development only.
 - The token is generated on first run, stored as a `0600` file next to the database, and never
   printed by the server itself, logged, or embedded in the frontend build.
 - The frontend never persists the token in a cookie or Web Storage: it's held in memory until
@@ -507,16 +529,19 @@ restart the backend.
 and every invariant this app relies on are enforced in the application layer, not the database
 schema alone. Use the REST API, the UI, or MCP tools instead.
 
-**"Does this call out to the internet?"** No. Discovery only imports candidates you supply
-yourself (it does not fetch URLs or search the web); there is no analytics, telemetry, or update
-check beyond the PWA's own same-origin service-worker update flow.
+**"Does this call out to the internet?"** Only if you opt in: with every `PGOS_*` provider
+variable unset (the default), nothing reaches the network beyond the PWA's same-origin
+service-worker update flow. See [Network-facing features](#network-facing-features) for exactly
+what each opt-in feature fetches. There is no analytics or telemetry of any kind.
 
 ## Roadmap / non-goals
 
 Explicitly out of scope for this MVP (see `.ai/work/active/EP-2026-002-personal-graph-os-mvp/WORK.md`
 in the internal planning workspace for full detail, if you have access to it):
 
-- Hosted sync, multi-user accounts/RBAC, embeddings/RAG, or built-in LLM calls.
+- Hosted sync, multi-user accounts/RBAC, or embeddings/RAG. (Opt-in LLM calls for enrichment,
+  work planning, and the Telegram agent bot shipped after this README's original scope — see
+  [Network-facing features](#network-facing-features).)
 - Arbitrary SQL/filter expressions or a generic dashboard builder.
 - Mobile/tablet layout or touch/coarse-pointer-specific interaction design.
 - Public-internet hosting, direct non-loopback binding, or built-in TLS/certificate automation

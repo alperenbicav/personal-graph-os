@@ -22,6 +22,7 @@ hard failure for a request that only implicitly asked for the work.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
 from personal_graph_os.application.capture_service import CaptureOutcome, CaptureService
@@ -33,6 +34,8 @@ from personal_graph_os.domain.capture import CaptureEnvelope, CaptureOperationKi
 from personal_graph_os.domain.enrichment import EnrichmentError
 from personal_graph_os.domain.extraction import ExtractionError
 from personal_graph_os.domain.identifiers import NodeId
+
+logger = logging.getLogger(__name__)
 
 _ENRICHMENT_OPERATION_KINDS = frozenset(
     {
@@ -106,7 +109,13 @@ class CapturePlanningOrchestrator:
                 canonical_identifier=resource.canonical_identifier,
                 source_url=resource.source_url,
             )
-        except ExtractionError:
+        except ExtractionError as error:
+            logger.warning(
+                "capture %s: enrichment skipped, extraction failed for resource %s (%s)",
+                envelope.request_id,
+                outcome.resource_id,
+                error,
+            )
             return
         try:
             self._enrichment_service.enrich_resource(
@@ -115,8 +124,13 @@ class CapturePlanningOrchestrator:
                 extracted=extracted,
                 actor=envelope.actor_name,
             )
-        except EnrichmentError:
-            return
+        except EnrichmentError as error:
+            logger.warning(
+                "capture %s: enrichment failed for resource %s and stays pending (%s)",
+                envelope.request_id,
+                outcome.resource_id,
+                error,
+            )
 
     def _maybe_run_planning(
         self,

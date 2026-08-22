@@ -37,6 +37,7 @@ export function SearchView({ onSearch, selectedNodeId, onSelectNode }: SearchVie
   const [results, setResults] = useState<SearchResult[]>([])
   const [hasSearched, setHasSearched] = useState(false)
   const [isSearching, setIsSearching] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [hasMore, setHasMore] = useState(false)
   const [nextOffset, setNextOffset] = useState(0)
   const [total, setTotal] = useState(0)
@@ -52,6 +53,9 @@ export function SearchView({ onSearch, selectedNodeId, onSelectNode }: SearchVie
       setNextOffset(page.offset + page.results.length)
       setTotal(page.total)
       setHasSearched(true)
+      setError(null)
+    } catch (searchError) {
+      setError(searchError instanceof Error ? searchError.message : String(searchError))
     } finally {
       setIsSearching(false)
     }
@@ -67,6 +71,9 @@ export function SearchView({ onSearch, selectedNodeId, onSelectNode }: SearchVie
       setHasMore(page.has_more)
       setNextOffset(page.offset + page.results.length)
       setTotal(page.total)
+      setError(null)
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : String(loadError))
     } finally {
       setIsSearching(false)
     }
@@ -107,7 +114,13 @@ export function SearchView({ onSearch, selectedNodeId, onSelectNode }: SearchVie
         </button>
       </div>
 
-      {hasSearched && results.length === 0 && (
+      {error !== null && (
+        <p className="view-empty" role="alert">
+          Search failed: {error}
+        </p>
+      )}
+
+      {!error && hasSearched && results.length === 0 && (
         <p className="view-empty" role="status">
           No matches.
         </p>

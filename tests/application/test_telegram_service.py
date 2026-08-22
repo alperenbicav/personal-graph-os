@@ -12,9 +12,12 @@ from personal_graph_os.application.enrichment_service import EnrichmentService
 from personal_graph_os.application.semantic_schema import ensure_semantic_schema
 from personal_graph_os.application.services import ResourceService, new_workspace
 from personal_graph_os.application.telegram_adapters import (
+    TelegramChat,
+    TelegramDocument,
     TelegramFetchFailedError,
     TelegramMessage,
     TelegramNotConfiguredError,
+    TelegramPhoto,
     TelegramUpdate,
     TelegramUser,
 )
@@ -85,7 +88,7 @@ def _message(
         message=TelegramMessage(
             message_id=update_id,
             date=1720000000,
-            chat={"id": chat_id},
+            chat=TelegramChat(id=chat_id),
             from_=TelegramUser(id=99, is_bot=is_bot),
             text=text,
         ),
@@ -99,7 +102,7 @@ def _service(
     allowed_chat_ids: frozenset[int] = frozenset({1}),
     client: object | None = ...,
     workspace_id: WorkspaceId | None = None,
-    enrichment_service: object | None = None,
+    enrichment_service: EnrichmentService | None = None,
     extraction_service: object | None = None,
     agent_loop: object | None = None,
     pdf_text_extractor: object | None = None,
@@ -371,7 +374,7 @@ def _media_update(update_id: int = 3, *, caption: str | None = None) -> Telegram
         message=TelegramMessage(
             message_id=update_id,
             date=1720000000,
-            chat={"id": 1},
+            chat=TelegramChat(id=1),
             from_=TelegramUser(id=99, is_bot=False),
             text=None,
             caption=caption,
@@ -554,16 +557,18 @@ def _file_media_update(
     *,
     update_id: int = 21,
     photo_file_id: str | None = None,
-    document: dict[str, object] | None = None,
+    document: TelegramDocument | None = None,
 ) -> TelegramUpdate:
     return TelegramUpdate(
         update_id=update_id,
         message=TelegramMessage(
             message_id=update_id,
             date=1720000000,
-            chat={"id": 1},
+            chat=TelegramChat(id=1),
             from_=TelegramUser(id=99, username="alperen"),
-            photo=[{"file_id": photo_file_id, "file_size": 10, "width": 2, "height": 2}]
+            photo=[
+                TelegramPhoto(file_id=photo_file_id, file_size=10, width=2, height=2)
+            ]
             if photo_file_id
             else None,
             document=document,
@@ -595,11 +600,11 @@ def test_pdf_document_attachment_hands_extracted_text_to_the_agent(
 
     agent = _FakeGraphAgent()
     update = _file_media_update(
-        document={
-            "file_id": "doc-1",
-            "file_name": "paper.pdf",
-            "mime_type": "application/pdf",
-        }
+        document=TelegramDocument(
+            file_id="doc-1",
+            file_name="paper.pdf",
+            mime_type="application/pdf",
+        )
     )
     from personal_graph_os.infrastructure.extraction.pdf_text import extract_pdf_text
 
