@@ -6,6 +6,8 @@ import { CanvasRail } from './components/CanvasRail'
 import { ConnectEdgeModal, type PendingConnection } from './components/ConnectEdgeModal'
 import { CreateNodeControl } from './components/CreateNodeControl'
 import { NewCanvasModal } from './components/NewCanvasModal'
+import { useWorkItemHandlers } from './hooks/useWorkItemHandlers'
+import { useResourceHandlers } from './hooks/useResourceHandlers'
 import { EnrichmentDetailPanel } from './components/EnrichmentDetailPanel'
 import { GraphCanvas } from './components/GraphCanvas'
 import { Inspector, type RelationRow } from './components/Inspector'
@@ -20,28 +22,22 @@ import { TopBar } from './components/TopBar'
 import { UnlockScreen } from './components/UnlockScreen'
 import { WikiView } from './components/WikiView'
 import { onSessionUnauthorized, restoreSession } from './api/session'
-import {
-  WorkflowChainPanel,
-  type WorkflowChainAdvanceInput,
-} from './components/WorkflowChainPanel'
+import { WorkflowChainPanel } from './components/WorkflowChainPanel'
 import { messageFor } from './lib/errors'
 import { neighborhoodWithinDepth } from './lib/neighborhood'
 import { NEXT_WORKFLOW_STEP } from './lib/workflowChain'
 import { SchemaEditor } from './components/SchemaEditor'
 import type {
+  RelatedNode,
   Canvas,
   CanvasPlacement,
   GraphEdge,
   GraphNode,
-  RelatedNode,
-  RepositoryLabel,
   ResearchDashboard,
   Resource,
-  ResourceKind,
   StatusDefinition,
   WikiDocument,
   WorkItem,
-  WorkflowChainStep,
   Workspace,
 } from './types'
 
@@ -451,149 +447,43 @@ function App() {
     [selectedNodeId],
   )
 
-  const handleSetRepositoryLabel = useCallback(
-    async (resourceId: string, label: RepositoryLabel) => {
-      try {
-        const updated = await api.updateResource(resourceId, { repository_label: label })
-        setResources((current) => current.map((r) => (r.id === updated.id ? updated : r)))
-      } catch (error) {
-        setActionError(`Could not set that repository's label: ${messageFor(error)}`)
-      }
-    },
-    [],
-  )
+  const {
+    handleCreateWorkItem,
+    handleUpdateWorkItem,
+    handleEditWorkItemBody,
+    handleAddChecklistItem,
+    handleUpdateChecklistItem,
+    handleRemoveChecklistItem,
+    handleReorderChecklistItems,
+    handleAttachWorkItemDocument,
+    handleDetachWorkItemDocument,
+  } = useWorkItemHandlers({
+    workItems,
+    setWorkItems,
+    setNodes,
+    setSelectedWorkItemId,
+  })
 
-  // Research/Repositories' own typed create forms (ST-07): a create-or-reuse call identical to
-  // the Research create path, but invoked directly by the owning tab instead of routed through
-  // an import batch.
-  const handleCreateResource = useCallback(
-    async (title: string, rawSource: string, kind: ResourceKind): Promise<Resource> => {
-      if (!workspace) throw new Error('No active workspace')
-      const resource = await api.createOrReuseResource(workspace.id, title, rawSource, kind)
-      setResources((current) =>
-        current.some((existing) => existing.id === resource.id)
-          ? current.map((existing) => (existing.id === resource.id ? resource : existing))
-          : [...current, resource],
-      )
-      return resource
-    },
-    [workspace],
-  )
-
-  const handleArchiveResource = useCallback(
-    async (resourceId: string): Promise<void> => {
-      try {
-        const archived = await api.archiveResource(resourceId)
-        setResources((current) => current.map((r) => (r.id === archived.id ? archived : r)))
-        if (workspace) await refreshActiveViewData(workspace.id, activeView)
-      } catch (error) {
-        setActionError(`Could not archive that research item: ${messageFor(error)}`)
-      }
-    },
-    [workspace, activeView, refreshActiveViewData],
-  )
-
-  const handleDeleteResource = useCallback(
-    async (resourceId: string): Promise<void> => {
-      try {
-        await api.deleteResource(resourceId)
-        setResources((current) => current.filter((r) => r.id !== resourceId))
-        setResearchDashboard((current) =>
-          current
-            ? {
-                ...current,
-                inbox: current.inbox.filter((r) => r.id !== resourceId),
-                continue_reading: current.continue_reading.filter((r) => r.id !== resourceId),
-                stale: current.stale.filter((r) => r.id !== resourceId),
-                needs_takeaway: current.needs_takeaway.filter((r) => r.id !== resourceId),
-                unlinked: current.unlinked.filter((r) => r.id !== resourceId),
-                applied: current.applied.filter((r) => r.id !== resourceId),
-              }
-            : null,
-        )
-        if (workspace) await refreshActiveViewData(workspace.id, activeView)
-      } catch (error) {
-        setActionError(`Could not delete that research item: ${messageFor(error)}`)
-      }
-    },
-    [workspace, activeView, refreshActiveViewData],
-  )
-
-  const handleCreateWorkItem = useCallback(
-    async (input: api.CreateWorkItemInput): Promise<WorkItem> => {
-      const workItem = await api.createWorkItem(input)
-      setWorkItems((current) => [...current, workItem])
-      setSelectedWorkItemId(workItem.id)
-      return workItem
-    },
-    [],
-  )
-
-  const handleUpdateWorkItem = useCallback(
-    async (workItemId: string, patch: api.UpdateWorkItemPatch): Promise<WorkItem> => {
-      const updated = await api.updateWorkItem(workItemId, patch)
-      setWorkItems((current) =>
-        current.map((item) => (item.id === updated.id ? updated : item)),
-      )
-      return updated
-    },
-    [],
-  )
-
-  const handleEditWorkItemBody = useCallback(
-    async (workItemId: string, body: string) => {
-      const workItem = workItems.find((item) => item.id === workItemId)
-      if (!workItem) return
-      const updated = await api.updateNode(workItem.node_id, { body })
-      setNodes((current) => current.map((node) => (node.id === updated.id ? updated : node)))
-      setWorkItems((current) =>
-        current.map((item) => (item.id === workItemId ? { ...item, body } : item)),
-      )
-    },
-    [workItems],
-  )
-
-  const handleAddChecklistItem = useCallback(
-    async (workItemId: string, label: string) => {
-      return api.addChecklistItem(workItemId, label)
-    },
-    [],
-  )
-
-  const handleUpdateChecklistItem = useCallback(
-    async (checklistItemId: string, patch: api.UpdateChecklistItemPatch) => {
-      return api.updateChecklistItem(checklistItemId, patch)
-    },
-    [],
-  )
-
-  const handleRemoveChecklistItem = useCallback(
-    async (checklistItemId: string) => {
-      await api.removeChecklistItem(checklistItemId)
-    },
-    [],
-  )
-
-  const handleReorderChecklistItems = useCallback(
-    async (workItemId: string, orderedIds: string[]) => {
-      return api.reorderChecklistItems(workItemId, orderedIds)
-    },
-    [],
-  )
-
-  const handleAttachWorkItemDocument = useCallback(
-    async (workItemId: string, documentId: string) => {
-      await api.attachWorkItemWikiLink(workItemId, documentId)
-    },
-    [],
-  )
-
-  const handleDetachWorkItemDocument = useCallback(
-    async (workItemId: string, documentId: string) => {
-      await api.detachWorkItemWikiLink(workItemId, documentId)
-    },
-    [],
-  )
+  const {
+    handleSetRepositoryLabel,
+    handleCreateResource,
+    handleArchiveResource,
+    handleDeleteResource,
+    handleUpdateResource,
+    handleAdvanceWorkflow,
+  } = useResourceHandlers({
+    workspace,
+    activeView,
+    selectedNodeId,
+    resources,
+    setResources,
+    setNodes,
+    setEdges,
+    setResearchDashboard,
+    setSelectedNodeId,
+    setActionError,
+    refreshActiveViewData,
+  })
 
   // A relation points at another domain's object by node id; jumping to its owning tab
   // (Research for papers/articles, Repositories for GitHub repos, Tasks for work items)
@@ -611,45 +501,6 @@ function App() {
       setActiveView('tasks')
     }
   }, [])
-
-  const handleUpdateResource = useCallback(
-    async (patch: api.UpdateResourcePatch): Promise<boolean> => {
-      const resource = resources.find((r) => r.node_id === selectedNodeId)
-      if (!resource) return false
-      try {
-        const updated = await api.updateResource(resource.id, patch)
-        setResources((current) => current.map((r) => (r.id === updated.id ? updated : r)))
-        if (workspace) refreshActiveViewData(workspace.id, activeView)
-        return true
-      } catch (error) {
-        setActionError(`Could not save that research change: ${messageFor(error)}`)
-        return false
-      }
-    },
-    [resources, selectedNodeId, workspace, activeView, refreshActiveViewData],
-  )
-
-  const handleAdvanceWorkflow = useCallback(
-    async (step: WorkflowChainStep, input: WorkflowChainAdvanceInput) => {
-      if (!workspace || !selectedNodeId) return
-      const patch =
-        'title' in input
-          ? { title: input.title }
-          : { existing_target_node_id: input.existingTargetNodeId }
-      const { node, edge } = await api.advanceWorkflowChain(
-        workspace.id,
-        selectedNodeId,
-        step,
-        patch,
-      )
-      // A selected-existing target is already in `nodes`; re-adding it would duplicate the row.
-      setNodes((current) => (current.some((n) => n.id === node.id) ? current : [...current, node]))
-      setEdges((current) => [...current, edge])
-      setSelectedNodeId(node.id)
-      refreshActiveViewData(workspace.id, activeView)
-    },
-    [workspace, selectedNodeId, activeView, refreshActiveViewData],
-  )
 
   const handleArchiveSelected = useCallback(async () => {
     if (!archiveArmed) {
