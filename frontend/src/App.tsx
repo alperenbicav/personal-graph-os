@@ -590,7 +590,14 @@ function App() {
     setArchiveArmed(false)
   }, [selectedNodeId])
 
-if (!isUnlocked) {
+// Detail column (EP-2026-013 ST-01): the Inspector belongs to the Graph canvas only; on
+  // Research/Repositories the rich resource panels appear when a resource is selected and the
+  // column collapses entirely otherwise — never a dead placeholder bar.
+  const detailColumnVisible =
+    activeView === 'graph' ||
+    ((activeView === 'research' || activeView === 'repositories') && selectedResource !== null)
+
+  if (!isUnlocked) {
     return <UnlockScreen onUnlocked={() => setIsUnlocked(true)} />
   }
 
@@ -641,9 +648,11 @@ if (!isUnlocked) {
             ? 'workbench'
             : activeView === 'tasks' || activeView === 'activity' || activeView === 'wiki'
               ? 'workbench workbench-full'
-              : activeView === 'research'
-                ? 'workbench workbench-no-rail workbench-research'
-                : 'workbench workbench-no-rail'
+              : detailColumnVisible
+                ? activeView === 'research'
+                  ? 'workbench workbench-no-rail workbench-research'
+                  : 'workbench workbench-no-rail'
+                : 'workbench workbench-full'
         }
       >
         {activeView === 'graph' && (
@@ -845,21 +854,23 @@ if (!isUnlocked) {
           </div>
         )}
 
-        {activeView !== 'tasks' && activeView !== 'activity' && activeView !== 'wiki' && (
+        {detailColumnVisible && (
           <div className="inspector-column">
-            <Inspector
-              node={selectedNode}
-              nodeType={selectedNodeType}
-              relations={relations}
-              referenceableNodes={referenceableNodes}
-              onChangeStatus={handleChangeStatus}
-              onChangeBody={handleChangeBody}
-              onChangeField={handleChangeField}
-              onArchive={handleArchiveSelected}
-              archiveArmed={archiveArmed}
-              goToLabel={goToTarget?.label ?? null}
-              onGoTo={handleGoToProjected}
-            />
+            {activeView === 'graph' && (
+              <Inspector
+                node={selectedNode}
+                nodeType={selectedNodeType}
+                relations={relations}
+                referenceableNodes={referenceableNodes}
+                onChangeStatus={handleChangeStatus}
+                onChangeBody={handleChangeBody}
+                onChangeField={handleChangeField}
+                onArchive={handleArchiveSelected}
+                archiveArmed={archiveArmed}
+                goToLabel={goToTarget?.label ?? null}
+                onGoTo={handleGoToProjected}
+              />
+            )}
             {/* Research/Repositories own the rich canonical Resource detail (review finding
                 S6-F01); every other view keeps only the generic Inspector above, even when a
                 stale Resource selection carries over from a prior tab. */}

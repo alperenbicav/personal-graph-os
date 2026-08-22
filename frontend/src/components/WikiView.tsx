@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import DOMPurify from 'dompurify'
-import { marked } from 'marked'
 import type { CreateDocumentInput, UpdateDocumentMetadataPatch } from '../api/client'
 import type { Collection, DocumentDetail, DocumentKind, DocumentVersion, Tag, WikiDocument } from '../types'
+import { renderMarkdown } from '../lib/markdown'
 
 // Every REST mutation from this local single-user client is attributed to the same fixed
 // actor the backend's `MutationContext.rest()` already assumes (`REST_ACTOR_NAME`); there is
@@ -17,10 +16,6 @@ const KIND_OPTIONS: { value: DocumentKind; label: string }[] = [
 ]
 
 type EditorMode = 'raw' | 'preview' | 'split'
-
-function renderMarkdown(bodyMarkdown: string): string {
-  return DOMPurify.sanitize(marked.parse(bodyMarkdown, { async: false }) as string)
-}
 
 function parseTagNames(input: string): string[] {
   return Array.from(
