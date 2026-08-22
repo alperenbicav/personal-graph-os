@@ -233,13 +233,23 @@ def create_app(
     trusted_hosts: list[str] | None = None,
     cors_origins: list[str] | None = None,
     static_dir: Path | str | None = None,
+    enable_docs: bool = False,
     enrichment_provider_transport: httpx.BaseTransport | None = None,
     work_planning_provider_transport: httpx.BaseTransport | None = None,
     clickup_transport: httpx.BaseTransport | None = None,
     telegram_transport: httpx.BaseTransport | None = None,
     agent_chat_transport: httpx.BaseTransport | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="Personal Graph OS API")
+    # The interactive docs surface (`/docs`, `/redoc`, `/openapi.json`) is served by FastAPI
+    # outside every router dependency, so bearer auth cannot cover it; it is disabled by
+    # default to keep "every route requires the token" true, and is an explicit local
+    # development opt-in (`PGOS_ENABLE_DOCS=1` in `api/__main__.py`).
+    app = FastAPI(
+        title="Personal Graph OS API",
+        docs_url="/docs" if enable_docs else None,
+        redoc_url="/redoc" if enable_docs else None,
+        openapi_url="/openapi.json" if enable_docs else None,
+    )
 
     # Both default to permissive/absent so `create_app(tmp_path)` keeps working for the
     # existing test suite and any programmatic embedding without a frontend build; the real

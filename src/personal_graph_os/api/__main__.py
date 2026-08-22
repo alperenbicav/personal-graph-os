@@ -91,15 +91,19 @@ def main() -> None:
     # workspace/graph.db; unset, behavior is identical to before this existed.
     database_path = os.environ.get("PGOS_DB_PATH") or DEFAULT_DATABASE_PATH
     port = int(os.environ.get("PGOS_PORT") or DEFAULT_PORT)
+    enable_docs = os.environ.get("PGOS_ENABLE_DOCS", "").strip().lower() in {"1", "true", "yes"}
 
     app = create_app(
         database_path,
         trusted_hosts=trusted_hosts,
         cors_origins=cors_origins,
         static_dir=static_dir,
+        enable_docs=enable_docs,
     )
     print(f"Personal Graph OS API listening on http://{LOOPBACK_HOST}:{port}")
     print("The bearer token is never printed here. Run `pgos-token show` to read it.")
+    if enable_docs:
+        print("Interactive docs enabled (PGOS_ENABLE_DOCS) — for local development only.")
     if static_dir is None:
         print("No production frontend build found; serving API/MCP only (no /app/ UI).")
     uvicorn.run(app, host=LOOPBACK_HOST, port=port)

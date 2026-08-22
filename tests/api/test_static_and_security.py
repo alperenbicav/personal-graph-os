@@ -140,3 +140,21 @@ def test_credentials_cli_show_and_rotate(tmp_path: Path) -> None:
     rotated_token = token_path.read_text(encoding="utf-8").strip()
     assert rotated_token != original_token
     assert stat.S_IMODE(token_path.stat().st_mode) == 0o600
+
+
+def test_docs_surface_is_disabled_by_default(tmp_path: Path) -> None:
+    """`/docs`, `/redoc`, and `/openapi.json` are served by FastAPI outside every router
+    dependency, so bearer auth cannot cover them; they must be off unless explicitly opted
+    into for local development."""
+    app = create_app(tmp_path / "test-workspace.db")
+    client = TestClient(app)
+    assert client.get("/docs").status_code == 404
+    assert client.get("/redoc").status_code == 404
+    assert client.get("/openapi.json").status_code == 404
+
+
+def test_docs_surface_is_an_explicit_local_development_opt_in(tmp_path: Path) -> None:
+    app = create_app(tmp_path / "test-workspace.db", enable_docs=True)
+    client = TestClient(app)
+    assert client.get("/openapi.json").status_code == 200
+    assert client.get("/docs").status_code == 200

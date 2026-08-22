@@ -269,6 +269,7 @@ every one is optional and has a safe local default.
 | `PGOS_TRUSTED_HOSTS` | `127.0.0.1,localhost` | Comma-separated `Host` header allowlist. Requests with any other `Host` get `400`. Add your proxy's hostname here for remote access — see below. |
 | `PGOS_DEV_CORS` | unset | Set to `1`/`true`/`yes` to enable CORS, only for local development against a separately-hosted Vite dev server. Never set this for a production/remote deployment. |
 | `PGOS_DEV_CORS_ORIGINS` | Vite's default dev origins | Comma-separated origin allowlist, only consulted when `PGOS_DEV_CORS` is enabled. |
+| `PGOS_ENABLE_DOCS` | unset | Set to `1`/`true`/`yes` to serve FastAPI's interactive docs (`/docs`, `/redoc`, `/openapi.json`). These routes are not bearer-protected, so this is for local development only — never behind remote access. |
 
 The bearer token itself is **never** an environment variable or a build-time value — it's
 generated on first run and persisted as a file (`api-token`, mode `0600`) next to the database.
@@ -390,7 +391,9 @@ the token in a URL/query string/build artifact.
 ## Security model
 
 - **Every** route (including reads) requires `Authorization: Bearer <token>` — there is no
-  unauthenticated surface, even for a loopback-only process.
+  unauthenticated surface, even for a loopback-only process. The interactive docs surface
+  (`/docs`, `/redoc`, `/openapi.json`) is served by FastAPI outside that auth and is therefore
+  **disabled by default**; set `PGOS_ENABLE_DOCS=1` for local development only.
 - The token is generated on first run, stored as a `0600` file next to the database, and never
   printed by the server itself, logged, or embedded in the frontend build.
 - The frontend never persists the token in a cookie or Web Storage: it's held in memory until
