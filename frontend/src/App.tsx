@@ -14,7 +14,6 @@ import { Inspector, type RelationRow } from './components/Inspector'
 import { NavTabs, type AppView } from './components/NavTabs'
 import { PlaceExistingNodeControl } from './components/PlaceExistingNodeControl'
 import { RepositoriesView } from './components/RepositoriesView'
-import { ResearchDetailPanel } from './components/ResearchDetailPanel'
 import { ResearchView } from './components/ResearchView'
 import { SearchView } from './components/SearchView'
 import { TasksView } from './components/TasksView'
@@ -605,9 +604,7 @@ function App() {
 // Detail column (EP-2026-013 ST-01): the Inspector belongs to the Graph canvas only; on
   // Research/Repositories the rich resource panels appear when a resource is selected and the
   // column collapses entirely otherwise — never a dead placeholder bar.
-  const detailColumnVisible =
-    activeView === 'graph' ||
-    ((activeView === 'research' || activeView === 'repositories') && selectedResource !== null)
+  const detailColumnVisible = activeView === 'graph'
 
   if (!isUnlocked) {
     return <UnlockScreen onUnlocked={() => setIsUnlocked(true)} />
@@ -658,7 +655,11 @@ function App() {
         className={
           activeView === 'graph'
             ? 'workbench'
-            : activeView === 'tasks' || activeView === 'activity' || activeView === 'wiki'
+            : activeView === 'tasks' ||
+                activeView === 'activity' ||
+                activeView === 'wiki' ||
+                activeView === 'research' ||
+                activeView === 'repositories'
               ? 'workbench workbench-full'
               : detailColumnVisible
                 ? activeView === 'research'
@@ -824,9 +825,28 @@ function App() {
               resources={resources}
               selectedNodeId={selectedNodeId}
               onSelectNode={setSelectedNodeId}
+              onClearSelection={() => setSelectedNodeId(null)}
               onCreateResource={handleCreateResource}
               onArchiveResource={handleArchiveResource}
               onDeleteResource={handleDeleteResource}
+              onUpdateDetail={handleUpdateResource}
+              renderEnrichment={(resource) => (
+                <EnrichmentDetailPanel
+                  key={`enrichment-${resource.id}`}
+                  resourceId={resource.id}
+                  onLoadDetail={api.getResourceDetail}
+                  onGoToRelation={handleGoToRelation}
+                />
+              )}
+              workflowPanel={
+                nextWorkflowStep ? (
+                  <WorkflowChainPanel
+                    nodeSystemKey={selectedNodeType?.system_key}
+                    existingTargetCandidates={workflowChainCandidates}
+                    onAdvance={(input) => handleAdvanceWorkflow(nextWorkflowStep.step, input)}
+                  />
+                ) : null
+              }
             />
           </div>
         )}
@@ -881,24 +901,6 @@ function App() {
                 archiveArmed={archiveArmed}
                 goToLabel={goToTarget?.label ?? null}
                 onGoTo={handleGoToProjected}
-              />
-            )}
-            {/* Research/Repositories own the rich canonical Resource detail (review finding
-                S6-F01); every other view keeps only the generic Inspector above, even when a
-                stale Resource selection carries over from a prior tab. */}
-            {selectedResource && activeView === 'research' && (
-              <ResearchDetailPanel
-                key={selectedResource.id}
-                resource={selectedResource}
-                onUpdate={handleUpdateResource}
-              />
-            )}
-            {selectedResource && (activeView === 'research' || activeView === 'repositories') && (
-              <EnrichmentDetailPanel
-                key={`enrichment-${selectedResource.id}`}
-                resourceId={selectedResource.id}
-                onLoadDetail={api.getResourceDetail}
-                onGoToRelation={handleGoToRelation}
               />
             )}
             {nextWorkflowStep && (

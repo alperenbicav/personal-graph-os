@@ -37,7 +37,8 @@ const emptyDashboard: ResearchDashboard = {
 describe('ResearchView', () => {
   it('shows a loading message when the dashboard has not loaded yet', () => {
     render(
-      <ResearchView dashboard={null} resources={[]} selectedNodeId={null} onSelectNode={vi.fn()} onCreateResource={vi.fn()} onArchiveResource={vi.fn()} onDeleteResource={vi.fn()} />,
+      <ResearchView dashboard={null} resources={[]} selectedNodeId={null} onSelectNode={vi.fn()} onClearSelection={() => undefined}
+        onUpdateDetail={vi.fn().mockResolvedValue(true)} onCreateResource={vi.fn()} onArchiveResource={vi.fn()} onDeleteResource={vi.fn()} />,
     )
     expect(screen.getByText(/loading research dashboard/i)).toBeInTheDocument()
   })
@@ -50,6 +51,8 @@ describe('ResearchView', () => {
         dashboard={dashboard}
         resources={[paper]}
         selectedNodeId={null}
+        onClearSelection={() => undefined}
+        onUpdateDetail={vi.fn().mockResolvedValue(true)}
         onSelectNode={vi.fn()}
         onCreateResource={vi.fn()}
         onArchiveResource={vi.fn()}
@@ -57,12 +60,12 @@ describe('ResearchView', () => {
       />,
     )
 
-    expect(screen.getByRole('button', { name: /research inbox\s*1/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /inbox\s*1/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /continue reading\s*0/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /stale resources\s*0/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /stale\s*0/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /needs takeaway\s*0/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /unlinked research\s*0/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /applied sources\s*0/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /unlinked\s*0/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /applied\s*0/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'A paper' })).toBeInTheDocument()
   })
 
@@ -75,6 +78,8 @@ describe('ResearchView', () => {
         dashboard={dashboard}
         resources={[paper]}
         selectedNodeId={null}
+        onClearSelection={() => undefined}
+        onUpdateDetail={vi.fn().mockResolvedValue(true)}
         onSelectNode={onSelectNode}
         onCreateResource={vi.fn()}
         onArchiveResource={vi.fn()}
@@ -101,6 +106,8 @@ describe('ResearchView', () => {
         dashboard={dashboard}
         resources={[paper]}
         selectedNodeId={null}
+        onClearSelection={() => undefined}
+        onUpdateDetail={vi.fn().mockResolvedValue(true)}
         onSelectNode={vi.fn()}
         onCreateResource={vi.fn()}
         onArchiveResource={vi.fn()}
@@ -124,6 +131,8 @@ describe('ResearchView', () => {
         dashboard={dashboard}
         resources={[inboxPaper, readingArticle]}
         selectedNodeId={null}
+        onClearSelection={() => undefined}
+        onUpdateDetail={vi.fn().mockResolvedValue(true)}
         onSelectNode={vi.fn()}
         onCreateResource={vi.fn()}
         onArchiveResource={vi.fn()}
@@ -134,7 +143,7 @@ describe('ResearchView', () => {
     expect(screen.getByRole('button', { name: 'Inbox paper' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Reading article' })).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /research inbox/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^inbox\s*1$/i }))
     expect(screen.getByRole('button', { name: 'Inbox paper' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Reading article' })).not.toBeInTheDocument()
 
@@ -157,6 +166,8 @@ describe('ResearchView', () => {
         dashboard={dashboard}
         resources={[paper, repository, documentation]}
         selectedNodeId={null}
+        onClearSelection={() => undefined}
+        onUpdateDetail={vi.fn().mockResolvedValue(true)}
         onSelectNode={vi.fn()}
         onCreateResource={vi.fn()}
         onArchiveResource={vi.fn()}
@@ -168,7 +179,7 @@ describe('ResearchView', () => {
     expect(screen.queryByRole('button', { name: 'A repository' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Some docs' })).not.toBeInTheDocument()
     // The bucket chip's count must match what it actually admits, not the raw dashboard array.
-    expect(screen.getByRole('button', { name: /research inbox\s*1/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /inbox\s*1/i })).toBeInTheDocument()
   })
 
   it('never nests the canonical-source link inside the row-selecting button (S6-F02 regression)', () => {
@@ -179,6 +190,8 @@ describe('ResearchView', () => {
         dashboard={dashboard}
         resources={[paper]}
         selectedNodeId={null}
+        onClearSelection={() => undefined}
+        onUpdateDetail={vi.fn().mockResolvedValue(true)}
         onSelectNode={vi.fn()}
         onCreateResource={vi.fn()}
         onArchiveResource={vi.fn()}
@@ -199,6 +212,8 @@ describe('ResearchView', () => {
         dashboard={emptyDashboard}
         resources={[]}
         selectedNodeId={null}
+        onClearSelection={() => undefined}
+        onUpdateDetail={vi.fn().mockResolvedValue(true)}
         onSelectNode={vi.fn()}
         onCreateResource={onCreateResource}
         onArchiveResource={vi.fn()}
@@ -227,6 +242,8 @@ describe('ResearchView', () => {
         dashboard={emptyDashboard}
         resources={[]}
         selectedNodeId={null}
+        onClearSelection={() => undefined}
+        onUpdateDetail={vi.fn().mockResolvedValue(true)}
         onSelectNode={vi.fn()}
         onCreateResource={vi.fn()}
         onArchiveResource={vi.fn()}
@@ -254,6 +271,8 @@ describe('ResearchView', () => {
         dashboard={{ ...emptyDashboard, inbox: [paper] }}
         resources={[paper]}
         selectedNodeId={null}
+        onClearSelection={() => undefined}
+        onUpdateDetail={vi.fn().mockResolvedValue(true)}
         onSelectNode={vi.fn()}
         onCreateResource={vi.fn()}
         onArchiveResource={onArchiveResource}
@@ -274,6 +293,8 @@ describe('ResearchView', () => {
         dashboard={{ ...emptyDashboard, unlinked: [archived] }}
         resources={[archived]}
         selectedNodeId={null}
+        onClearSelection={() => undefined}
+        onUpdateDetail={vi.fn().mockResolvedValue(true)}
         onSelectNode={vi.fn()}
         onCreateResource={vi.fn()}
         onArchiveResource={vi.fn()}
@@ -292,6 +313,8 @@ describe('ResearchView', () => {
         dashboard={{ ...emptyDashboard, inbox: [paper] }}
         resources={[paper]}
         selectedNodeId={null}
+        onClearSelection={() => undefined}
+        onUpdateDetail={vi.fn().mockResolvedValue(true)}
         onSelectNode={vi.fn()}
         onCreateResource={vi.fn()}
         onArchiveResource={vi.fn()}
