@@ -834,8 +834,16 @@ function App() {
               onRemoveChecklistItem={handleRemoveChecklistItem}
               onReorderChecklistItems={handleReorderChecklistItems}
               onAttachDocument={handleAttachWorkItemDocument}
-            onRenameWorkItem={handleRenameWorkItem}
+              onRenameWorkItem={handleRenameWorkItem}
               onDetachDocument={handleDetachWorkItemDocument}
+              onNavigateDocument={(docId) => {
+                setActiveView('wiki')
+                setSelectedDocumentId(docId)
+              }}
+              onNavigateRepository={(repoNodeId) => {
+                setActiveView('repositories')
+                setSelectedNodeId(repoNodeId)
+              }}
             />
           </div>
         )}

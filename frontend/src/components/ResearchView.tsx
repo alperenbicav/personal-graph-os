@@ -323,6 +323,43 @@ export function ResearchView({
           )}
         </div>
 
+        {/* Provenance ribbon (S6) */}
+        <div className="provenance-ribbon" aria-label="Research lineage and provenance">
+          <span className="provenance-chip provenance-chip-current">
+            <span className="provenance-icon">
+              {selectedResource.kind === 'paper' ? '📄' : '🔬'}
+            </span>
+            <span className="provenance-title">{selectedResource.title}</span>
+          </span>
+          {selectedResource.takeaways.length > 0 && (
+            <>
+              <span className="provenance-arrow">➔</span>
+              <span
+                className="provenance-chip"
+                title={`${selectedResource.takeaways.length} key takeaway(s)`}
+              >
+                <span className="provenance-icon">💡</span>
+                <span className="provenance-title">
+                  {selectedResource.takeaways.length} Takeaway
+                  {selectedResource.takeaways.length > 1 ? 's' : ''}
+                </span>
+              </span>
+            </>
+          )}
+          {selectedResource.next_action && !selectedResource.next_action_dismissed && (
+            <>
+              <span className="provenance-arrow">➔</span>
+              <span
+                className="provenance-chip"
+                title={`Next action: ${selectedResource.next_action}`}
+              >
+                <span className="provenance-icon">⚡</span>
+                <span className="provenance-title">{selectedResource.next_action}</span>
+              </span>
+            </>
+          )}
+        </div>
+
         <h1 className="research-detail-title">{selectedResource.title}</h1>
 
         <div className="wiki-editor-bar">

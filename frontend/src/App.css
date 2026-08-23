@@ -3589,5 +3589,74 @@ select.status-select {
   text-overflow: ellipsis;
 }
 
+/* ---------- Provenance Ribbon (S6) ---------- */
+.provenance-ribbon {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  margin-bottom: var(--s3);
+}
+
+.provenance-arrow {
+  color: var(--slate-faint);
+  font-size: 11px;
+  user-select: none;
+}
+
+.provenance-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--paper-raised);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  padding: 3px 8px;
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+  cursor: pointer;
+  max-width: 220px;
+  transition: border-color 100ms ease, background 100ms ease, transform 80ms ease;
+}
+
+.provenance-chip:hover {
+  border-color: var(--brass);
+  background: var(--paper-hover);
+  color: var(--ink);
+  transform: translateY(-1px);
+}
+
+.provenance-chip:active {
+  transform: scale(0.98);
+}
+
+.provenance-chip-current {
+  border-color: var(--brass);
+  background: var(--amber-soft);
+  color: var(--brass-ink);
+  font-weight: 600;
+  cursor: default;
+}
+
+.provenance-chip-current:hover {
+  transform: none;
+}
+
+.provenance-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.provenance-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+
 
 
