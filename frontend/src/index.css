@@ -51,8 +51,12 @@
   /* Comfortable reading/editing column for document-style content (Notion-like views) */
   --content-reading: 760px;
 
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-2: 0 12px 32px rgba(0, 0, 0, 0.45);
+  --paper-overlay: #232834;
+  --paper-hover: #1e222c;
+
+  --shadow-1: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 6px 16px rgba(0, 0, 0, 0.45);
+  --shadow-3: 0 16px 40px rgba(0, 0, 0, 0.6);
 
   color-scheme: dark;
 }
@@ -77,13 +81,15 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font-family: inherit;
 }
 
 :focus-visible {
   outline: 2px solid var(--brass);
   outline-offset: 2px;
+  box-shadow: 0 0 0 3px rgba(221, 165, 82, 0.2);
 }
 
 .sr-only {
@@ -99,8 +105,13 @@ select {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  * {
-    transition: none !important;
-    animation: none !important;
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+    transform: none !important;
   }
 }
