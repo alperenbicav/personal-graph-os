@@ -2217,8 +2217,8 @@ select.status-select {
 }
 
 @keyframes slideover-in {
-  from { transform: translateX(24px); opacity: 0.4; }
-  to { transform: translateX(0); opacity: 1; }
+  from { transform: translateX(24px); }
+  to { transform: translateX(0); }
 }
 
 .slideover-header {
@@ -3369,7 +3369,7 @@ select.status-select {
 
 .command-palette-item-subtitle {
   font-size: var(--text-xs);
-  color: var(--slate);
+  color: var(--ink-soft);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3400,7 +3400,7 @@ select.status-select {
 .command-palette-empty-hint {
   margin: var(--s2) 0 0;
   font-size: var(--text-sm);
-  color: var(--slate);
+  color: var(--ink-soft);
 }
 
 .command-palette-footer {
@@ -3411,14 +3411,14 @@ select.status-select {
   border-top: 1px solid var(--line);
   background: var(--paper);
   font-size: var(--text-xs);
-  color: var(--slate-faint);
+  color: var(--ink-soft);
 }
 
 .command-palette-footer-hint kbd {
   font-family: var(--font-mono);
   font-size: 10px;
   background: var(--line);
-  color: var(--ink-soft);
+  color: var(--ink);
   padding: 1px 4px;
   border-radius: 3px;
   border: 1px solid var(--line-soft);
@@ -3428,18 +3428,11 @@ select.status-select {
   font-variant-numeric: tabular-nums;
 }
 
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
 @keyframes slideDown {
   from {
-    opacity: 0;
     transform: translateY(-8px) scale(0.98);
   }
   to {
-    opacity: 1;
     transform: translateY(0) scale(1);
   }
 }

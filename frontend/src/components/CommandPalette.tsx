@@ -497,7 +497,7 @@ export function CommandPalette({
           )}
         </div>
 
-        <div className="command-palette-list" ref={listRef} role="listbox">
+        <div className="command-palette-list" role="listbox" aria-label="Suggestions" ref={listRef}>
           {allItems.length === 0 ? (
             <EmptyState
               icon="🔍"
