@@ -939,6 +939,9 @@ function App() {
                 await api.undoActivityEvent(workspace.id, eventId, reason)
                 await reloadGraphData(workspace.id, activeCanvasId)
               }}
+              nodes={nodes}
+              edges={edges}
+              workItems={workItems}
             />
           </div>
         )}

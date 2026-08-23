@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { ActivityEvent, ActivityEventSummary } from '../types'
+import type { ActivityEvent, ActivityEventSummary, GraphEdge, GraphNode, WorkItem } from '../types'
 import { EmptyState, SkeletonRow } from './ui'
+import { KnowledgePulseBanner } from './KnowledgePulseBanner'
 
 interface ActivityViewProps {
   onLoadPage: (
@@ -8,6 +9,9 @@ interface ActivityViewProps {
   ) => Promise<{ events: ActivityEventSummary[]; next_cursor: string | null }>
   onLoadDetail: (eventId: string) => Promise<ActivityEvent>
   onUndo: (eventId: string, reason: string) => Promise<void>
+  nodes?: GraphNode[]
+  edges?: GraphEdge[]
+  workItems?: WorkItem[]
 }
 
 type UndoRowState =
@@ -167,7 +171,14 @@ function ActivityRow({
 /** Read-only activity/audit feed as a day-grouped timeline (EP-2026-013 ST-07): entity-type
  * filter, lazy detail drill-in (the list page never carries a before/after snapshot, ST07-F06),
  * and per-row confirm/undo/retry feedback. */
-export function ActivityView({ onLoadPage, onLoadDetail, onUndo }: ActivityViewProps) {
+export function ActivityView({
+  onLoadPage,
+  onLoadDetail,
+  onUndo,
+  nodes,
+  edges,
+  workItems,
+}: ActivityViewProps) {
   const [events, setEvents] = useState<ActivityEventSummary[]>([])
   const [cursor, setCursor] = useState<string | null>(null)
   const [hasMore, setHasMore] = useState(false)
@@ -327,6 +338,8 @@ export function ActivityView({ onLoadPage, onLoadDetail, onUndo }: ActivityViewP
           </select>
         </div>
       </div>
+
+      <KnowledgePulseBanner nodes={nodes} edges={edges} workItems={workItems} />
 
       {loadError && (
         <p className="view-error" role="alert">
