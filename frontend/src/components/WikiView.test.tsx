@@ -79,7 +79,7 @@ describe('WikiView', () => {
     const props = baseProps()
     render(<WikiView {...props} />)
 
-    const newBtn = await screen.findByRole('button', { name: '+ New page' })
+    const newBtn = (await screen.findAllByRole('button', { name: '+ New page' }))[0]
     fireEvent.click(newBtn)
 
     await waitFor(() =>

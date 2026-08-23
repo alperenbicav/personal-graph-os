@@ -9,7 +9,6 @@ import type {
   WorkItem,
   WorkItemChecklistItem,
   WorkItemDetail,
-  WorkItemKind,
   WorkItemPriority,
   WorkItemStatus,
   WorkItemType,
@@ -213,13 +212,13 @@ export function TasksView({
     }
   }
 
-  async function quickAdd(status: WorkItemStatus, title: string, kind: WorkItemKind = 'task', workType: WorkItemType = 'feature', parentId: string | null = null) {
+  async function quickAdd(status: WorkItemStatus, title: string, workType: WorkItemType = 'feature', parentId: string | null = null) {
     const trimmed = title.trim()
     if (!trimmed) return
     try {
       const created = await onCreateWorkItem({
         workspace_id: workspaceId,
-        kind,
+        kind: 'task',
         work_type: workType,
         title: trimmed,
         status,
@@ -543,132 +542,182 @@ export function TasksView({
         )}
       </main>
 
-      {/* Detail Slide-Over */}
+      {/* Detail Slide-Over / Property Grid (D2) */}
       {selectedWorkItem && (
         <aside className="tasks-detail" aria-label="Work item detail">
           <header className="tasks-detail-header">
-            <input
-              type="text"
-              className="tasks-detail-title-input"
-              aria-label="Work item title"
-              value={selectedWorkItem.title}
-              onChange={(event) => void onRenameWorkItem(selectedWorkItem, event.target.value)}
-            />
+            <div className="v2-tasks-detail-titlebar">
+              <Pill tone={STATUS_TONE[selectedWorkItem.status]}>
+                {STATUS_LABEL[selectedWorkItem.status]}
+              </Pill>
+              <input
+                type="text"
+                className="v2-tasks-detail-title-input"
+                aria-label="Work item title"
+                value={selectedWorkItem.title}
+                onChange={(event) => void onRenameWorkItem(selectedWorkItem, event.target.value)}
+                placeholder="Work item title"
+              />
+            </div>
             <button
               type="button"
               className="tasks-detail-close"
               aria-label="Close detail"
               onClick={() => selectWorkItem(null)}
+              title="Close detail"
             >
               ×
             </button>
           </header>
 
           <div className="tasks-detail-body">
-            <div className="tasks-field-row">
-              <label htmlFor="tasks-edit-status">Status</label>
-              <select
-                id="tasks-edit-status"
-                aria-label="Status"
-                value={selectedWorkItem.status}
-                onChange={(event) =>
-                  void commitUpdate({ status: event.target.value as WorkItemStatus })
-                }
-              >
-                {STATUS_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {/* Property Grid (2 columns on wide, label above control) */}
+            <div className="v2-prop-grid" role="group" aria-label="Work Item Properties">
+              <div className="v2-prop-field">
+                <label className="v2-prop-label" htmlFor="tasks-edit-status">Status</label>
+                <select
+                  id="tasks-edit-status"
+                  className="v2-inp-select"
+                  aria-label="Status"
+                  value={selectedWorkItem.status}
+                  onChange={(event) =>
+                    void commitUpdate({ status: event.target.value as WorkItemStatus })
+                  }
+                >
+                  {STATUS_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-            <div className="tasks-field-row">
-              <label>Kind</label>
-              <div style={{ display: 'flex', alignItems: 'center' }}>
-                <Pill tone={selectedWorkItem.kind === 'epic' ? 'violet' : selectedWorkItem.kind === 'story' ? 'brass' : 'teal'}>
-                  {selectedWorkItem.kind}
-                </Pill>
+              <div className="v2-prop-field">
+                <span className="v2-prop-label">Kind</span>
+                <div className="v2-prop-static">
+                  <Pill tone={selectedWorkItem.kind === 'epic' ? 'violet' : selectedWorkItem.kind === 'story' ? 'brass' : 'teal'}>
+                    {selectedWorkItem.kind}
+                  </Pill>
+                </div>
+              </div>
+
+              <div className="v2-prop-field">
+                <label className="v2-prop-label" htmlFor="tasks-edit-priority">Priority</label>
+                <select
+                  id="tasks-edit-priority"
+                  className="v2-inp-select"
+                  aria-label="Priority"
+                  value={selectedWorkItem.priority ?? ''}
+                  onChange={(event) => {
+                    const val = event.target.value as WorkItemPriority
+                    if (!val) {
+                      void commitUpdate({ priority: null, clear_priority: true })
+                    } else {
+                      void commitUpdate({ priority: val, clear_priority: false })
+                    }
+                  }}
+                >
+                  <option value="">None</option>
+                  {PRIORITY_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="v2-prop-field">
+                <label className="v2-prop-label" htmlFor="tasks-edit-assignee">Assignee</label>
+                <input
+                  id="tasks-edit-assignee"
+                  type="text"
+                  className="v2-inp"
+                  aria-label="Assignee"
+                  value={selectedWorkItem.assignee ?? ''}
+                  placeholder="Unassigned"
+                  onChange={(event) => {
+                    const val = event.target.value
+                    if (!val || !val.trim()) {
+                      void commitUpdate({ assignee: null, clear_assignee: true })
+                    } else {
+                      void commitUpdate({ assignee: val.trim(), clear_assignee: false })
+                    }
+                  }}
+                />
+              </div>
+
+              <div className="v2-prop-field">
+                <label className="v2-prop-label" htmlFor="tasks-edit-due-date">Due date</label>
+                <input
+                  id="tasks-edit-due-date"
+                  type="date"
+                  className="v2-inp v2-inp-date"
+                  aria-label="Due date"
+                  value={selectedWorkItem.due_date ?? ''}
+                  onChange={(event) => {
+                    const val = event.target.value
+                    if (!val) {
+                      void commitUpdate({ due_date: null, clear_due_date: true })
+                    } else {
+                      void commitUpdate({ due_date: val, clear_due_date: false })
+                    }
+                  }}
+                />
+              </div>
+
+              <div className="v2-prop-field">
+                <label className="v2-prop-label" htmlFor="tasks-edit-progress">Progress %</label>
+                <input
+                  id="tasks-edit-progress"
+                  type="number"
+                  min={0}
+                  max={100}
+                  className="v2-inp"
+                  aria-label="Progress %"
+                  value={selectedWorkItem.progress_percent ?? ''}
+                  placeholder="0"
+                  onChange={(event) => {
+                    const raw = event.target.value
+                    if (raw === '' || raw === null) {
+                      void commitUpdate({ progress_percent: undefined, clear_progress_percent: true })
+                    } else {
+                      void commitUpdate({ progress_percent: Number(raw), clear_progress_percent: false })
+                    }
+                  }}
+                />
+              </div>
+
+              <div className="v2-prop-field full-width">
+                <label className="v2-prop-label" htmlFor="tasks-edit-blockers">Blockers</label>
+                <input
+                  id="tasks-edit-blockers"
+                  type="text"
+                  className="v2-inp"
+                  aria-label="Blockers"
+                  value={selectedWorkItem.blockers ?? ''}
+                  placeholder="None"
+                  onChange={(event) => {
+                    const val = event.target.value
+                    if (!val || !val.trim()) {
+                      void commitUpdate({ blockers: null, clear_blockers: true })
+                    } else {
+                      void commitUpdate({ blockers: val.trim(), clear_blockers: false })
+                    }
+                  }}
+                />
               </div>
             </div>
 
-            <div className="tasks-field-row">
-              <label htmlFor="tasks-edit-priority">Priority</label>
-              <select
-                id="tasks-edit-priority"
-                aria-label="Priority"
-                value={selectedWorkItem.priority ?? ''}
-                onChange={(event) =>
-                  void commitUpdate({
-                    priority: (event.target.value as WorkItemPriority) || null,
-                  })
-                }
-              >
-                <option value="">None</option>
-                {PRIORITY_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="tasks-field-row">
-              <label htmlFor="tasks-edit-assignee">Assignee</label>
-              <input
-                id="tasks-edit-assignee"
-                type="text"
-                value={selectedWorkItem.assignee ?? ''}
-                placeholder="Assignee username"
-                onChange={(event) =>
-                  void commitUpdate({ assignee: event.target.value.trim() || null })
-                }
-              />
-            </div>
-
-            <div className="tasks-field-row">
-              <label htmlFor="tasks-edit-due-date">Due date</label>
-              <input
-                id="tasks-edit-due-date"
-                type="date"
-                value={selectedWorkItem.due_date ?? ''}
-                onChange={(event) =>
-                  void commitUpdate({ due_date: event.target.value || null })
-                }
-              />
-            </div>
-
-            <div className="tasks-field-row">
-              <label htmlFor="tasks-edit-progress">Progress %</label>
-              <input
-                id="tasks-edit-progress"
-                type="number"
-                min={0}
-                max={100}
-                value={selectedWorkItem.progress_percent ?? ''}
-                onChange={(event) => {
-                  const val = event.target.value === '' ? undefined : Number(event.target.value)
-                  void commitUpdate({ progress_percent: val })
-                }}
-              />
-            </div>
-
-            <div className="tasks-field-row">
-              <label htmlFor="tasks-edit-blockers">Blockers</label>
-              <input
-                id="tasks-edit-blockers"
-                type="text"
-                value={selectedWorkItem.blockers ?? ''}
-                placeholder="Summary of blockers"
-                onChange={(event) =>
-                  void commitUpdate({ blockers: event.target.value.trim() || null })
-                }
-              />
-            </div>
-
-            {/* Checklist Section */}
-            <section className="tasks-checklist-section" aria-label="Checklist">
-              <h3>Checklist</h3>
+            {/* Checklist Section (Surface Card) */}
+            <section className="v2-card-section" aria-label="Checklist">
+              <div className="v2-card-header">
+                <h4>
+                  <span>Checklist</span>
+                  <span className="v2-count-pill">
+                    {detail?.checklist_items.filter((i) => i.is_completed).length ?? 0}/{detail?.checklist_items.length ?? 0}
+                  </span>
+                </h4>
+              </div>
               <div className="tasks-checklist-items">
                 {(detail?.checklist_items ?? []).map((item, index) => (
                   <div key={item.id} className="tasks-checklist-row">
@@ -684,6 +733,7 @@ export function TasksView({
                     <div className="tasks-checklist-actions">
                       <button
                         type="button"
+                        className="v2-tiny-icon-btn"
                         disabled={index === 0}
                         onClick={() => void moveChecklistItem(index, index - 1)}
                         aria-label={`Move ${item.label} up`}
@@ -692,6 +742,7 @@ export function TasksView({
                       </button>
                       <button
                         type="button"
+                        className="v2-tiny-icon-btn"
                         disabled={index === (detail?.checklist_items.length ?? 0) - 1}
                         onClick={() => void moveChecklistItem(index, index + 1)}
                         aria-label={`Move ${item.label} down`}
@@ -700,6 +751,7 @@ export function TasksView({
                       </button>
                       <button
                         type="button"
+                        className="v2-tiny-icon-btn del"
                         onClick={() => void removeChecklistItem(item.id)}
                         aria-label={`Delete ${item.label}`}
                       >
@@ -709,9 +761,10 @@ export function TasksView({
                   </div>
                 ))}
               </div>
-              <div className="tasks-checklist-add">
+              <div className="tasks-checklist-add" style={{ display: 'flex', gap: 8 }}>
                 <input
                   type="text"
+                  className="v2-inp"
                   placeholder="New checklist item…"
                   aria-label="New checklist item"
                   value={newChecklistLabel}
@@ -720,15 +773,25 @@ export function TasksView({
                     if (event.key === 'Enter') void submitChecklistItem()
                   }}
                 />
-                <button type="button" onClick={() => void submitChecklistItem()}>
+                <button
+                  type="button"
+                  className="v2-chipbtn prime"
+                  onClick={() => void submitChecklistItem()}
+                  disabled={!newChecklistLabel.trim()}
+                >
                   Add
                 </button>
               </div>
             </section>
 
-            {/* Linked Documents */}
-            <section className="tasks-links-section" aria-label="Linked documents">
-              <h3>Linked Documents</h3>
+            {/* Linked Documents (Surface Card) */}
+            <section className="v2-card-section" aria-label="Linked documents">
+              <div className="v2-card-header">
+                <h4>
+                  <span>Linked Documents</span>
+                  <span className="v2-count-pill">{detail?.linked_documents.length ?? 0}</span>
+                </h4>
+              </div>
               <div className="tasks-linked-docs">
                 {(detail?.linked_documents ?? []).map((link) => {
                   const doc = documents.find((d) => d.id === link.document_id)
@@ -736,13 +799,14 @@ export function TasksView({
                     <div key={link.id} className="tasks-link-row">
                       <button
                         type="button"
-                        className="tasks-link-btn"
+                        className="v2-chipbtn"
                         onClick={() => onNavigateDocument?.(link.document_id)}
                       >
                         📄 {doc?.title || link.document_id}
                       </button>
                       <button
                         type="button"
+                        className="v2-tag-remove-btn"
                         onClick={() => void detachDocument(link.document_id)}
                         aria-label={`Detach ${doc?.title || link.document_id}`}
                       >
@@ -753,8 +817,10 @@ export function TasksView({
                 })}
               </div>
               {linkableDocuments.length > 0 && (
-                <div className="tasks-link-add">
+                <div className="tasks-link-add" style={{ display: 'flex', gap: 8, marginTop: 4 }}>
                   <select
+                    className="v2-inp-select"
+                    style={{ flex: 1 }}
                     value={linkTargetId}
                     onChange={(event) => setLinkTargetId(event.target.value)}
                     aria-label="Document to attach"
@@ -766,40 +832,48 @@ export function TasksView({
                       </option>
                     ))}
                   </select>
-                  <button type="button" onClick={() => void attachDocument()} disabled={!linkTargetId}>
+                  <button
+                    type="button"
+                    className="v2-chipbtn prime"
+                    onClick={() => void attachDocument()}
+                    disabled={!linkTargetId}
+                  >
                     Attach
                   </button>
                 </div>
               )}
             </section>
 
-            {/* Body / Description Section */}
-            <section className="tasks-body-section" aria-label="Description">
-              <div className="tasks-body-header">
-                <h3>Description</h3>
-                <SegmentedControl
-                  ariaLabel="Description mode"
-                  options={[
-                    { value: 'write', label: 'Write' },
-                    { value: 'preview', label: 'Preview' },
-                  ]}
-                  value={descriptionMode}
-                  onChange={(val) => setDescriptionMode(val as 'write' | 'preview')}
-                />
-                {isDirty && (
-                  <button type="button" className="primary-action" onClick={() => void saveBody()}>
-                    Save description
-                  </button>
-                )}
+            {/* Body / Description Section (Surface Card) */}
+            <section className="v2-card-section" aria-label="Description">
+              <div className="v2-card-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                <h4>Description</h4>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <SegmentedControl
+                    ariaLabel="Description mode"
+                    options={[
+                      { value: 'write', label: 'Write' },
+                      { value: 'preview', label: 'Preview' },
+                    ]}
+                    value={descriptionMode}
+                    onChange={(val) => setDescriptionMode(val as 'write' | 'preview')}
+                  />
+                  {isDirty && (
+                    <button type="button" className="v2-chipbtn prime" onClick={() => void saveBody()}>
+                      Save
+                    </button>
+                  )}
+                </div>
               </div>
 
               {descriptionMode === 'write' ? (
                 <textarea
-                  className="tasks-body-textarea"
+                  className="v2-inp-textarea"
                   aria-label="Work item description"
                   value={bodyDraft}
                   onChange={(event) => setBodyDraft(event.target.value)}
                   placeholder="Add detailed markdown specifications, acceptance criteria, or logs…"
+                  rows={6}
                 />
               ) : (
                 <div
