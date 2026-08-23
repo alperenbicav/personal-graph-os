@@ -235,6 +235,7 @@ export function GraphCanvas({
         onNodeDragStop={handleNodeDragStop}
         onPaneClick={handlePaneClick}
         onConnect={handleConnect}
+        connectionRadius={30}
         fitView
         minZoom={0.4}
         maxZoom={2}

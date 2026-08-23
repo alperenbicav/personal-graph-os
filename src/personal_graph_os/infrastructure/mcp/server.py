@@ -31,6 +31,7 @@ from personal_graph_os.domain.documents import DocumentKind
 from personal_graph_os.domain.enrichment import RelationProposalStatus
 from personal_graph_os.domain.identifiers import (
     ActivityEventId,
+    AgentId,
     CollectionId,
     ContextPackId,
     DocumentId,
@@ -940,7 +941,82 @@ _ST10_TOOLS = (
     ),
 )
 
-_TOOLS = _TOOLS + _ST09_TOOLS + _ST10_TOOLS
+_AGENT_TOOLS = (
+    Tool(
+        name="pgos_list_agents",
+        description="List all configured agents and their capabilities.",
+        inputSchema={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    ),
+    Tool(
+        name="agents.list",
+        description="List all configured agents and their capabilities.",
+        inputSchema={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    ),
+    Tool(
+        name="pgos_message_agent",
+        description="Send a message to an agent and receive its completion.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["agent_id", "content"],
+            "additionalProperties": False,
+        },
+    ),
+    Tool(
+        name="agents.message",
+        description="Send a message to an agent and receive its completion.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["agent_id", "content"],
+            "additionalProperties": False,
+        },
+    ),
+    Tool(
+        name="pgos_run_agent",
+        description="Run a one-shot agent task with tool_allowlist respected for read-only tools.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string"},
+                "task": {"type": "string"},
+                "workspace_id": {"type": "string"},
+            },
+            "required": ["agent_id", "task"],
+            "additionalProperties": False,
+        },
+    ),
+    Tool(
+        name="agents.run",
+        description="Run a one-shot agent task with tool_allowlist respected for read-only tools.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string"},
+                "task": {"type": "string"},
+                "workspace_id": {"type": "string"},
+            },
+            "required": ["agent_id", "task"],
+            "additionalProperties": False,
+        },
+    ),
+)
+
+_TOOLS = _TOOLS + _ST09_TOOLS + _ST10_TOOLS + _AGENT_TOOLS
 
 _ToolHandler = Callable[[AgentGatewayService, dict[str, object]], dict[str, object]]
 
@@ -1801,6 +1877,36 @@ def _import_clickup_item(
     )
 
 
+def _list_agents(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    agents = gateway.list_agents()
+    return {"agents": [agent.model_dump(mode="json") for agent in agents]}
+
+
+def _message_agent(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    agent_id = AgentId(_str_arg(arguments, "agent_id"))
+    content = _str_arg(arguments, "content")
+    result = gateway.message_agent(agent_id, content)
+    return result.model_dump(mode="json")
+
+
+def _run_agent(
+    gateway: AgentGatewayService, arguments: dict[str, object]
+) -> dict[str, object]:
+    agent_id = AgentId(_str_arg(arguments, "agent_id"))
+    task = _str_arg(arguments, "task")
+    workspace_id = (
+        WorkspaceId(_str_arg(arguments, "workspace_id"))
+        if arguments.get("workspace_id")
+        else None
+    )
+    result = gateway.run_agent(agent_id, task, workspace_id=workspace_id)
+    return result.model_dump(mode="json")
+
+
 _HANDLERS: dict[str, _ToolHandler] = {
     "pgos_get_workspace": _get_workspace,
     "pgos_list_nodes": _list_nodes,
@@ -1864,6 +1970,12 @@ _HANDLERS: dict[str, _ToolHandler] = {
     "pgos_reject_relation_proposal": _reject_relation_proposal,
     "pgos_capture": _capture,
     "pgos_import_clickup_item": _import_clickup_item,
+    "pgos_list_agents": _list_agents,
+    "agents.list": _list_agents,
+    "pgos_message_agent": _message_agent,
+    "agents.message": _message_agent,
+    "pgos_run_agent": _run_agent,
+    "agents.run": _run_agent,
 }
 
 

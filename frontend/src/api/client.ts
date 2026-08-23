@@ -1,10 +1,14 @@
 import type {
   ActivityEvent,
   ActivityEventPage,
+  Agent,
+  AgentExecutionResult,
+  AgentRun,
   Attachment,
   Canvas,
   CanvasPlacement,
   Collection,
+  CreateAgentInput,
   DocumentDetail,
   DocumentKind,
   DocumentLinkTargetType,
@@ -25,6 +29,7 @@ import type {
   SearchScope,
   StatusDefinition,
   Tag,
+  UpdateAgentInput,
   WikiDocument,
   WorkflowChainStep,
   WorkItem,
@@ -783,3 +788,53 @@ export function verifyFileReference(fileReferenceId: string): Promise<FileRefere
     method: 'POST',
   })
 }
+
+export function listAgents(): Promise<Agent[]> {
+  return request('/agents')
+}
+
+export function getAgent(agentId: string): Promise<Agent> {
+  return request(`/agents/${encodeURIComponent(agentId)}`)
+}
+
+export function createAgent(input: CreateAgentInput): Promise<Agent> {
+  return request('/agents', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function updateAgent(agentId: string, input: UpdateAgentInput): Promise<Agent> {
+  return request(`/agents/${encodeURIComponent(agentId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  })
+}
+
+export function deleteAgent(agentId: string): Promise<void> {
+  return request(`/agents/${encodeURIComponent(agentId)}`, {
+    method: 'DELETE',
+  })
+}
+
+export function listAgentRuns(agentId?: string, limit = 50): Promise<AgentRun[]> {
+  if (agentId) {
+    return request(`/agents/${encodeURIComponent(agentId)}/runs?limit=${limit}`)
+  }
+  return request(`/agents/runs?limit=${limit}`)
+}
+
+export function messageAgent(
+  agentId: string,
+  content: string,
+  systemPrompt?: string,
+): Promise<AgentExecutionResult> {
+  return request(`/agents/${encodeURIComponent(agentId)}/message`, {
+    method: 'POST',
+    body: JSON.stringify({
+      content,
+      system_prompt: systemPrompt,
+    }),
+  })
+}
+

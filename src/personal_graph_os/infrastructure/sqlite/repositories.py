@@ -20,6 +20,12 @@ from personal_graph_os.domain.activity import (
     IdempotencyReceipt,
     MutationAction,
 )
+from personal_graph_os.domain.agents import (
+    Agent,
+    AgentRun,
+    AgentRunStatus,
+    AgentWriteMode,
+)
 from personal_graph_os.domain.canvas import Canvas, CanvasPlacement
 from personal_graph_os.domain.channel_sync import ChannelSyncState
 from personal_graph_os.domain.documents import (
@@ -45,6 +51,8 @@ from personal_graph_os.domain.files import Attachment, FileReference
 from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.identifiers import (
     ActivityEventId,
+    AgentId,
+    AgentRunId,
     AttachmentId,
     CanvasId,
     CanvasPlacementId,
@@ -2372,5 +2380,127 @@ class SqliteWorkPlanningReceiptRepository:
                 if row["plan_document_version_id"] is not None
                 else None
             ),
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+
+class SqliteAgentRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def list_agents(self) -> tuple[Agent, ...]:
+        rows = self._connection.execute(
+            "SELECT id, name, emoji, system_prompt, tool_allowlist, model, write_mode, created_at "
+            "FROM agents ORDER BY name ASC"
+        ).fetchall()
+        return tuple(self._hydrate_agent(row) for row in rows)
+
+    def get(self, agent_id: AgentId) -> Agent | None:
+        row = self._connection.execute(
+            "SELECT id, name, emoji, system_prompt, tool_allowlist, model, write_mode, created_at "
+            "FROM agents WHERE id = ?",
+            (str(agent_id),),
+        ).fetchone()
+        return None if row is None else self._hydrate_agent(row)
+
+    def save_without_commit(self, agent: Agent) -> None:
+        write_mode_val = (
+            agent.write_mode.value
+            if isinstance(agent.write_mode, AgentWriteMode)
+            else str(agent.write_mode)
+        )
+        self._connection.execute(
+            "INSERT INTO agents ("
+            "  id, name, emoji, system_prompt, tool_allowlist, model, write_mode, created_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET "
+            "  name = excluded.name, "
+            "  emoji = excluded.emoji, "
+            "  system_prompt = excluded.system_prompt, "
+            "  tool_allowlist = excluded.tool_allowlist, "
+            "  model = excluded.model, "
+            "  write_mode = excluded.write_mode",
+            (
+                str(agent.id),
+                agent.name,
+                agent.emoji,
+                agent.system_prompt,
+                json.dumps(agent.tool_allowlist),
+                agent.model,
+                write_mode_val,
+                agent.created_at.isoformat(),
+            ),
+        )
+
+    def delete_without_commit(self, agent_id: AgentId) -> None:
+        self._connection.execute("DELETE FROM agents WHERE id = ?", (str(agent_id),))
+
+    def record_run_without_commit(self, run: AgentRun) -> None:
+        status_val = (
+            run.status.value
+            if isinstance(run.status, AgentRunStatus)
+            else str(run.status)
+        )
+        self._connection.execute(
+            "INSERT INTO agent_runs ("
+            "  id, agent_id, action, entity_type, entity_id, status, summary, diff_json, created_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(run.id),
+                str(run.agent_id),
+                run.action,
+                run.entity_type,
+                run.entity_id,
+                status_val,
+                run.summary,
+                run.diff_json,
+                run.created_at.isoformat(),
+            ),
+        )
+
+    def get_run(self, run_id: AgentRunId) -> AgentRun | None:
+        row = self._connection.execute(
+            "SELECT id, agent_id, action, entity_type, entity_id, status, summary, diff_json, "
+            "created_at FROM agent_runs WHERE id = ?",
+            (str(run_id),),
+        ).fetchone()
+        return None if row is None else self._hydrate_run(row)
+
+    def list_runs_for_agent(
+        self, agent_id: AgentId, *, limit: int = 50
+    ) -> tuple[AgentRun, ...]:
+        row_query = (
+            "SELECT id, agent_id, action, entity_type, entity_id, status, summary, diff_json, "
+            "created_at FROM agent_runs WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?"
+        )
+        rows = self._connection.execute(row_query, (str(agent_id), limit)).fetchall()
+        return tuple(self._hydrate_run(row) for row in rows)
+
+    def _hydrate_agent(self, row: sqlite3.Row) -> Agent:
+        try:
+            tools = json.loads(row["tool_allowlist"]) if row["tool_allowlist"] else []
+        except (ValueError, TypeError):
+            tools = []
+        return Agent(
+            id=AgentId(row["id"]),
+            name=row["name"],
+            emoji=row["emoji"],
+            system_prompt=row["system_prompt"],
+            tool_allowlist=tools,
+            model=row["model"],
+            write_mode=AgentWriteMode(row["write_mode"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+    def _hydrate_run(self, row: sqlite3.Row) -> AgentRun:
+        return AgentRun(
+            id=AgentRunId(row["id"]),
+            agent_id=AgentId(row["agent_id"]),
+            action=row["action"],
+            entity_type=row["entity_type"],
+            entity_id=row["entity_id"],
+            status=AgentRunStatus(row["status"]),
+            summary=row["summary"],
+            diff_json=row["diff_json"],
             created_at=datetime.fromisoformat(row["created_at"]),
         )

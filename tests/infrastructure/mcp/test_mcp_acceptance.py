@@ -166,6 +166,12 @@ def test_real_client_lists_all_tools(running_server: _RunningServer) -> None:
         "pgos_reject_relation_proposal",
         "pgos_capture",
         "pgos_import_clickup_item",
+        "pgos_list_agents",
+        "agents.list",
+        "pgos_message_agent",
+        "agents.message",
+        "pgos_run_agent",
+        "agents.run",
     }
 
 

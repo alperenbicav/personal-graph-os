@@ -12,22 +12,29 @@ import { useResourceHandlers } from './hooks/useResourceHandlers'
 import { EnrichmentDetailPanel } from './components/EnrichmentDetailPanel'
 import { GraphCanvas } from './components/GraphCanvas'
 import { Inspector, type RelationRow } from './components/Inspector'
-import { NavTabs, type AppView } from './components/NavTabs'
+import type { AppView } from './components/NavTabs'
 import { PlaceExistingNodeControl } from './components/PlaceExistingNodeControl'
 import { RepositoriesView } from './components/RepositoriesView'
 import { ResearchView } from './components/ResearchView'
 import { SearchView } from './components/SearchView'
 import { TasksView } from './components/TasksView'
-import { TopBar } from './components/TopBar'
 import { UnlockScreen } from './components/UnlockScreen'
 import { WikiView } from './components/WikiView'
-import { onSessionUnauthorized, restoreSession } from './api/session'
+import { RailNav } from './components/navigation/RailNav'
+import { Topbar } from './components/navigation/Topbar'
+import { AgentDock } from './components/agents/AgentDock'
+import { AgentsView } from './components/agents/AgentsView'
+import { clearSession, onSessionUnauthorized, restoreSession } from './api/session'
 import { WorkflowChainPanel } from './components/WorkflowChainPanel'
 import { messageFor } from './lib/errors'
 import { neighborhoodWithinDepth } from './lib/neighborhood'
 import { NEXT_WORKFLOW_STEP } from './lib/workflowChain'
 import { SchemaEditor } from './components/SchemaEditor'
 import type {
+  Agent,
+  AgentRun,
+  CreateAgentInput,
+  UpdateAgentInput,
   RelatedNode,
   Canvas,
   CanvasPlacement,
@@ -72,6 +79,11 @@ function App() {
   const [selectedWorkItemId, setSelectedWorkItemId] = useState<string | null>(null)
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null)
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false)
+  const [agents, setAgents] = useState<Agent[]>([])
+  const [agentRuns, setAgentRuns] = useState<AgentRun[]>([])
+  const [isDockOpen, setIsDockOpen] = useState(false)
+  const [isAgentRunning, setIsAgentRunning] = useState(false)
+  const [activeChatAgentId, setActiveChatAgentId] = useState<string | null>(null)
 
   // Per-placement move sequence: guards against an older, now-superseded save request
   // rolling back a position that a newer move already replaced (or is still in flight).
@@ -172,6 +184,32 @@ function App() {
     }
   }, [activeCanvasId, recordPersisted])
 
+  const reloadAgents = useCallback(async () => {
+    try {
+      const fetchedAgents = (await api.listAgents().catch(() => [])) ?? []
+      setAgents(fetchedAgents)
+      if (fetchedAgents.length > 0) {
+        const runPromises = fetchedAgents.map((a) =>
+          api.listAgentRuns(a.id, 5).catch(() => [])
+        )
+        const runArrays = await Promise.all(runPromises)
+        const allRuns = runArrays.flat().sort((a, b) => (b.created_at > a.created_at ? 1 : -1))
+        setAgentRuns(allRuns)
+      }
+    } catch {
+      // Graceful fallback
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isUnlocked) return
+    reloadAgents()
+    const timer = setInterval(() => {
+      reloadAgents()
+    }, 8000)
+    return () => clearInterval(timer)
+  }, [isUnlocked, reloadAgents])
+
   // The one refresh path the Tasks/Research workspaces share: re-fetch whichever view is
   // currently active from the backend so an edit made anywhere is reflected the next time
   // this runs rather than each view keeping its own stale copy.
@@ -182,12 +220,14 @@ function App() {
           setWorkItems((await api.listWorkItems(workspaceId)) ?? [])
         } else if (view === 'research') {
           setResearchDashboard(await api.getResearchDashboard(workspaceId))
+        } else if (view === 'agents') {
+          await reloadAgents()
         }
       } catch (error) {
         setActionError(`Could not load this view: ${messageFor(error)}`)
       }
     },
-    [],
+    [reloadAgents],
   )
 
   useEffect(() => {
@@ -618,10 +658,84 @@ function App() {
     setArchiveArmed(false)
   }, [selectedNodeId])
 
-// Detail column (EP-2026-013 ST-01): the Inspector belongs to the Graph canvas only; on
+  // Detail column (EP-2026-013 ST-01): the Inspector belongs to the Graph canvas only; on
   // Research/Repositories the rich resource panels appear when a resource is selected and the
   // column collapses entirely otherwise — never a dead placeholder bar.
   const detailColumnVisible = activeView === 'graph'
+
+  const handleLock = useCallback(() => {
+    clearSession()
+    setIsUnlocked(false)
+  }, [])
+
+  const handleAskAgent = useCallback(
+    async (agentId: string, prompt: string) => {
+      setIsAgentRunning(true)
+      setActionError(null)
+      try {
+        await api.messageAgent(agentId, prompt)
+        await reloadAgents()
+      } catch (err) {
+        setActionError(`Agent execution failed: ${messageFor(err)}`)
+      } finally {
+        setIsAgentRunning(false)
+      }
+    },
+    [reloadAgents],
+  )
+
+  const handleCreateAgent = useCallback(
+    async (input: CreateAgentInput) => {
+      setActionError(null)
+      try {
+        await api.createAgent(input)
+        await reloadAgents()
+      } catch (err) {
+        setActionError(`Failed to create agent: ${messageFor(err)}`)
+        throw err
+      }
+    },
+    [reloadAgents],
+  )
+
+  const handleUpdateAgent = useCallback(
+    async (agentId: string, input: UpdateAgentInput) => {
+      setActionError(null)
+      try {
+        await api.updateAgent(agentId, input)
+        await reloadAgents()
+      } catch (err) {
+        setActionError(`Failed to update agent: ${messageFor(err)}`)
+        throw err
+      }
+    },
+    [reloadAgents],
+  )
+
+  const handleDeleteAgent = useCallback(
+    async (agentId: string) => {
+      setActionError(null)
+      try {
+        await api.deleteAgent(agentId)
+        await reloadAgents()
+      } catch (err) {
+        setActionError(`Failed to delete agent: ${messageFor(err)}`)
+        throw err
+      }
+    },
+    [reloadAgents],
+  )
+
+  const handleExportWorkspace = useCallback(async () => {
+    if (!workspace) return
+    const blob = await api.exportWorkspace(workspace.id)
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${workspace.id}.pgos-export.zip`
+    link.click()
+    URL.revokeObjectURL(url)
+  }, [workspace])
 
   if (!isUnlocked) {
     return <UnlockScreen onUnlocked={() => setIsUnlocked(true)} />
@@ -638,348 +752,356 @@ function App() {
   }
 
   return (
-    <div className="app">
-      <TopBar
-        onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
-        onOpenSchemaEditor={() => setIsSchemaEditorOpen(true)}
-        onExportWorkspace={async () => {
-          if (!workspace) return
-          const blob = await api.exportWorkspace(workspace.id)
-          const url = URL.createObjectURL(blob)
-          const link = document.createElement('a')
-          link.href = url
-          link.download = `${workspace.id}.pgos-export.zip`
-          link.click()
-          URL.revokeObjectURL(url)
-        }}
+    <div className="v2-app-shell">
+      <RailNav
+        activeView={activeView}
+        onSelectView={setActiveView}
+        onOpenSettings={() => setIsSchemaEditorOpen(true)}
+        onLock={handleLock}
       />
 
-      {actionError && (
-        <div className="action-error" role="alert">
-          <span>{actionError}</span>
-          <button type="button" onClick={() => setActionError(null)} aria-label="Dismiss">
-            ×
-          </button>
-        </div>
-      )}
+      <div className="v2-main-column">
+        <Topbar
+          workspace={workspace}
+          activeView={activeView}
+          activeAgentCount={agents.length}
+          isDockOpen={isDockOpen}
+          onToggleDock={() => setIsDockOpen(!isDockOpen)}
+          onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+          onOpenSchemaEditor={() => setIsSchemaEditorOpen(true)}
+          onExportWorkspace={handleExportWorkspace}
+        />
 
-      <NavTabs activeView={activeView} onSelectView={setActiveView} />
-
-      {/* Tasks, Activity, and Wiki own their full-page layouts (tree + editor + inspector), so
-          the generic Inspector/Research/Workflow panel would otherwise keep showing whatever
-          was last selected on a different tab — a stale, unrelated side panel with no
-          connection to what's actually on screen. */}
-      <div
-        className={
-          activeView === 'graph'
-            ? 'workbench'
-            : activeView === 'tasks' ||
-                activeView === 'activity' ||
-                activeView === 'wiki' ||
-                activeView === 'research' ||
-                activeView === 'repositories'
-              ? 'workbench workbench-full'
-              : detailColumnVisible
-                ? activeView === 'research'
-                  ? 'workbench workbench-no-rail workbench-research'
-                  : 'workbench workbench-no-rail'
-                : 'workbench workbench-full'
-        }
-      >
-        {activeView === 'graph' && (
-          <CanvasRail
-            canvases={canvases}
-            activeCanvasId={activeCanvasId}
-            onSelectCanvas={setActiveCanvasId}
-            onCreateCanvas={() => setIsNewCanvasModalOpen(true)}
-          />
-        )}
-
-        {activeView === 'graph' && (
-          <div className="stage-frame">
-            <div className="stage-toolbar">
-              <span className="stage-pill">
-                {activeCanvas ? activeCanvas.name : '—'} · {visibleNodes.length} objects ·{' '}
-                {edges.length} relations
-              </span>
-              <CreateNodeControl
-                nodeTypes={workspace?.node_types ?? []}
-                isDisabled={!activeCanvasId}
-                onCreate={handleCreateNode}
-              />
-              <PlaceExistingNodeControl unplacedNodes={unplacedNodes} onPlace={handlePlaceExisting} />
-            </div>
-
-            <GraphCanvas
-              canvas={activeCanvas}
-              nodes={visibleNodes}
-              edges={edges}
-              placements={placements}
-              nodeTypeById={nodeTypeById}
-              edgeTypeById={edgeTypeById}
-              statusById={statusById}
-              selectedNodeId={selectedNodeId}
-              focusSet={focusSet}
-              onSelectNode={setSelectedNodeId}
-              onMovePlacement={handleMovePlacement}
-              onRequestConnect={handleRequestConnect}
-            />
-
-            <div className="focus-control">
-              <span>Neighborhood focus</span>
-              <input
-                type="range"
-                aria-label="Neighborhood focus"
-                min={0}
-                max={MAX_FOCUS_DEPTH}
-                step={1}
-                value={focusDepth}
-                onChange={(event) => setFocusDepth(Number(event.target.value))}
-                disabled={!selectedNodeId}
-              />
-              <span className="focus-value">
-                {focusDepth === 0 ? 'Off' : `${focusDepth} hop${focusDepth > 1 ? 's' : ''}`}
-              </span>
-            </div>
-
-            <div className="legend">
-              <div className="legend-row">
-                <span
-                  className="legend-swatch"
-                  style={{
-                    background:
-                      workspace?.node_types.find((t) => t.system_key === 'task')?.color_hex ??
-                      'var(--teal)',
-                  }}
-                />
-                Task
-              </div>
-              <div className="legend-row">
-                <span
-                  className="legend-swatch"
-                  style={{
-                    background:
-                      workspace?.node_types.find((t) => t.name.toLowerCase() === 'project')
-                        ?.color_hex ?? 'var(--brass)',
-                  }}
-                />
-                Project
-              </div>
-              <div className="legend-row">
-                <span className="keyhint">drag</span>move ·{' '}
-                <span className="keyhint">connect</span>relate ·{' '}
-                <span className="keyhint">del</span>archive · <span className="keyhint">esc</span>
-                deselect
-              </div>
-            </div>
+        {actionError && (
+          <div className="action-error" role="alert" style={{ margin: '8px 14px 0' }}>
+            <span>{actionError}</span>
+            <button type="button" onClick={() => setActionError(null)} aria-label="Dismiss">
+              ×
+            </button>
           </div>
         )}
 
-        {activeView === 'search' && (
-          <div className="view-frame">
-            <SearchView
-              onSearch={(query, scope, offset) =>
-                workspace
-                  ? api.search(workspace.id, query, 20, false, scope, offset)
-                  : Promise.resolve({ results: [], total: 0, has_more: false, offset: 0 })
-              }
-              selectedNodeId={selectedNodeId}
-              onSelectNode={setSelectedNodeId}
-              onActivateResult={(result) => {
-                // Route to the owning tab so the result is actually visible (ST-06 review P1).
-                const targetScope = result.scope
-                if (targetScope === 'wiki') {
-                  setActiveView('wiki')
-                  if (result.node?.id) setSelectedNodeId(result.node.id)
-                  return
-                }
-                if (targetScope === 'tasks') {
-                  setActiveView('tasks')
-                  const match = workItems.find((entry) => entry.node_id === result.node?.id)
-                  if (match) setSelectedWorkItemId(match.id)
-                  return
-                }
-                if (targetScope === 'research' || targetScope === 'repositories') {
-                  setActiveView(targetScope)
-                  if (result.node?.id) setSelectedNodeId(result.node.id)
-                  return
-                }
-                // graph / all: node-backed results live on the canvas
-                if (result.node?.id) {
-                  setSelectedNodeId(result.node.id)
-                  setActiveView('graph')
-                } else if (result.document) {
-                  setActiveView('wiki')
-                }
-              }}
-            />
-          </div>
-        )}
-
-        {activeView === 'tasks' && workspace && (
-          <div className="view-frame">
-            <TasksView
-              workspaceId={workspace.id}
-              workItems={workItems}
-              documents={documents}
-              repositories={repositories}
-              selectedWorkItemId={selectedWorkItemId}
-              onSelectWorkItem={setSelectedWorkItemId}
-              onCreateWorkItem={handleCreateWorkItem}
-              onUpdateWorkItem={handleUpdateWorkItem}
-              onLoadDetail={api.getWorkItemDetail}
-              onEditBody={handleEditWorkItemBody}
-              onAddChecklistItem={handleAddChecklistItem}
-              onUpdateChecklistItem={handleUpdateChecklistItem}
-              onRemoveChecklistItem={handleRemoveChecklistItem}
-              onReorderChecklistItems={handleReorderChecklistItems}
-              onAttachDocument={handleAttachWorkItemDocument}
-              onRenameWorkItem={handleRenameWorkItem}
-              onDetachDocument={handleDetachWorkItemDocument}
-              onNavigateDocument={(docId) => {
-                setActiveView('wiki')
-                setSelectedDocumentId(docId)
-              }}
-              onNavigateRepository={(repoNodeId) => {
-                setActiveView('repositories')
-                setSelectedNodeId(repoNodeId)
-              }}
-            />
-          </div>
-        )}
-
-        {activeView === 'wiki' && workspace && (
-          <div className="view-frame">
-            <WikiView
-              onLoadDocuments={(collectionId) => api.listDocuments(workspace.id, { collectionId })}
-              onLoadDetail={(documentId) => api.getDocumentDetail(documentId)}
-              onLoadVersions={(documentId) => api.listDocumentVersions(documentId)}
-              onCreateDocument={(input) =>
-                api.createDocument({ ...input, workspace_id: workspace.id })
-              }
-              onUpdateMetadata={(documentId, patch) => api.updateDocumentMetadata(documentId, patch)}
-              onEditBody={(documentId, bodyMarkdown) =>
-                api.editDocumentBody(documentId, bodyMarkdown, 'human/local-user/rest')
-              }
-              onLoadCollections={() => api.listCollections(workspace.id)}
-              onCreateCollection={(name) => api.createCollection(workspace.id, name)}
-              onLoadTags={() => api.listTags(workspace.id)}
-              onAddDocumentLink={(documentId, targetDocumentId) =>
-                api.addDocumentLink(documentId, 'document', targetDocumentId)
-              }
-              selectedDocumentId={selectedDocumentId}
-              onSelectDocument={setSelectedDocumentId}
-            />
-          </div>
-        )}
-
-        {activeView === 'research' && (
-          <div className="view-frame">
-            <ResearchView
-              dashboard={researchDashboard}
-              resources={resources}
-              selectedNodeId={selectedNodeId}
-              onSelectNode={setSelectedNodeId}
-              onClearSelection={() => setSelectedNodeId(null)}
-              onCreateResource={handleCreateResource}
-              onArchiveResource={handleArchiveResource}
-              onDeleteResource={handleDeleteResource}
-              onUpdateDetail={handleUpdateResource}
-              renderEnrichment={(resource) => (
-                <EnrichmentDetailPanel
-                  key={`enrichment-${resource.id}`}
-                  resourceId={resource.id}
-                  onLoadDetail={api.getResourceDetail}
-                  onGoToRelation={handleGoToRelation}
-                />
-              )}
-              workflowPanel={
-                nextWorkflowStep ? (
-                  <WorkflowChainPanel
-                    nodeSystemKey={selectedNodeType?.system_key}
-                    existingTargetCandidates={workflowChainCandidates}
-                    onAdvance={(input) => handleAdvanceWorkflow(nextWorkflowStep.step, input)}
-                  />
-                ) : null
-              }
-            />
-          </div>
-        )}
-
-        {activeView === 'repositories' && (
-          <div className="view-frame">
-            <RepositoriesView
-              resources={resources}
-              selectedNodeId={selectedNodeId}
-              onSelectNode={setSelectedNodeId}
-              onClearSelection={() => setSelectedNodeId(null)}
-              onUpdateDetail={handleUpdateResource}
-              renderEnrichment={(resource) => (
-                <EnrichmentDetailPanel
-                  key={`enrichment-${resource.id}`}
-                  resourceId={resource.id}
-                  onLoadDetail={api.getResourceDetail}
-                  onGoToRelation={handleGoToRelation}
-                />
-              )}
-              onSetLabel={handleSetRepositoryLabel}
-              onCreateResource={(title, rawSource) =>
-                handleCreateResource(title, rawSource, 'github_repository')
-              }
-            />
-          </div>
-        )}
-
-        {activeView === 'activity' && (
-          <div className="view-frame">
-            <ActivityView
-              onLoadPage={(cursor) =>
-                workspace
-                  ? api.listActivityEvents(workspace.id, 50, cursor)
-                  : Promise.resolve({ events: [], next_cursor: null })
-              }
-              onLoadDetail={(eventId) => {
-                if (!workspace) return Promise.reject(new Error('No active workspace'))
-                return api.getActivityEvent(workspace.id, eventId)
-              }}
-              onUndo={async (eventId, reason) => {
-                if (!workspace) return
-                await api.undoActivityEvent(workspace.id, eventId, reason)
-                await reloadGraphData(workspace.id, activeCanvasId)
-              }}
-              nodes={nodes}
-              edges={edges}
-              workItems={workItems}
-            />
-          </div>
-        )}
-
-        {detailColumnVisible && (
-          <div className="inspector-column">
+        <div className="v2-body">
+          <main className="v2-view-container">
             {activeView === 'graph' && (
-              <Inspector
-                node={selectedNode}
-                nodeType={selectedNodeType}
-                relations={relations}
-                referenceableNodes={referenceableNodes}
-                onChangeStatus={handleChangeStatus}
-                onChangeBody={handleChangeBody}
-                onChangeField={handleChangeField}
-                onArchive={handleArchiveSelected}
-                archiveArmed={archiveArmed}
-                goToLabel={goToTarget?.label ?? null}
-                onGoTo={handleGoToProjected}
-              />
+              <div className="workbench" style={{ height: '100%', minHeight: 0 }}>
+                <CanvasRail
+                  canvases={canvases}
+                  activeCanvasId={activeCanvasId}
+                  onSelectCanvas={setActiveCanvasId}
+                  onCreateCanvas={() => setIsNewCanvasModalOpen(true)}
+                />
+
+                <div className="stage-frame">
+                  <div className="stage-toolbar">
+                    <span className="stage-pill">
+                      {activeCanvas ? activeCanvas.name : '—'} · {visibleNodes.length} objects ·{' '}
+                      {edges.length} relations
+                    </span>
+                    <CreateNodeControl
+                      nodeTypes={workspace?.node_types ?? []}
+                      isDisabled={!activeCanvasId}
+                      onCreate={handleCreateNode}
+                    />
+                    <PlaceExistingNodeControl unplacedNodes={unplacedNodes} onPlace={handlePlaceExisting} />
+                  </div>
+
+                  <GraphCanvas
+                    canvas={activeCanvas}
+                    nodes={visibleNodes}
+                    edges={edges}
+                    placements={placements}
+                    nodeTypeById={nodeTypeById}
+                    edgeTypeById={edgeTypeById}
+                    statusById={statusById}
+                    selectedNodeId={selectedNodeId}
+                    focusSet={focusSet}
+                    onSelectNode={setSelectedNodeId}
+                    onMovePlacement={handleMovePlacement}
+                    onRequestConnect={handleRequestConnect}
+                  />
+
+                  <div className="focus-control">
+                    <span>Neighborhood focus</span>
+                    <input
+                      type="range"
+                      aria-label="Neighborhood focus"
+                      min={0}
+                      max={MAX_FOCUS_DEPTH}
+                      step={1}
+                      value={focusDepth}
+                      onChange={(event) => setFocusDepth(Number(event.target.value))}
+                      disabled={!selectedNodeId}
+                    />
+                    <span className="focus-value">
+                      {focusDepth === 0 ? 'Off' : `${focusDepth} hop${focusDepth > 1 ? 's' : ''}`}
+                    </span>
+                  </div>
+
+                  <div className="legend">
+                    <div className="legend-row">
+                      <span
+                        className="legend-swatch"
+                        style={{
+                          background:
+                            workspace?.node_types.find((t) => t.system_key === 'task')?.color_hex ??
+                            'var(--teal)',
+                        }}
+                      />
+                      Task
+                    </div>
+                    <div className="legend-row">
+                      <span
+                        className="legend-swatch"
+                        style={{
+                          background:
+                            workspace?.node_types.find((t) => t.name.toLowerCase() === 'project')
+                              ?.color_hex ?? 'var(--brass)',
+                        }}
+                      />
+                      Project
+                    </div>
+                    <div className="legend-row">
+                      <span className="keyhint">drag</span>move ·{' '}
+                      <span className="keyhint">connect</span>relate ·{' '}
+                      <span className="keyhint">del</span>archive · <span className="keyhint">esc</span>
+                      deselect
+                    </div>
+                  </div>
+                </div>
+
+                {detailColumnVisible && (
+                  <div className="inspector-column">
+                    <Inspector
+                      node={selectedNode}
+                      nodeType={selectedNodeType}
+                      relations={relations}
+                      referenceableNodes={referenceableNodes}
+                      onChangeStatus={handleChangeStatus}
+                      onChangeBody={handleChangeBody}
+                      onChangeField={handleChangeField}
+                      onArchive={handleArchiveSelected}
+                      archiveArmed={archiveArmed}
+                      goToLabel={goToTarget?.label ?? null}
+                      onGoTo={handleGoToProjected}
+                    />
+                    {nextWorkflowStep && (
+                      <WorkflowChainPanel
+                        nodeSystemKey={selectedNodeType?.system_key}
+                        existingTargetCandidates={workflowChainCandidates}
+                        onAdvance={(input) => handleAdvanceWorkflow(nextWorkflowStep.step, input)}
+                      />
+                    )}
+                  </div>
+                )}
+              </div>
             )}
-            {nextWorkflowStep && (
-              <WorkflowChainPanel
-                nodeSystemKey={selectedNodeType?.system_key}
-                existingTargetCandidates={workflowChainCandidates}
-                onAdvance={(input) => handleAdvanceWorkflow(nextWorkflowStep.step, input)}
-              />
+
+            {activeView === 'search' && (
+              <div className="view-frame" style={{ height: '100%' }}>
+                <SearchView
+                  onSearch={(query, scope, offset) =>
+                    workspace
+                      ? api.search(workspace.id, query, 20, false, scope, offset)
+                      : Promise.resolve({ results: [], total: 0, has_more: false, offset: 0 })
+                  }
+                  selectedNodeId={selectedNodeId}
+                  onSelectNode={setSelectedNodeId}
+                  onActivateResult={(result) => {
+                    const targetScope = result.scope
+                    if (targetScope === 'wiki') {
+                      setActiveView('wiki')
+                      if (result.node?.id) setSelectedNodeId(result.node.id)
+                      return
+                    }
+                    if (targetScope === 'tasks') {
+                      setActiveView('tasks')
+                      const match = workItems.find((entry) => entry.node_id === result.node?.id)
+                      if (match) setSelectedWorkItemId(match.id)
+                      return
+                    }
+                    if (targetScope === 'research' || targetScope === 'repositories') {
+                      setActiveView(targetScope)
+                      if (result.node?.id) setSelectedNodeId(result.node.id)
+                      return
+                    }
+                    if (result.node?.id) {
+                      setSelectedNodeId(result.node.id)
+                      setActiveView('graph')
+                    } else if (result.document) {
+                      setActiveView('wiki')
+                    }
+                  }}
+                />
+              </div>
             )}
-          </div>
-        )}
+
+            {activeView === 'tasks' && workspace && (
+              <div className="view-frame" style={{ height: '100%' }}>
+                <TasksView
+                  workspaceId={workspace.id}
+                  workItems={workItems}
+                  documents={documents}
+                  repositories={repositories}
+                  selectedWorkItemId={selectedWorkItemId}
+                  onSelectWorkItem={setSelectedWorkItemId}
+                  onCreateWorkItem={handleCreateWorkItem}
+                  onUpdateWorkItem={handleUpdateWorkItem}
+                  onLoadDetail={api.getWorkItemDetail}
+                  onEditBody={handleEditWorkItemBody}
+                  onAddChecklistItem={handleAddChecklistItem}
+                  onUpdateChecklistItem={handleUpdateChecklistItem}
+                  onRemoveChecklistItem={handleRemoveChecklistItem}
+                  onReorderChecklistItems={handleReorderChecklistItems}
+                  onAttachDocument={handleAttachWorkItemDocument}
+                  onRenameWorkItem={handleRenameWorkItem}
+                  onDetachDocument={handleDetachWorkItemDocument}
+                  onNavigateDocument={(docId) => {
+                    setActiveView('wiki')
+                    setSelectedDocumentId(docId)
+                  }}
+                  onNavigateRepository={(repoNodeId) => {
+                    setActiveView('repositories')
+                    setSelectedNodeId(repoNodeId)
+                  }}
+                />
+              </div>
+            )}
+
+            {activeView === 'wiki' && workspace && (
+              <div className="view-frame" style={{ height: '100%' }}>
+                <WikiView
+                  onLoadDocuments={(collectionId) => api.listDocuments(workspace.id, { collectionId })}
+                  onLoadDetail={(documentId) => api.getDocumentDetail(documentId)}
+                  onLoadVersions={(documentId) => api.listDocumentVersions(documentId)}
+                  onCreateDocument={(input) =>
+                    api.createDocument({ ...input, workspace_id: workspace.id })
+                  }
+                  onUpdateMetadata={(documentId, patch) => api.updateDocumentMetadata(documentId, patch)}
+                  onEditBody={(documentId, bodyMarkdown) =>
+                    api.editDocumentBody(documentId, bodyMarkdown, 'human/local-user/rest')
+                  }
+                  onLoadCollections={() => api.listCollections(workspace.id)}
+                  onCreateCollection={(name) => api.createCollection(workspace.id, name)}
+                  onLoadTags={() => api.listTags(workspace.id)}
+                  onAddDocumentLink={(documentId, targetDocumentId) =>
+                    api.addDocumentLink(documentId, 'document', targetDocumentId)
+                  }
+                  selectedDocumentId={selectedDocumentId}
+                  onSelectDocument={setSelectedDocumentId}
+                />
+              </div>
+            )}
+
+            {activeView === 'research' && (
+              <div className="view-frame" style={{ height: '100%' }}>
+                <ResearchView
+                  dashboard={researchDashboard}
+                  resources={resources}
+                  selectedNodeId={selectedNodeId}
+                  onSelectNode={setSelectedNodeId}
+                  onClearSelection={() => setSelectedNodeId(null)}
+                  onCreateResource={handleCreateResource}
+                  onArchiveResource={handleArchiveResource}
+                  onDeleteResource={handleDeleteResource}
+                  onUpdateDetail={handleUpdateResource}
+                  renderEnrichment={(resource) => (
+                    <EnrichmentDetailPanel
+                      key={`enrichment-${resource.id}`}
+                      resourceId={resource.id}
+                      onLoadDetail={api.getResourceDetail}
+                      onGoToRelation={handleGoToRelation}
+                    />
+                  )}
+                  workflowPanel={
+                    nextWorkflowStep ? (
+                      <WorkflowChainPanel
+                        nodeSystemKey={selectedNodeType?.system_key}
+                        existingTargetCandidates={workflowChainCandidates}
+                        onAdvance={(input) => handleAdvanceWorkflow(nextWorkflowStep.step, input)}
+                      />
+                    ) : null
+                  }
+                />
+              </div>
+            )}
+
+            {activeView === 'repositories' && (
+              <div className="view-frame" style={{ height: '100%' }}>
+                <RepositoriesView
+                  resources={resources}
+                  selectedNodeId={selectedNodeId}
+                  onSelectNode={setSelectedNodeId}
+                  onClearSelection={() => setSelectedNodeId(null)}
+                  onUpdateDetail={handleUpdateResource}
+                  renderEnrichment={(resource) => (
+                    <EnrichmentDetailPanel
+                      key={`enrichment-${resource.id}`}
+                      resourceId={resource.id}
+                      onLoadDetail={api.getResourceDetail}
+                      onGoToRelation={handleGoToRelation}
+                    />
+                  )}
+                  onSetLabel={handleSetRepositoryLabel}
+                  onCreateResource={(title, rawSource) =>
+                    handleCreateResource(title, rawSource, 'github_repository')
+                  }
+                />
+              </div>
+            )}
+
+            {activeView === 'agents' && (
+              <div className="view-frame" style={{ height: '100%' }}>
+                <AgentsView
+                  agents={agents}
+                  onRefresh={reloadAgents}
+                  onCreateAgent={handleCreateAgent}
+                  onUpdateAgent={handleUpdateAgent}
+                  onDeleteAgent={handleDeleteAgent}
+                  activeChatAgentId={activeChatAgentId}
+                  onSelectChatAgent={setActiveChatAgentId}
+                />
+              </div>
+            )}
+
+            {activeView === 'activity' && (
+              <div className="view-frame" style={{ height: '100%' }}>
+                <ActivityView
+                  onLoadPage={(cursor) =>
+                    workspace
+                      ? api.listActivityEvents(workspace.id, 50, cursor)
+                      : Promise.resolve({ events: [], next_cursor: null })
+                  }
+                  onLoadDetail={(eventId) => {
+                    if (!workspace) return Promise.reject(new Error('No active workspace'))
+                    return api.getActivityEvent(workspace.id, eventId)
+                  }}
+                  onUndo={async (eventId, reason) => {
+                    if (!workspace) return
+                    await api.undoActivityEvent(workspace.id, eventId, reason)
+                    await reloadGraphData(workspace.id, activeCanvasId)
+                  }}
+                  nodes={nodes}
+                  edges={edges}
+                  workItems={workItems}
+                />
+              </div>
+            )}
+          </main>
+
+          {isDockOpen && (
+            <AgentDock
+              agents={agents}
+              runs={agentRuns}
+              onAskAgent={handleAskAgent}
+              isAgentRunning={isAgentRunning}
+              onOpenAgent={(agentId) => {
+                setActiveView('agents')
+                setActiveChatAgentId(agentId)
+              }}
+            />
+          )}
+        </div>
       </div>
 
       <CommandPalette
@@ -1039,8 +1161,6 @@ function App() {
           onClose={() => setIsSchemaEditorOpen(false)}
         />
       )}
-
-      <p className="footer-note">Personal Graph OS — local-first, graph-first workspace.</p>
     </div>
   )
 }

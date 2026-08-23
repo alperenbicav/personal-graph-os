@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from personal_graph_os.application.context_pack_service import ContextPackMaterialization
 from personal_graph_os.application.discovery import DiscoveryCandidatePreview, DiscoveryPreview
 from personal_graph_os.domain.activity import ActivityEvent, DiscoveredCandidate, DiscoveryRun
+from personal_graph_os.domain.agents import Agent, AgentRun
 from personal_graph_os.domain.documents import Collection, Document, DocumentVersion, Tag
 from personal_graph_os.domain.enrichment import RelationProposal
 from personal_graph_os.domain.files import Attachment, FileReference
@@ -793,3 +794,60 @@ class ActivityEventDTO(ActivityEventSummaryDTO):
 class ActivityEventPageDTO(BaseModel):
     events: tuple[ActivityEventSummaryDTO, ...]
     next_cursor: str | None
+
+
+class AgentDTO(BaseModel):
+    id: str
+    name: str
+    emoji: str
+    system_prompt: str
+    tool_allowlist: list[str]
+    model: str | None
+    write_mode: str
+    created_at: datetime
+
+    @classmethod
+    def from_domain(cls, agent: Agent) -> AgentDTO:
+        return cls(
+            id=str(agent.id),
+            name=agent.name,
+            emoji=agent.emoji,
+            system_prompt=_bounded_text(agent.system_prompt),
+            tool_allowlist=list(agent.tool_allowlist),
+            model=agent.model,
+            write_mode=agent.write_mode.value,
+            created_at=agent.created_at,
+        )
+
+
+class AgentRunDTO(BaseModel):
+    id: str
+    agent_id: str
+    action: str
+    entity_type: str | None
+    entity_id: str | None
+    status: str
+    summary: str
+    diff_json: str | None
+    created_at: datetime
+
+    @classmethod
+    def from_domain(cls, run: AgentRun) -> AgentRunDTO:
+        return cls(
+            id=str(run.id),
+            agent_id=str(run.agent_id),
+            action=run.action,
+            entity_type=run.entity_type,
+            entity_id=run.entity_id,
+            status=run.status.value,
+            summary=_bounded_text(run.summary),
+            diff_json=run.diff_json,
+            created_at=run.created_at,
+        )
+
+
+class AgentExecutionResultDTO(BaseModel):
+    reply: str
+    run_id: str
+    agent_id: str
+
