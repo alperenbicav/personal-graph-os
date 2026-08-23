@@ -42,6 +42,8 @@ _EXPECTED_TABLES = {
     "channel_sync_state",
     "work_items",
     "work_planning_receipts",
+    "agents",
+    "agent_runs",
 }
 
 
@@ -74,6 +76,7 @@ _ALL_MIGRATION_NAMES = (
     "0018_channel_sync_and_external_url.sql",
     "0019_search_scope.sql",
     "0020_resource_content.sql",
+    "0021_agents.sql",
 )
 
 
@@ -137,6 +140,7 @@ def test_upgrading_an_existing_0001_database_preserves_ids_and_data() -> None:
         "0018_channel_sync_and_external_url.sql",
         "0019_search_scope.sql",
         "0020_resource_content.sql",
+        "0021_agents.sql",
     )
 
     resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()
@@ -358,6 +362,7 @@ def test_upgrading_an_existing_0007_database_preserves_resources_and_nodes() -> 
         "0018_channel_sync_and_external_url.sql",
         "0019_search_scope.sql",
         "0020_resource_content.sql",
+        "0021_agents.sql",
     )
 
     resource_row = connection.execute("SELECT * FROM resources WHERE id = 'res-1'").fetchone()
@@ -422,6 +427,7 @@ def test_upgrading_a_pre_0011_database_with_duplicate_edges_keeps_one_canonical_
         "0018_channel_sync_and_external_url.sql",
         "0019_search_scope.sql",
         "0020_resource_content.sql",
+        "0021_agents.sql",
     )
 
     rows = connection.execute(
@@ -687,6 +693,7 @@ def test_0019_backfills_the_search_scope_from_the_canonical_tables() -> None:
     assert newly_applied == (
         "0019_search_scope.sql",
         "0020_resource_content.sql",
+        "0021_agents.sql",
     )
     rows = connection.execute(
         "SELECT entity_type, entity_id, scope FROM search_documents ORDER BY entity_id, entity_type"
@@ -710,11 +717,12 @@ def test_a_renamed_migration_is_not_replayed_on_databases_that_recorded_its_old_
     connection.row_factory = sqlite3.Row
     applied_migration_names(connection)
     versions = resources.files("personal_graph_os.infrastructure.sqlite.migrations.versions")
-    for name in _ALL_MIGRATION_NAMES[:-1]:
-        apply_migration_script(connection, name, (versions / name).read_text(encoding="utf-8"))
-
-    legacy_sql = (versions / _ALL_MIGRATION_NAMES[-1]).read_text(encoding="utf-8")
-    apply_migration_script(connection, "0016_resource_content.sql", legacy_sql)
+    for name in _ALL_MIGRATION_NAMES:
+        if name == "0020_resource_content.sql":
+            legacy_sql = (versions / "0020_resource_content.sql").read_text(encoding="utf-8")
+            apply_migration_script(connection, "0016_resource_content.sql", legacy_sql)
+        else:
+            apply_migration_script(connection, name, (versions / name).read_text(encoding="utf-8"))
 
     assert run_migrations(connection) == ()
     exists = connection.execute(

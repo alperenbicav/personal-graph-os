@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Protocol
 
 from personal_graph_os.domain.activity import ActivityEvent, DiscoveryRun, IdempotencyReceipt
+from personal_graph_os.domain.agents import Agent, AgentRun
 from personal_graph_os.domain.canvas import Canvas, CanvasPlacement
 from personal_graph_os.domain.channel_sync import ChannelSyncState
 from personal_graph_os.domain.documents import (
@@ -30,6 +31,8 @@ from personal_graph_os.domain.files import Attachment, FileReference
 from personal_graph_os.domain.graph import Edge, Node
 from personal_graph_os.domain.identifiers import (
     ActivityEventId,
+    AgentId,
+    AgentRunId,
     AttachmentId,
     CanvasId,
     CanvasPlacementId,
@@ -387,3 +390,15 @@ class SearchIndexRepository(Protocol):
     def search(
         self, workspace_id: WorkspaceId, query_text: str, *, limit: int = 50
     ) -> tuple[SearchHit, ...]: ...
+
+
+class AgentRepository(Protocol):
+    def list_agents(self) -> tuple[Agent, ...]: ...
+    def get(self, agent_id: AgentId) -> Agent | None: ...
+    def save_without_commit(self, agent: Agent) -> None: ...
+    def delete_without_commit(self, agent_id: AgentId) -> None: ...
+    def record_run_without_commit(self, run: AgentRun) -> None: ...
+    def list_runs_for_agent(
+        self, agent_id: AgentId, *, limit: int = 50
+    ) -> tuple[AgentRun, ...]: ...
+    def get_run(self, run_id: AgentRunId) -> AgentRun | None: ...
