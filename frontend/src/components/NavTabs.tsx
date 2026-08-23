@@ -45,11 +45,6 @@ const TABS: TabDefinition[] = [
       'GitHub repositories you have captured, grouped by ownership (personal, Apilex, liked external), with purpose, capabilities, stack, license/activity, risks, and related graph objects.',
   },
   {
-    id: 'search',
-    label: 'Search',
-    description: 'Full-text search across every node and research resource.',
-  },
-  {
     id: 'activity',
     label: 'Activity',
     description:

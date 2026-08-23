@@ -3,9 +3,14 @@ import { useState } from 'react'
 interface TopBarProps {
   onOpenSchemaEditor: () => void
   onExportWorkspace: () => Promise<void>
+  onOpenCommandPalette?: () => void
 }
 
-export function TopBar({ onOpenSchemaEditor, onExportWorkspace }: TopBarProps) {
+export function TopBar({
+  onOpenSchemaEditor,
+  onExportWorkspace,
+  onOpenCommandPalette,
+}: TopBarProps) {
   const [isExporting, setIsExporting] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
 
@@ -29,6 +34,18 @@ export function TopBar({ onOpenSchemaEditor, onExportWorkspace }: TopBarProps) {
       </div>
 
       <div className="topbar-actions">
+        {onOpenCommandPalette && (
+          <button
+            type="button"
+            className="topbar-search-button"
+            onClick={onOpenCommandPalette}
+            aria-label="Search or jump (Cmd+K)"
+          >
+            <span className="topbar-search-icon" aria-hidden>⌕</span>
+            <span className="topbar-search-label">Search or jump…</span>
+            <kbd className="topbar-search-kbd">⌘K</kbd>
+          </button>
+        )}
         <button type="button" className="schema-editor-button" onClick={onOpenSchemaEditor}>
           Schema
         </button>

@@ -111,6 +111,8 @@ interface TasksViewProps {
   /** Renames via the backing Node (titles live there so search stays indexed), then keeps
    * the work-item projection in sync. */
   onRenameWorkItem: (item: WorkItem, title: string) => Promise<void>
+  onNavigateDocument?: (documentId: string) => void
+  onNavigateRepository?: (nodeId: string) => void
 }
 
 interface CreateWorkItemDraft {
@@ -152,6 +154,8 @@ export function TasksView({
   onAttachDocument,
   onDetachDocument,
   onRenameWorkItem,
+  onNavigateDocument,
+  onNavigateRepository,
 }: TasksViewProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('board')
   const [filterQuery, setFilterQuery] = useState('')
@@ -408,6 +412,77 @@ export function TasksView({
               </Pill>
               <Pill tone={STATUS_TONE[item.status]}>{STATUS_LABEL[item.status]}</Pill>
             </div>
+
+            {/* Provenance ribbon (S6) */}
+            {(() => {
+              const parentItem = item.parent_id
+                ? workItems.find((w) => w.id === item.parent_id)
+                : null
+              const repoItem = item.repository_node_id
+                ? repositories.find((r) => r.node_id === item.repository_node_id)
+                : null
+              const hasProvenance =
+                parentItem || repoItem || (detail && detail.linked_documents.length > 0)
+              if (!hasProvenance) return null
+              return (
+                <div className="provenance-ribbon" aria-label="Work item lineage and connected provenance">
+                  {parentItem && (
+                    <>
+                      <button
+                        type="button"
+                        className="provenance-chip"
+                        onClick={() => selectWorkItem(parentItem.id)}
+                        title={`Parent: ${parentItem.title}`}
+                      >
+                        <span className="provenance-icon">🏷️</span>
+                        <span className="provenance-title">{parentItem.title}</span>
+                      </button>
+                      <span className="provenance-arrow">➔</span>
+                    </>
+                  )}
+                  <span className="provenance-chip provenance-chip-current">
+                    <span className="provenance-icon">☑️</span>
+                    <span className="provenance-title">{item.title}</span>
+                  </span>
+                  {repoItem && (
+                    <>
+                      <span className="provenance-arrow">➔</span>
+                      <button
+                        type="button"
+                        className="provenance-chip"
+                        onClick={() => onNavigateRepository?.(repoItem.node_id)}
+                        title={`Repository: ${repoItem.title}`}
+                      >
+                        <span className="provenance-icon">📦</span>
+                        <span className="provenance-title">{repoItem.title}</span>
+                      </button>
+                    </>
+                  )}
+                  {detail &&
+                    detail.linked_documents.map((link) => {
+                      const doc = documents.find((d) => d.id === link.document_id)
+                      if (!doc) return null
+                      return (
+                        <span
+                          key={link.id}
+                          style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--s2)' }}
+                        >
+                          <span className="provenance-arrow">➔</span>
+                          <button
+                            type="button"
+                            className="provenance-chip"
+                            onClick={() => onNavigateDocument?.(doc.id)}
+                            title={`Wiki document: ${doc.title}`}
+                          >
+                            <span className="provenance-icon">📄</span>
+                            <span className="provenance-title">{doc.title}</span>
+                          </button>
+                        </span>
+                      )
+                    })}
+                </div>
+              )
+            })()}
 
             <input
               className="wiki-title-input"
@@ -762,11 +837,6 @@ export function TasksView({
           <EmptyState
             title="No work yet"
             hint="Create your first epic, story, or task."
-            action={
-              <button type="button" onClick={() => setIsCreateOpen(true)}>
-                + New work item
-              </button>
-            }
           />
         ) : (
           <div className="list-view">
@@ -786,8 +856,9 @@ export function TasksView({
       <main className="tasks-main">
         {filteredItems.length === 0 ? (
           <EmptyState
-            title="Nothing matches"
-            hint="Adjust the filter, or create a new work item."
+            icon="📋"
+            title="No work items found"
+            hint="Adjust the filter, or create a new work item to start tracking."
           />
         ) : viewMode === 'board' ? (
           <div className="tasks-board" aria-label="Task board">

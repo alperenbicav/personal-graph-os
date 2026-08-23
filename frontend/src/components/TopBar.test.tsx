@@ -27,4 +27,18 @@ describe('TopBar', () => {
     fireEvent.click(screen.getByRole('button', { name: /schema/i }))
     expect(onOpenSchemaEditor).toHaveBeenCalled()
   })
+
+  it('triggers onOpenCommandPalette when search button is clicked', () => {
+    const onOpenCommandPalette = vi.fn()
+    render(
+      <TopBar
+        onOpenSchemaEditor={vi.fn()}
+        onExportWorkspace={vi.fn()}
+        onOpenCommandPalette={onOpenCommandPalette}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /search or jump/i }))
+    expect(onOpenCommandPalette).toHaveBeenCalled()
+  })
 })

@@ -161,11 +161,12 @@ test.describe('ST-09.2 accessibility acceptance (real server, real build)', () =
     await navigateTo(page, 'Wiki')
     await assertNoSeriousOrCriticalViolations(page, 'wiki view')
 
-    await navigateTo(page, 'Search')
-    const searchView = page.locator('.search-view')
-    await searchView.getByLabel(/^search$/i).fill(firstTitle.split(' ')[0])
-    await searchView.getByRole('button', { name: /^search$/i }).click()
-    await assertNoSeriousOrCriticalViolations(page, 'search view')
+    await page.getByRole('button', { name: /search or jump/i }).click()
+    const searchPalette = page.getByRole('dialog', { name: /command palette/i })
+    await searchPalette.getByLabel(/command palette search/i).fill(firstTitle.split(' ')[0])
+    await assertNoSeriousOrCriticalViolations(page, 'command palette search')
+    await page.keyboard.press('Escape')
+    await expect(searchPalette).toBeHidden()
 
     await navigateTo(page, 'Research')
     await assertNoSeriousOrCriticalViolations(page, 'research view')
@@ -232,14 +233,12 @@ test.describe('ST-09.2 accessibility acceptance (real server, real build)', () =
     await page.keyboard.press('ArrowDown')
 
     // Keyboard-only search + result selection.
-    await navigateTo(page, 'Search')
-    const searchInput = page.getByLabel(/^search$/i)
+    await page.keyboard.press('Meta+k')
+    const searchInput = page.getByLabel(/command palette search/i)
     await searchInput.focus()
     await searchInput.fill(title.split(' ')[0])
-    await page.keyboard.press('Enter')
-    const resultButton = page.getByRole('button', { name: new RegExp(title) }).first()
-    await expect(resultButton).toBeVisible()
-    await resultButton.focus()
+    const resultOption = page.getByRole('option', { name: new RegExp(title) }).first()
+    await expect(resultOption).toBeVisible()
     await page.keyboard.press('Enter')
 
     // Keyboard-only undo: open Activity, expand the most recent event (its row shows

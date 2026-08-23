@@ -9,7 +9,7 @@ import type {
   WikiDocument,
 } from '../types'
 import { renderMarkdown } from '../lib/markdown'
-import { EmptyState, SegmentedControl, SlideOver } from './ui'
+import { EmptyState, SegmentedControl, SkeletonRow, SlideOver } from './ui'
 
 // Every REST mutation from this local single-user client is attributed to the same fixed
 // actor the backend's `MutationContext.rest()` already assumes (`REST_ACTOR_NAME`); there is
@@ -47,6 +47,8 @@ interface WikiViewProps {
   onCreateCollection: (name: string) => Promise<Collection>
   onLoadTags: () => Promise<Tag[]>
   onAddDocumentLink: (documentId: string, targetDocumentId: string) => Promise<void>
+  selectedDocumentId?: string | null
+  onSelectDocument?: (documentId: string | null) => void
 }
 
 interface CreatePageDraft {
@@ -76,12 +78,14 @@ export function WikiView({
   onCreateCollection,
   onLoadTags,
   onAddDocumentLink,
+  selectedDocumentId: externalSelectedDocId,
+  onSelectDocument: onExternalSelectDoc,
 }: WikiViewProps) {
   const [documents, setDocuments] = useState<WikiDocument[]>([])
   const [collections, setCollections] = useState<Collection[]>([])
   const [tags, setTags] = useState<Tag[]>([])
   const [collectionFilter, setCollectionFilter] = useState<'all' | 'uncategorized' | string>('all')
-  const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null)
+  const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(externalSelectedDocId ?? null)
   const [detail, setDetail] = useState<DocumentDetail | null>(null)
   const [versions, setVersions] = useState<DocumentVersion[]>([])
   const [detailsOpen, setDetailsOpen] = useState(false)
@@ -119,8 +123,18 @@ export function WikiView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  useEffect(() => {
+    if (externalSelectedDocId && externalSelectedDocId !== selectedDocumentId) {
+      void selectDocument(externalSelectedDocId)
+    } else if (externalSelectedDocId === null && selectedDocumentId !== null) {
+      setSelectedDocumentId(null)
+      setDetail(null)
+    }
+  }, [externalSelectedDocId])
+
   async function selectDocument(documentId: string) {
     setSelectedDocumentId(documentId)
+    onExternalSelectDoc?.(documentId)
     setDetailsOpen(false)
     setVersions([])
     setIsTagEditorOpen(false)
@@ -362,6 +376,7 @@ export function WikiView({
         {!detail ? (
           <div className="wiki-page-scroll">
             <EmptyState
+              icon="📄"
               title="Nothing open"
               hint="Pick a page from the sidebar, or create a new one to start writing."
               action={
@@ -546,8 +561,10 @@ export function WikiView({
 
           <section>
             <h3 className="slideover-section-title">Versions ({detail.version_count})</h3>
-            {versions.length === 0 ? (
-              <p className="view-empty">Loading versions…</p>
+            {versions.length === 0 && detail.version_count > 0 ? (
+              <SkeletonRow count={detail.version_count > 3 ? 3 : detail.version_count} />
+            ) : versions.length === 0 ? (
+              <p className="view-empty">No versions recorded.</p>
             ) : (
               <ul className="wiki-version-list">
                 {versions.map((version) => (
