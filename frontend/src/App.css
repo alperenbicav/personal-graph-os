@@ -2123,12 +2123,29 @@ select.status-select {
 .empty-state-hint {
   margin: 0;
   max-width: 420px;
-  color: var(--slate);
+  color: var(--ink-soft);
   font-size: var(--text-sm);
 }
 
 .empty-state-action {
   margin-top: var(--s2);
+}
+
+.empty-state-action button,
+.btn-primary {
+  appearance: none;
+  background: var(--brass);
+  color: #14171d;
+  font-weight: 600;
+  border: 1px solid var(--brass);
+  border-radius: var(--r-md);
+  padding: 6px 14px;
+  cursor: pointer;
+}
+
+.empty-state-action button:hover,
+.btn-primary:hover {
+  filter: brightness(1.1);
 }
 
 .pill {
@@ -2163,7 +2180,7 @@ select.status-select {
   appearance: none;
   border: none;
   background: transparent;
-  color: var(--slate);
+  color: var(--ink-soft);
   font-size: var(--text-sm);
   font-weight: 600;
   padding: 6px 14px;
