@@ -21,6 +21,7 @@ from personal_graph_os.application.activity_service import (
     ActivityEventNotFoundError,
     ActivityService,
 )
+from personal_graph_os.application.agent_service import AgentService
 from personal_graph_os.application.capture_planning_orchestrator import (
     CapturePlanningOrchestrator,
 )
@@ -52,10 +53,12 @@ from personal_graph_os.application.work_item_service import (
 )
 from personal_graph_os.application.workflow_chain import WorkflowChainService, WorkflowChainStep
 from personal_graph_os.domain.activity import IdempotencyReceipt, MutationAction
+from personal_graph_os.domain.agents import AgentNotFoundError
 from personal_graph_os.domain.documents import DocumentKind
 from personal_graph_os.domain.enrichment import RelationProposalStatus
 from personal_graph_os.domain.identifiers import (
     ActivityEventId,
+    AgentId,
     CollectionId,
     ContextPackId,
     DocumentId,
@@ -83,6 +86,8 @@ from personal_graph_os.infrastructure.mcp.dto import (
     ActivityEventDTO,
     ActivityEventPageDTO,
     ActivityEventSummaryDTO,
+    AgentDTO,
+    AgentExecutionResultDTO,
     CollectionDTO,
     ContextPackDTO,
     DiscoveryPreviewDTO,
@@ -215,6 +220,7 @@ class AgentGatewayService:
         extraction_service: ExtractionService | None,
         capture_planning_orchestrator: CapturePlanningOrchestrator | None,
         clickup_service: ClickupService | None = None,
+        agent_service: AgentService | None = None,
         unit_of_work_factory: Callable[[], ResearchUnitOfWork],
     ) -> None:
         self._workspaces = workspaces
@@ -236,6 +242,7 @@ class AgentGatewayService:
         self._extraction_service = extraction_service
         self._capture_planning_orchestrator = capture_planning_orchestrator
         self._clickup_service = clickup_service
+        self._agent_service = agent_service
         self._unit_of_work_factory = unit_of_work_factory
 
     def _require_workspace(self, workspace_id: WorkspaceId) -> None:
@@ -2990,3 +2997,109 @@ class AgentGatewayService:
                 "plan_document_id": plan_outcome.plan_document.id,
             }
         return result
+
+    def list_agents(self) -> tuple[AgentDTO, ...]:
+        if self._agent_service is None:
+            return ()
+        agents = self._agent_service.list_agents()
+        return tuple(AgentDTO.from_domain(agent) for agent in agents)
+
+    def message_agent(self, agent_id: AgentId, content: str) -> AgentExecutionResultDTO:
+        if self._agent_service is None:
+            raise GatewayValidationError("agent service is not configured on this instance")
+        try:
+            agent = self._agent_service.get_agent(agent_id)
+        except AgentNotFoundError as error:
+            raise GatewayNotFoundError(str(error)) from error
+
+        reply = self._agent_service.complete_message_sync(agent, content)
+        run = self._agent_service.record_run(
+            agent_id=agent.id,
+            action="message",
+            summary=reply[:200] if reply else content[:200],
+        )
+        return AgentExecutionResultDTO(reply=reply, run_id=str(run.id), agent_id=str(agent.id))
+
+    def run_agent(
+        self, agent_id: AgentId, task: str, workspace_id: WorkspaceId | None = None
+    ) -> AgentExecutionResultDTO:
+        if self._agent_service is None:
+            raise GatewayValidationError("agent service is not configured on this instance")
+        try:
+            agent = self._agent_service.get_agent(agent_id)
+        except AgentNotFoundError as error:
+            raise GatewayNotFoundError(str(error)) from error
+
+        ws_id = workspace_id
+        if ws_id is None:
+            for ws in self._workspaces.list_all():
+                ws_id = ws.id
+                break
+
+        context_snippets: list[str] = []
+        allowlist = set(agent.tool_allowlist)
+        if ws_id is not None:
+            if "search" in allowlist or "pgos_search" in allowlist:
+                try:
+                    search_res = self.search(ws_id, query_text=task, limit=3)
+                    hits = search_res.get("hits", [])
+                    if hits:
+                        context_snippets.append(
+                            "Search hits:\n" + json.dumps(hits, default=str)
+                        )
+                except Exception:
+                    pass
+            if (
+                "list_nodes" in allowlist
+                or "pgos_list_nodes" in allowlist
+                or "read_node" in allowlist
+            ):
+                try:
+                    nodes = self.list_nodes(ws_id, limit=5)
+                    if nodes:
+                        context_snippets.append(
+                            "Nodes in workspace:\n"
+                            + "\n".join(f"- {n.title} ({n.id}): {n.body[:100]}" for n in nodes)
+                        )
+                except Exception:
+                    pass
+            if "list_resources" in allowlist or "pgos_list_resources" in allowlist:
+                try:
+                    resources = self.list_resources(ws_id, limit=5)
+                    if resources:
+                        context_snippets.append(
+                            "Resources in workspace:\n"
+                            + "\n".join(
+                                f"- {r.canonical_identifier} ({r.kind})"
+                                for r in resources
+                            )
+                        )
+                except Exception:
+                    pass
+            if "list_work_items" in allowlist or "pgos_list_work_items" in allowlist:
+                try:
+                    work_items = self.list_work_items(ws_id)
+                    if work_items:
+                        context_snippets.append(
+                            "Work items in workspace:\n"
+                            + "\n".join(
+                                f"- [{w.kind}:{w.status}] {w.title}" for w in work_items[:5]
+                            )
+                        )
+                except Exception:
+                    pass
+
+        system_prompt = agent.system_prompt
+        if context_snippets:
+            system_prompt += "\n\n[Live Read Tools Context]:\n" + "\n\n".join(context_snippets)
+
+        reply = self._agent_service.complete_message_sync(
+            agent, task, system_prompt=system_prompt
+        )
+        run = self._agent_service.record_run(
+            agent_id=agent.id,
+            action="run",
+            summary=reply[:200] if reply else task[:200],
+        )
+        return AgentExecutionResultDTO(reply=reply, run_id=str(run.id), agent_id=str(agent.id))
+

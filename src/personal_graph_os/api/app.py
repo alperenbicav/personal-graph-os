@@ -597,6 +597,7 @@ def create_app(
         extraction_service=app.state.extraction_service,
         capture_planning_orchestrator=app.state.capture_planning_orchestrator,
         clickup_service=app.state.clickup_service,
+        agent_service=app.state.agent_service,
         unit_of_work_factory=lambda: SqliteResearchUnitOfWork(connection),
     )
 

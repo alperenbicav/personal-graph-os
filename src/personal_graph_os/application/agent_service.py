@@ -133,20 +133,59 @@ class AgentService:
         self.get_agent(agent_id)
         return list(self._repository.list_runs_for_agent(agent_id, limit=limit))
 
-    async def complete_message(self, agent: Agent, content: str) -> str:
+    async def complete_message(
+        self, agent: Agent, content: str, *, system_prompt: str | None = None
+    ) -> str:
         if self._llm_provider is None:
             raise LlmNotConfiguredError("LLM provider not configured")
+        prompt = system_prompt if system_prompt is not None else agent.system_prompt
         return await self._llm_provider.complete(
-            system_prompt=agent.system_prompt,
+            system_prompt=prompt,
             user_message=content,
             model=agent.model,
         )
 
-    async def stream_message(self, agent: Agent, content: str) -> AsyncIterator[str]:
+    def complete_message_sync(
+        self, agent: Agent, content: str, *, system_prompt: str | None = None
+    ) -> str:
         if self._llm_provider is None:
             raise LlmNotConfiguredError("LLM provider not configured")
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+
+        prompt = system_prompt if system_prompt is not None else agent.system_prompt
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None and loop.is_running():
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                return executor.submit(
+                    asyncio.run,
+                    self._llm_provider.complete(
+                        system_prompt=prompt,
+                        user_message=content,
+                        model=agent.model,
+                    ),
+                ).result()
+        else:
+            return asyncio.run(
+                self._llm_provider.complete(
+                    system_prompt=prompt,
+                    user_message=content,
+                    model=agent.model,
+                )
+            )
+
+    async def stream_message(
+        self, agent: Agent, content: str, *, system_prompt: str | None = None
+    ) -> AsyncIterator[str]:
+        if self._llm_provider is None:
+            raise LlmNotConfiguredError("LLM provider not configured")
+        prompt = system_prompt if system_prompt is not None else agent.system_prompt
         async for chunk in self._llm_provider.stream(
-            system_prompt=agent.system_prompt,
+            system_prompt=prompt,
             user_message=content,
             model=agent.model,
         ):
