@@ -36,7 +36,12 @@ describe('AgentChatThread', () => {
     fireEvent.change(input, { target: { value: 'Find papers' } })
     fireEvent.click(screen.getByRole('button', { name: /send/i }))
 
-    expect(mockedApi.messageAgent).toHaveBeenCalledWith('agent-1', 'Find papers')
+    expect(mockedApi.messageAgent).toHaveBeenCalledWith(
+      'agent-1',
+      'Find papers',
+      undefined,
+      expect.any(Function),
+    )
     await waitFor(() => {
       expect(screen.getByText('I found 3 relevant papers on attention mechanisms.')).toBeInTheDocument()
     })

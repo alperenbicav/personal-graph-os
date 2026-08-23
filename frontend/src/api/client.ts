@@ -850,17 +850,116 @@ export function listAgentRuns(agentId?: string, limit = 50): Promise<AgentRun[]>
   return request(`/agents/runs?limit=${limit}`)
 }
 
-export function messageAgent(
+export async function messageAgent(
   agentId: string,
   content: string,
   systemPrompt?: string,
+  onDelta?: (delta: string) => void,
 ): Promise<AgentExecutionResult> {
-  return request(`/agents/${encodeURIComponent(agentId)}/message`, {
+  const response = await fetch(`${BASE_URL}/agents/${encodeURIComponent(agentId)}/message`, {
     method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream, application/json',
+      ...authHeadersFromSession(),
+    },
     body: JSON.stringify({
       content,
       system_prompt: systemPrompt,
     }),
   })
+
+  await throwIfUnauthorizedOrNotOk(response)
+
+  const contentType = response.headers.get('content-type') ?? ''
+
+  // Fallback to JSON when content-type is application/json or response body is not a stream
+  if (contentType.includes('application/json') || !response.body) {
+    const data = await response.json()
+    const replyText = data.reply ?? data.response ?? ''
+    if (onDelta && replyText) {
+      onDelta(replyText)
+    }
+    return {
+      agent_id: data.agent_id ?? agentId,
+      run_id: data.run_id ?? '',
+      reply: replyText,
+      status: data.status ?? 'applied',
+    }
+  }
+
+  // Consume SSE stream via ReadableStream reader
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let buffer = ''
+  let reply = ''
+  let runId = ''
+  let status = 'applied'
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith(':')) continue
+
+      if (trimmed.startsWith('data:')) {
+        const payloadStr = trimmed.slice(5).trim()
+        if (payloadStr === '[DONE]') {
+          continue
+        }
+        try {
+          const parsed = JSON.parse(payloadStr)
+          if (parsed.error) {
+            throw new ApiError(500, parsed.error)
+          }
+          if (parsed.text) {
+            reply += parsed.text
+            if (onDelta) {
+              onDelta(parsed.text)
+            }
+          }
+          if (parsed.run_id) {
+            runId = parsed.run_id
+          }
+          if (parsed.status) {
+            status = parsed.status
+          }
+        } catch (err) {
+          if (err instanceof ApiError) throw err
+        }
+      }
+    }
+  }
+
+  if (buffer.trim().startsWith('data:')) {
+    const payloadStr = buffer.trim().slice(5).trim()
+    if (payloadStr && payloadStr !== '[DONE]') {
+      try {
+        const parsed = JSON.parse(payloadStr)
+        if (parsed.error) throw new ApiError(500, parsed.error)
+        if (parsed.text) {
+          reply += parsed.text
+          if (onDelta) onDelta(parsed.text)
+        }
+        if (parsed.run_id) runId = parsed.run_id
+        if (parsed.status) status = parsed.status
+      } catch (err) {
+        if (err instanceof ApiError) throw err
+      }
+    }
+  }
+
+  return {
+    agent_id: agentId,
+    run_id: runId,
+    reply,
+    status,
+  }
 }
 
