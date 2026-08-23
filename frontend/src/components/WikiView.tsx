@@ -9,7 +9,7 @@ import type {
   WikiDocument,
 } from '../types'
 import { renderMarkdown } from '../lib/markdown'
-import { EmptyState, SegmentedControl, SlideOver } from './ui'
+import { EmptyState, SegmentedControl, SkeletonRow, SlideOver } from './ui'
 
 // Every REST mutation from this local single-user client is attributed to the same fixed
 // actor the backend's `MutationContext.rest()` already assumes (`REST_ACTOR_NAME`); there is
@@ -560,8 +560,10 @@ export function WikiView({
 
           <section>
             <h3 className="slideover-section-title">Versions ({detail.version_count})</h3>
-            {versions.length === 0 ? (
-              <p className="view-empty">Loading versions…</p>
+            {versions.length === 0 && detail.version_count > 0 ? (
+              <SkeletonRow count={detail.version_count > 3 ? 3 : detail.version_count} />
+            ) : versions.length === 0 ? (
+              <p className="view-empty">No versions recorded.</p>
             ) : (
               <ul className="wiki-version-list">
                 {versions.map((version) => (

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { UpdateResourcePatch } from '../api/client'
 import type { ResearchDashboard, Resource, ResourceKind, ResourceLifecycleStatus } from '../types'
-import { EmptyState, Pill, type PillTone } from './ui'
+import { EmptyState, Pill, SkeletonRow, type PillTone } from './ui'
 import { ResearchDetailPanel as ResearchDetailSection } from './ResearchDetailPanel'
 
 interface ResearchViewProps {
@@ -292,7 +292,11 @@ export function ResearchView({
     null
 
   if (!dashboard) {
-    return <p className="view-empty">Loading research dashboard…</p>
+    return (
+      <div className="research-view" aria-label="Research dashboard">
+        <SkeletonRow count={4} />
+      </div>
+    )
   }
 
   if (selectedResource && isAdmittedKind(selectedResource)) {

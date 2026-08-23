@@ -35,12 +35,12 @@ const emptyDashboard: ResearchDashboard = {
 }
 
 describe('ResearchView', () => {
-  it('shows a loading message when the dashboard has not loaded yet', () => {
+  it('shows a loading skeleton when the dashboard has not loaded yet', () => {
     render(
       <ResearchView dashboard={null} resources={[]} selectedNodeId={null} onSelectNode={vi.fn()} onClearSelection={() => undefined}
         onUpdateDetail={vi.fn().mockResolvedValue(true)} onCreateResource={vi.fn()} onArchiveResource={vi.fn()} onDeleteResource={vi.fn()} />,
     )
-    expect(screen.getByText(/loading research dashboard/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/loading content/i)).toHaveAttribute('aria-busy', 'true')
   })
 
   it('renders every workflow bucket as a filter chip with its count', () => {

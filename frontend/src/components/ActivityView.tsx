@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ActivityEvent, ActivityEventSummary } from '../types'
+import { SkeletonRow } from './ui'
 
 interface ActivityViewProps {
   onLoadPage: (
@@ -332,6 +333,7 @@ export function ActivityView({ onLoadPage, onLoadDetail, onUndo }: ActivityViewP
           {loadError}
         </p>
       )}
+      {isLoading && visibleEvents.length === 0 && <SkeletonRow count={4} />}
       {!loadError && visibleEvents.length === 0 && !isLoading && (
         <p className="view-empty" role="status">
           No activity recorded yet.
