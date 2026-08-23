@@ -698,3 +698,26 @@ def test_0019_backfills_the_search_scope_from_the_canonical_tables() -> None:
     assert by_row[("node", "node-repo")] == "repositories"
     assert by_row[("resource", "node-repo")] == "repositories"
     assert by_row[("node", "node-task")] == "tasks"
+
+
+def test_a_renamed_migration_is_not_replayed_on_databases_that_recorded_its_old_name() -> None:
+    """Regression: 0016_resource_content.sql shipped, then was renumbered to
+    0020_resource_content.sql after 0016_work_item_task_fields.sql claimed the slot. A database
+    that applied the script under its original name must not re-run it at startup (the CREATE
+    TABLE would fail with 'table resource_content already exists'), so the runner treats the
+    historical schema_migrations record as satisfying the current filename."""
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    applied_migration_names(connection)
+    versions = resources.files("personal_graph_os.infrastructure.sqlite.migrations.versions")
+    for name in _ALL_MIGRATION_NAMES[:-1]:
+        apply_migration_script(connection, name, (versions / name).read_text(encoding="utf-8"))
+
+    legacy_sql = (versions / _ALL_MIGRATION_NAMES[-1]).read_text(encoding="utf-8")
+    apply_migration_script(connection, "0016_resource_content.sql", legacy_sql)
+
+    assert run_migrations(connection) == ()
+    exists = connection.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'resource_content'"
+    ).fetchone()[0]
+    assert exists == 1
