@@ -5,6 +5,7 @@ export type AppView =
   | 'wiki'
   | 'research'
   | 'repositories'
+  | 'agents'
   | 'activity'
 
 interface TabDefinition {
@@ -43,6 +44,12 @@ const TABS: TabDefinition[] = [
     label: 'Repositories',
     description:
       'GitHub repositories you have captured, grouped by ownership (personal, Apilex, liked external), with purpose, capabilities, stack, license/activity, risks, and related graph objects.',
+  },
+  {
+    id: 'agents',
+    label: 'Agents',
+    description:
+      'Autonomous AI agent fleet management — configure system prompts, models, tool allowlists, write permissions, and chat live with agents.',
   },
   {
     id: 'activity',

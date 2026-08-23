@@ -47,6 +47,7 @@ export function CreateNodeControl({ nodeTypes, isDisabled, onCreate }: CreateNod
         id="create-node-input"
         type="text"
         placeholder="New node title…"
+        disabled={isDisabled}
         value={title}
         onChange={(event) => setTitle(event.target.value)}
         onKeyDown={(event) => {

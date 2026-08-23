@@ -465,3 +465,55 @@ export interface ActivityEventPage {
   events: ActivityEventSummary[]
   next_cursor: string | null
 }
+
+export type AgentWriteMode = 'proposal' | 'direct'
+export type AgentRunStatus = 'pending_review' | 'applied' | 'rejected' | 'failed'
+
+export interface Agent {
+  id: string
+  name: string
+  emoji: string
+  system_prompt: string
+  tool_allowlist: string[]
+  model: string | null
+  write_mode: AgentWriteMode
+  created_at: string
+}
+
+export interface AgentRun {
+  id: string
+  agent_id: string
+  action: string
+  entity_type: string | null
+  entity_id: string | null
+  status: AgentRunStatus
+  summary: string
+  diff_json: string | null
+  created_at: string
+}
+
+export interface AgentExecutionResult {
+  agent_id: string
+  run_id: string
+  reply: string
+  status: string
+}
+
+export interface CreateAgentInput {
+  name: string
+  system_prompt: string
+  emoji?: string
+  tool_allowlist?: string[]
+  model?: string | null
+  write_mode?: AgentWriteMode
+}
+
+export interface UpdateAgentInput {
+  name?: string
+  system_prompt?: string
+  emoji?: string
+  tool_allowlist?: string[]
+  model?: string | null
+  write_mode?: AgentWriteMode
+}
+

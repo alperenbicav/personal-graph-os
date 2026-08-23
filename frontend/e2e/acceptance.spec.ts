@@ -64,6 +64,29 @@ test.describe('ST-08.3 remote-access acceptance (real server, real build)', () =
     await expect(page.getByLabel(/access token/i)).toBeVisible()
   })
 
+  test('navigates to Agents view, displays agent fleet, and interacts with agent dock', async ({
+    page,
+  }) => {
+    const { port, token } = loadState()
+
+    await page.goto(`http://127.0.0.1:${port}/app/`)
+    await page.getByLabel(/access token/i).fill(token)
+    await page.getByRole('button', { name: /^unlock$/i }).click()
+    await expect(page.getByLabel(/access token/i)).toBeHidden()
+
+    // Verify live agent indicator pill is present
+    await expect(page.getByLabel(/active agents indicator/i)).toBeVisible()
+
+    // Navigate to Agents tab
+    await page
+      .getByRole('navigation', { name: /workspace views/i })
+      .getByRole('button', { name: 'Agents' })
+      .click()
+
+    await expect(page.getByText('Autonomous Agents Fleet')).toBeVisible()
+    await expect(page.getByRole('button', { name: /\+ create agent/i })).toBeVisible()
+  })
+
   test('rejects a request with no bearer token', async () => {
     const { port } = loadState()
     const result = await rawRequest({ host: '127.0.0.1', port, path: '/workspace' })
@@ -81,3 +104,4 @@ test.describe('ST-08.3 remote-access acceptance (real server, real build)', () =
     expect(result.status).toBe(400)
   })
 })
+
