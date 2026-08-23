@@ -14,13 +14,13 @@ describe('NavTabs', () => {
     expect(onSelectView).toHaveBeenCalledWith('research')
   })
 
-  it('renders exactly the seven primary tabs', () => {
+  it('renders exactly the six primary tabs (search is now in the global command palette)', () => {
     render(<NavTabs activeView="graph" onSelectView={vi.fn()} />)
-    const labels = ['Graph', 'Tasks', 'Wiki', 'Research', 'Repositories', 'Search', 'Activity']
+    const labels = ['Graph', 'Tasks', 'Wiki', 'Research', 'Repositories', 'Activity']
     for (const label of labels) {
       expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
     }
-    for (const removed of ['Canvas', 'Table', 'Kanban', 'Timeline', 'Discovery']) {
+    for (const removed of ['Search', 'Canvas', 'Table', 'Kanban', 'Timeline', 'Discovery']) {
       expect(screen.queryByRole('button', { name: removed })).not.toBeInTheDocument()
     }
   })
@@ -36,7 +36,7 @@ describe('NavTabs', () => {
   it('keeps descriptions available on every tab without persistent info buttons', () => {
     render(<NavTabs activeView="tasks" onSelectView={vi.fn()} />)
 
-    for (const label of ['Graph', 'Tasks', 'Wiki', 'Research', 'Repositories', 'Search', 'Activity']) {
+    for (const label of ['Graph', 'Tasks', 'Wiki', 'Research', 'Repositories', 'Activity']) {
       expect(screen.getByRole('button', { name: label })).toHaveAttribute('title')
     }
   })

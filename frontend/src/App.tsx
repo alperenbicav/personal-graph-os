@@ -3,6 +3,7 @@ import './App.css'
 import * as api from './api/client'
 import { ActivityView } from './components/ActivityView'
 import { CanvasRail } from './components/CanvasRail'
+import { CommandPalette } from './components/CommandPalette'
 import { ConnectEdgeModal, type PendingConnection } from './components/ConnectEdgeModal'
 import { CreateNodeControl } from './components/CreateNodeControl'
 import { NewCanvasModal } from './components/NewCanvasModal'
@@ -69,6 +70,8 @@ function App() {
   const [documents, setDocuments] = useState<WikiDocument[]>([])
   const [researchDashboard, setResearchDashboard] = useState<ResearchDashboard | null>(null)
   const [selectedWorkItemId, setSelectedWorkItemId] = useState<string | null>(null)
+  const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null)
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false)
 
   // Per-placement move sequence: guards against an older, now-superseded save request
   // rolling back a position that a newer move already replaced (or is still in flight).
@@ -579,9 +582,23 @@ function App() {
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        setIsCommandPaletteOpen((prev) => !prev)
+        return
+      }
+
       const target = event.target as HTMLElement | null
-      const isEditingText = Boolean(target && ['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName))
+      const isEditingText = Boolean(
+        target && (['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName) || target.isContentEditable),
+      )
       if (isEditingText) return
+
+      if (event.key === '/' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault()
+        setIsCommandPaletteOpen(true)
+        return
+      }
 
       if (event.key === 'Escape') {
         setSelectedNodeId(null)
@@ -623,6 +640,7 @@ function App() {
   return (
     <div className="app">
       <TopBar
+        onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
         onOpenSchemaEditor={() => setIsSchemaEditorOpen(true)}
         onExportWorkspace={async () => {
           if (!workspace) return
@@ -841,6 +859,8 @@ function App() {
               onAddDocumentLink={(documentId, targetDocumentId) =>
                 api.addDocumentLink(documentId, 'document', targetDocumentId)
               }
+              selectedDocumentId={selectedDocumentId}
+              onSelectDocument={setSelectedDocumentId}
             />
           </div>
         )}
@@ -950,6 +970,39 @@ function App() {
           </div>
         )}
       </div>
+
+      <CommandPalette
+        isOpen={isCommandPaletteOpen}
+        onClose={() => setIsCommandPaletteOpen(false)}
+        onNavigate={setActiveView}
+        onSelectDocument={(documentId) => {
+          setActiveView('wiki')
+          setSelectedDocumentId(documentId)
+        }}
+        onSelectWorkItem={(workItemId) => {
+          setActiveView('tasks')
+          setSelectedWorkItemId(workItemId)
+        }}
+        onSelectResourceNode={(nodeId, isRepo) => {
+          setActiveView(isRepo ? 'repositories' : 'research')
+          setSelectedNodeId(nodeId)
+        }}
+        onSelectNode={(nodeId) => {
+          setActiveView('graph')
+          setSelectedNodeId(nodeId)
+        }}
+        onSelectCanvas={(canvasId) => {
+          setActiveView('graph')
+          setActiveCanvasId(canvasId)
+        }}
+        onOpenCreateCanvas={() => setIsNewCanvasModalOpen(true)}
+        onOpenSchemaEditor={() => setIsSchemaEditorOpen(true)}
+        documents={documents}
+        workItems={workItems}
+        resources={resources}
+        nodes={nodes}
+        canvases={canvases}
+      />
 
       {isNewCanvasModalOpen && (
         <NewCanvasModal

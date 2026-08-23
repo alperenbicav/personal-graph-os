@@ -47,6 +47,8 @@ interface WikiViewProps {
   onCreateCollection: (name: string) => Promise<Collection>
   onLoadTags: () => Promise<Tag[]>
   onAddDocumentLink: (documentId: string, targetDocumentId: string) => Promise<void>
+  selectedDocumentId?: string | null
+  onSelectDocument?: (documentId: string | null) => void
 }
 
 interface CreatePageDraft {
@@ -76,12 +78,14 @@ export function WikiView({
   onCreateCollection,
   onLoadTags,
   onAddDocumentLink,
+  selectedDocumentId: externalSelectedDocId,
+  onSelectDocument: onExternalSelectDoc,
 }: WikiViewProps) {
   const [documents, setDocuments] = useState<WikiDocument[]>([])
   const [collections, setCollections] = useState<Collection[]>([])
   const [tags, setTags] = useState<Tag[]>([])
   const [collectionFilter, setCollectionFilter] = useState<'all' | 'uncategorized' | string>('all')
-  const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null)
+  const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(externalSelectedDocId ?? null)
   const [detail, setDetail] = useState<DocumentDetail | null>(null)
   const [versions, setVersions] = useState<DocumentVersion[]>([])
   const [detailsOpen, setDetailsOpen] = useState(false)
@@ -119,8 +123,18 @@ export function WikiView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  useEffect(() => {
+    if (externalSelectedDocId && externalSelectedDocId !== selectedDocumentId) {
+      void selectDocument(externalSelectedDocId)
+    } else if (externalSelectedDocId === null && selectedDocumentId !== null) {
+      setSelectedDocumentId(null)
+      setDetail(null)
+    }
+  }, [externalSelectedDocId])
+
   async function selectDocument(documentId: string) {
     setSelectedDocumentId(documentId)
+    onExternalSelectDoc?.(documentId)
     setDetailsOpen(false)
     setVersions([])
     setIsTagEditorOpen(false)

@@ -333,10 +333,11 @@ test.describe('ST-09.4 complete pilot journey and recovery (real server, real bu
       // real Search, the custom schema still governs the Schema dialog, the attachment and
       // discovery-imported resource are both still visible, and the earlier undo is still
       // recorded.
-      await navigateTo(restoredPage, 'Search')
-      await restoredPage.locator('.search-view').getByLabel(/^search$/i).fill('Pilot canonical')
-      await restoredPage.locator('.search-view').getByRole('button', { name: /^search$/i }).click()
-      await expect(restoredPage.getByText(markerTitle).first()).toBeVisible()
+      await restoredPage.getByRole('button', { name: /search or jump/i }).click()
+      const searchPalette = restoredPage.getByRole('dialog', { name: /command palette/i })
+      await searchPalette.getByLabel(/command palette search/i).fill('Pilot canonical')
+      await expect(searchPalette.getByText(markerTitle).first()).toBeVisible()
+      await restoredPage.keyboard.press('Escape')
 
       await restoredPage.getByRole('button', { name: /^schema$/i }).click()
       const restoredSchemaDialog = restoredPage.getByRole('dialog', { name: /edit schema/i })
