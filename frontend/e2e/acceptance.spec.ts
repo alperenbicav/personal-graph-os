@@ -102,7 +102,21 @@ test.describe('ST-08.3 remote-access acceptance (real server, real build)', () =
     // Verify newly created agent appears in the fleet grid
     await expect(page.getByText(agentName)).toBeVisible()
 
-    // Mock LLM message execution and runs response
+    // Mock LLM status, message execution and runs response
+    await page.route(/\/agents\/status/, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          configured: true,
+          provider: 'openai',
+          model: 'gpt-4o',
+          available_agents_count: 3,
+          unconfigured_reason: null,
+        }),
+      })
+    })
+
     let runCreated = false
     await page.route(/\/agents\/.*\/message/, async (route) => {
       runCreated = true

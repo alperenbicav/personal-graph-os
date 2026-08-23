@@ -879,3 +879,12 @@ class AgentMessageResponse(BaseModel):
     reply: str
     run_id: str
 
+
+class AgentSystemStatusResponse(BaseModel):
+    configured: bool
+    provider: str
+    model: str
+    available_agents_count: int
+    unconfigured_reason: str | None = None
+
+

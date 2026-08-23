@@ -42,11 +42,10 @@ function makeDetail(overrides: Partial<DocumentDetail> = {}): DocumentDetail {
 
 function baseProps() {
   return {
-    workspaceId: 'ws-1',
     onLoadDocuments: vi.fn().mockResolvedValue([makeDocument()]),
     onLoadDetail: vi.fn().mockResolvedValue(makeDetail()),
     onLoadVersions: vi.fn().mockResolvedValue([]),
-    onCreateDocument: vi.fn().mockResolvedValue(makeDocument({ id: 'doc-2', title: 'New page' })),
+    onCreateDocument: vi.fn().mockResolvedValue(makeDocument({ id: 'doc-2', title: 'Untitled' })),
     onUpdateMetadata: vi.fn().mockResolvedValue(makeDocument()),
     onEditBody: vi.fn().mockResolvedValue({
       id: 'v-2',
@@ -76,27 +75,18 @@ describe('WikiView', () => {
     expect(titleInput.value).toBe('My first page')
   })
 
-  it('creates a page through the create-page modal', async () => {
+  it('instantly creates an untitled page and opens editor without modal', async () => {
     const props = baseProps()
     render(<WikiView {...props} />)
 
-    fireEvent.click((await screen.findAllByRole('button', { name: '+ New page' }))[0])
-    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'New page' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    const newBtn = await screen.findByRole('button', { name: '+ New page' })
+    fireEvent.click(newBtn)
 
     await waitFor(() =>
       expect(props.onCreateDocument).toHaveBeenCalledWith(
-        expect.objectContaining({ title: 'New page', kind: 'note' }),
+        expect.objectContaining({ title: 'Untitled', kind: 'note' }),
       ),
     )
-  })
-
-  it('disables create until a title is entered', async () => {
-    render(<WikiView {...baseProps()} />)
-
-    fireEvent.click((await screen.findAllByRole('button', { name: '+ New page' }))[0])
-
-    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled()
   })
 
   it('saves an edited body only once it differs from the loaded version', async () => {
@@ -106,13 +96,13 @@ describe('WikiView', () => {
     fireEvent.click(await screen.findByText('My first page'))
     await screen.findByLabelText('Page title')
 
-    const editor = screen.getByLabelText('Page body (Markdown)') as HTMLTextAreaElement
-    expect(screen.getByRole('button', { name: /^save$/i })).toBeDisabled()
+    const editor = screen.getByLabelText('Page body') as HTMLTextAreaElement
+    expect(screen.getByRole('button', { name: /saved/i })).toBeDisabled()
 
     fireEvent.change(editor, { target: { value: '# changed' } })
-    expect(screen.getByRole('button', { name: /^save$/i })).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: /save \(⌘s\)/i })).not.toBeDisabled()
 
-    fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /save \(⌘s\)/i }))
 
     await waitFor(() => expect(props.onEditBody).toHaveBeenCalledWith('doc-1', '# changed'))
   })
@@ -130,8 +120,8 @@ describe('WikiView', () => {
     render(<WikiView {...props} />)
 
     fireEvent.click(await screen.findByText('My first page'))
-    fireEvent.click(await screen.findByRole('button', { name: 'Page details' }))
-    const backlink = await screen.findByRole('button', { name: 'Referring page' })
+    fireEvent.click(await screen.findByRole('button', { name: 'Details & Links' }))
+    const backlink = await screen.findByRole('button', { name: '← Referring page' })
     fireEvent.click(backlink)
 
     await waitFor(() => expect(props.onLoadDetail).toHaveBeenCalledWith('doc-3'))

@@ -19,21 +19,6 @@ import { renderMarkdown } from '../lib/markdown'
 
 const REST_ACTOR_NAME = 'human/local-user/rest'
 
-const KIND_OPTIONS: { value: WorkItemKind; label: string }[] = [
-  { value: 'epic', label: 'Epic' },
-  { value: 'story', label: 'Story' },
-  { value: 'task', label: 'Task' },
-]
-
-const TYPE_OPTIONS: { value: WorkItemType; label: string }[] = [
-  { value: 'feature', label: 'Feature' },
-  { value: 'fix', label: 'Fix' },
-  { value: 'refactor', label: 'Refactor' },
-  { value: 'research', label: 'Research' },
-  { value: 'ops', label: 'Ops' },
-  { value: 'docs', label: 'Docs' },
-]
-
 const STATUS_OPTIONS: { value: WorkItemStatus; label: string }[] = [
   { value: 'backlog', label: 'Backlog' },
   { value: 'planned', label: 'Planned' },
@@ -108,30 +93,9 @@ interface TasksViewProps {
   ) => Promise<WorkItemChecklistItem[]>
   onAttachDocument: (workItemId: string, documentId: string) => Promise<void>
   onDetachDocument: (workItemId: string, documentId: string) => Promise<void>
-  /** Renames via the backing Node (titles live there so search stays indexed), then keeps
-   * the work-item projection in sync. */
   onRenameWorkItem: (item: WorkItem, title: string) => Promise<void>
   onNavigateDocument?: (documentId: string) => void
   onNavigateRepository?: (nodeId: string) => void
-}
-
-interface CreateWorkItemDraft {
-  kind: WorkItemKind
-  title: string
-  workType: WorkItemType
-  parentId: string
-}
-
-const EMPTY_DRAFT: CreateWorkItemDraft = {
-  kind: 'epic',
-  title: '',
-  workType: 'feature',
-  parentId: '',
-}
-
-const PARENT_KIND_BY_CHILD: Partial<Record<WorkItemKind, WorkItemKind[]>> = {
-  story: ['epic'],
-  task: ['story'],
 }
 
 type ViewMode = 'board' | 'list'
@@ -140,7 +104,7 @@ export function TasksView({
   workspaceId,
   workItems,
   documents,
-  repositories,
+  repositories: _repositories,
   selectedWorkItemId,
   onSelectWorkItem,
   onCreateWorkItem,
@@ -155,7 +119,7 @@ export function TasksView({
   onDetachDocument,
   onRenameWorkItem,
   onNavigateDocument,
-  onNavigateRepository,
+  onNavigateRepository: _onNavigateRepository,
 }: TasksViewProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('board')
   const [filterQuery, setFilterQuery] = useState('')
@@ -165,9 +129,6 @@ export function TasksView({
   const [bodyDraft, setBodyDraft] = useState('')
   const [descriptionMode, setDescriptionMode] = useState<'write' | 'preview'>('write')
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [isCreateOpen, setIsCreateOpen] = useState(false)
-  const [createDraft, setCreateDraft] = useState<CreateWorkItemDraft>(EMPTY_DRAFT)
-  const [createError, setCreateError] = useState<string | null>(null)
   const [newChecklistLabel, setNewChecklistLabel] = useState('')
   const [linkTargetId, setLinkTargetId] = useState('')
 
@@ -204,11 +165,6 @@ export function TasksView({
   )
 
   const roots = childrenOf(null)
-
-  const parentOptions = useMemo(() => {
-    const allowedKinds = PARENT_KIND_BY_CHILD[createDraft.kind] ?? []
-    return workItems.filter((item) => allowedKinds.includes(item.kind))
-  }, [workItems, createDraft.kind])
 
   const linkedDocumentIds = useMemo(
     () => new Set((detail?.linked_documents ?? []).map((link) => link.document_id)),
@@ -257,38 +213,20 @@ export function TasksView({
     }
   }
 
-  async function submitCreate() {
-    if (!createDraft.title.trim()) return
-    setCreateError(null)
+  async function quickAdd(status: WorkItemStatus, title: string, kind: WorkItemKind = 'task', workType: WorkItemType = 'feature', parentId: string | null = null) {
+    const trimmed = title.trim()
+    if (!trimmed) return
     try {
       const created = await onCreateWorkItem({
         workspace_id: workspaceId,
-        kind: createDraft.kind,
-        work_type: createDraft.workType,
-        title: createDraft.title.trim(),
-        source: REST_ACTOR_NAME,
-        parent_id: createDraft.parentId || null,
-      })
-      setIsCreateOpen(false)
-      setCreateDraft(EMPTY_DRAFT)
-      selectWorkItem(created.id)
-    } catch (error) {
-      setCreateError(error instanceof Error ? error.message : String(error))
-    }
-  }
-
-  async function quickAdd(status: WorkItemStatus, title: string) {
-    if (!title.trim()) return
-    try {
-      await onCreateWorkItem({
-        workspace_id: workspaceId,
-        kind: 'task',
-        work_type: 'feature',
-        title: title.trim(),
+        kind,
+        work_type: workType,
+        title: trimmed,
         status,
         source: REST_ACTOR_NAME,
-        parent_id: null,
+        parent_id: parentId,
       })
+      selectWorkItem(created.id)
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : String(error))
     }
@@ -352,451 +290,48 @@ export function TasksView({
     }
   }
 
-  async function moveChecklistItem(itemId: string, direction: -1 | 1) {
+  async function moveChecklistItem(fromIndex: number, toIndex: number) {
     if (!selectedWorkItemId || !detail) return
-    const items = detail.checklist_items
-    const from = items.findIndex((entry) => entry.id === itemId)
-    const to = from + direction
-    if (from < 0 || to < 0 || to >= items.length) return
-    const reordered = [...items]
-    const [moved] = reordered.splice(from, 1)
-    reordered.splice(to, 0, moved)
+    const items = [...detail.checklist_items]
+    if (toIndex < 0 || toIndex >= items.length) return
+    const [moved] = items.splice(fromIndex, 1)
+    items.splice(toIndex, 0, moved)
+    const orderedIds = items.map((item) => item.id)
     try {
-      const persisted = await onReorderChecklistItems(
-        selectedWorkItemId,
-        reordered.map((entry) => entry.id),
-      )
-      setDetail({ ...detail, checklist_items: persisted })
+      const reordered = await onReorderChecklistItems(selectedWorkItemId, orderedIds)
+      setDetail({ ...detail, checklist_items: reordered })
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : String(error))
     }
   }
 
-  async function submitLink() {
+  async function attachDocument() {
     if (!selectedWorkItemId || !linkTargetId) return
     try {
       await onAttachDocument(selectedWorkItemId, linkTargetId)
-      const reloaded = await onLoadDetail(selectedWorkItemId)
-      setDetail(reloaded)
       setLinkTargetId('')
+      const updated = await onLoadDetail(selectedWorkItemId)
+      setDetail(updated)
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : String(error))
     }
   }
 
-  async function removeLink(documentId: string) {
+  async function detachDocument(documentId: string) {
     if (!selectedWorkItemId) return
     try {
       await onDetachDocument(selectedWorkItemId, documentId)
-      const reloaded = await onLoadDetail(selectedWorkItemId)
-      setDetail(reloaded)
+      const updated = await onLoadDetail(selectedWorkItemId)
+      setDetail(updated)
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : String(error))
     }
   }
 
-  const item = selectedWorkItem ?? detail?.work_item ?? null
+  const isDirty = detail !== null && bodyDraft !== detail.work_item.body
 
-  // ---------- Detail overlay (Linear/Jira-style full-area page) ----------
-  if (item) {
-    return (
-      <div className="tasks-view" aria-label="Tasks">
-        <div className="tasks-detail">
-          <div className="tasks-detail-inner reading-column">
-            <div className="tasks-detail-top">
-              <button type="button" className="tasks-back" onClick={() => selectWorkItem(null)}>
-                ← Back
-              </button>
-              <Pill tone={item.kind === 'epic' ? 'violet' : item.kind === 'story' ? 'brass' : 'teal'}>
-                {item.kind}
-              </Pill>
-              <Pill tone={STATUS_TONE[item.status]}>{STATUS_LABEL[item.status]}</Pill>
-            </div>
-
-            {/* Provenance ribbon (S6) */}
-            {(() => {
-              const parentItem = item.parent_id
-                ? workItems.find((w) => w.id === item.parent_id)
-                : null
-              const repoItem = item.repository_node_id
-                ? repositories.find((r) => r.node_id === item.repository_node_id)
-                : null
-              const hasProvenance =
-                parentItem || repoItem || (detail && detail.linked_documents.length > 0)
-              if (!hasProvenance) return null
-              return (
-                <div className="provenance-ribbon" aria-label="Work item lineage and connected provenance">
-                  {parentItem && (
-                    <>
-                      <button
-                        type="button"
-                        className="provenance-chip"
-                        onClick={() => selectWorkItem(parentItem.id)}
-                        title={`Parent: ${parentItem.title}`}
-                      >
-                        <span className="provenance-icon">🏷️</span>
-                        <span className="provenance-title">{parentItem.title}</span>
-                      </button>
-                      <span className="provenance-arrow">➔</span>
-                    </>
-                  )}
-                  <span className="provenance-chip provenance-chip-current">
-                    <span className="provenance-icon">☑️</span>
-                    <span className="provenance-title">{item.title}</span>
-                  </span>
-                  {repoItem && (
-                    <>
-                      <span className="provenance-arrow">➔</span>
-                      <button
-                        type="button"
-                        className="provenance-chip"
-                        onClick={() => onNavigateRepository?.(repoItem.node_id)}
-                        title={`Repository: ${repoItem.title}`}
-                      >
-                        <span className="provenance-icon">📦</span>
-                        <span className="provenance-title">{repoItem.title}</span>
-                      </button>
-                    </>
-                  )}
-                  {detail &&
-                    detail.linked_documents.map((link) => {
-                      const doc = documents.find((d) => d.id === link.document_id)
-                      if (!doc) return null
-                      return (
-                        <span
-                          key={link.id}
-                          style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--s2)' }}
-                        >
-                          <span className="provenance-arrow">➔</span>
-                          <button
-                            type="button"
-                            className="provenance-chip"
-                            onClick={() => onNavigateDocument?.(doc.id)}
-                            title={`Wiki document: ${doc.title}`}
-                          >
-                            <span className="provenance-icon">📄</span>
-                            <span className="provenance-title">{doc.title}</span>
-                          </button>
-                        </span>
-                      )
-                    })}
-                </div>
-              )
-            })()}
-
-            <input
-              className="wiki-title-input"
-              aria-label="Work item title"
-              defaultValue={item.title}
-              key={item.id}
-              onBlur={(event) => {
-                const trimmed = event.target.value.trim()
-                if (trimmed && trimmed !== item.title) void onRenameWorkItem(item, trimmed)
-              }}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') event.currentTarget.blur()
-              }}
-            />
-
-            <div className="tasks-controls">
-              <label className="tasks-control">
-                <span>Status</span>
-                <select
-                  className="wiki-chip-select"
-                  value={item.status}
-                  onChange={(event) =>
-                    commitUpdate({ status: event.target.value as WorkItemStatus })
-                  }
-                >
-                  {STATUS_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="tasks-control">
-                <span>Priority</span>
-                <select
-                  className="wiki-chip-select"
-                  value={item.priority ?? ''}
-                  onChange={(event) =>
-                    event.target.value
-                      ? commitUpdate({ priority: event.target.value as WorkItemPriority })
-                      : commitUpdate({ clear_priority: true })
-                  }
-                >
-                  <option value="">—</option>
-                  {PRIORITY_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="tasks-control">
-                <span>Assignee</span>
-                <input
-                  type="text"
-                  className="wiki-tag-add-input"
-                  style={{ width: 130 }}
-                  defaultValue={item.assignee ?? ''}
-                  onBlur={(event) => {
-                    const value = event.target.value.trim()
-                    commitUpdate(value ? { assignee: value } : { clear_assignee: true })
-                  }}
-                />
-              </label>
-
-              <label className="tasks-control">
-                <span>Due date</span>
-                <input
-                  type="date"
-                  value={item.due_date ?? ''}
-                  onChange={(event) =>
-                    event.target.value
-                      ? commitUpdate({ due_date: event.target.value })
-                      : commitUpdate({ clear_due_date: true })
-                  }
-                />
-              </label>
-
-              <label className="tasks-control tasks-progress">
-                <span>Progress (%)</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={100}
-                  step={5}
-                  value={item.progress_percent ?? 0}
-                  aria-label="Progress (%)"
-                  onBlur={(event) => {
-                    const value = event.target.value.trim()
-                    if (value === '') {
-                      commitUpdate({ clear_progress_percent: true })
-                    } else {
-                      const parsed = Number(value)
-                      if (!Number.isNaN(parsed)) commitUpdate({ progress_percent: parsed })
-                    }
-                  }}
-                />
-              </label>
-
-              <label className="tasks-control">
-                <span>Repository</span>
-                <select
-                  className="wiki-chip-select"
-                  value={item.repository_node_id ?? ''}
-                  onChange={(event) =>
-                    event.target.value
-                      ? commitUpdate({ repository_node_id: event.target.value })
-                      : commitUpdate({ clear_repository_node_id: true })
-                  }
-                >
-                  <option value="">—</option>
-                  {repositories.map((repository) => (
-                    <option key={repository.node_id} value={repository.node_id}>
-                      {repository.title}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="tasks-control">
-                <span>Type</span>
-                <select
-                  className="wiki-chip-select"
-                  value={item.work_type}
-                  onChange={(event) =>
-                    commitUpdate({ work_type: event.target.value as WorkItemType })
-                  }
-                >
-                  {TYPE_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="tasks-control">
-                <span>Blockers</span>
-                <input
-                  type="text"
-                  className="wiki-tag-add-input"
-                  style={{ width: 160 }}
-                  defaultValue={item.blockers ?? ''}
-                  onBlur={(event) => {
-                    const value = event.target.value.trim()
-                    commitUpdate(value ? { blockers: value } : { clear_blockers: true })
-                  }}
-                />
-              </label>
-            </div>
-
-            {loadError && (
-              <p className="view-error" role="alert">
-                {loadError}
-              </p>
-            )}
-
-            <div className="wiki-editor-bar">
-              <SegmentedControl
-                ariaLabel="Description mode"
-                options={[
-                  { value: 'write', label: 'Write' },
-                  { value: 'preview', label: 'Preview' },
-                ]}
-                value={descriptionMode}
-                onChange={setDescriptionMode}
-              />
-              <button
-                type="button"
-                onClick={saveBody}
-                disabled={bodyDraft === item.body}
-              >
-                Save description
-              </button>
-            </div>
-
-            {descriptionMode === 'write' ? (
-              <textarea
-                id="tasks-description"
-                className="wiki-body-editor tasks-description-editor"
-                aria-label="Work item description (Markdown)"
-                value={bodyDraft}
-                onChange={(event) => setBodyDraft(event.target.value)}
-                placeholder="Add a description…"
-              />
-            ) : (
-              <div
-                className="wiki-preview"
-                aria-label="Rendered description preview"
-                dangerouslySetInnerHTML={{ __html: renderMarkdown(bodyDraft) }}
-              />
-            )}
-
-            <section className="tasks-section">
-              <h3 className="slideover-section-title">Checklist</h3>
-              {detail && detail.checklist_items.length > 0 && (
-                <ul className="wiki-link-list">
-                  {detail.checklist_items.map((checklistEntry, index) => (
-                    <li key={checklistEntry.id} className="tasks-checklist-row">
-                      <label className="field-control-checkbox">
-                        <input
-                          type="checkbox"
-                          checked={checklistEntry.is_completed}
-                          onChange={() => toggleChecklistItem(checklistEntry)}
-                        />
-                        <span className={checklistEntry.is_completed ? 'tasks-done' : undefined}>
-                          {checklistEntry.label}
-                        </span>
-                      </label>
-                      <button
-                        type="button"
-                        aria-label="Move up"
-                        disabled={index === 0}
-                        onClick={() => moveChecklistItem(checklistEntry.id, -1)}
-                      >
-                        ↑
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Move down"
-                        disabled={index === detail.checklist_items.length - 1}
-                        onClick={() => moveChecklistItem(checklistEntry.id, 1)}
-                      >
-                        ↓
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Remove checklist item"
-                        onClick={() => removeChecklistItem(checklistEntry.id)}
-                      >
-                        ×
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {(!detail || detail.checklist_items.length === 0) && (
-                <p className="view-empty">No checklist items yet.</p>
-              )}
-              <div className="wiki-add-link">
-                <input
-                  type="text"
-                  placeholder="New checklist item…"
-                  aria-label="New checklist item"
-                  value={newChecklistLabel}
-                  onChange={(event) => setNewChecklistLabel(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') submitChecklistItem()
-                  }}
-                />
-                <button
-                  type="button"
-                  onClick={submitChecklistItem}
-                  disabled={!newChecklistLabel.trim()}
-                >
-                  Add
-                </button>
-              </div>
-            </section>
-
-            <section className="tasks-section">
-              <h3 className="slideover-section-title">Wiki links</h3>
-              {detail && detail.linked_documents.length > 0 ? (
-                <ul className="wiki-link-list">
-                  {detail.linked_documents.map((link) => {
-                    const linkedDocument = documents.find(
-                      (candidate) => candidate.id === link.document_id,
-                    )
-                    return (
-                      <li key={link.id}>
-                        {linkedDocument?.title ?? link.document_id}
-                        <button
-                          type="button"
-                          aria-label="Remove Wiki link"
-                          onClick={() => removeLink(link.document_id)}
-                        >
-                          ×
-                        </button>
-                      </li>
-                    )
-                  })}
-                </ul>
-              ) : (
-                <p className="view-empty">No Wiki pages linked yet.</p>
-              )}
-              <div className="wiki-add-link">
-                <select
-                  aria-label="Link a Wiki page"
-                  value={linkTargetId}
-                  onChange={(event) => setLinkTargetId(event.target.value)}
-                >
-                  <option value="">Link a page…</option>
-                  {linkableDocuments.map((document) => (
-                    <option key={document.id} value={document.id}>
-                      {document.title}
-                    </option>
-                  ))}
-                </select>
-                <button type="button" onClick={submitLink} disabled={!linkTargetId}>
-                  Add link
-                </button>
-              </div>
-            </section>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  // ---------- Board / List overview ----------
   return (
-    <div className="tasks-view" aria-label="Tasks">
+    <div className="tasks-layout" aria-label="Tasks Workspace">
       <aside className="tasks-rail">
         <SegmentedControl
           ariaLabel="View mode"
@@ -807,9 +342,25 @@ export function TasksView({
           value={viewMode}
           onChange={setViewMode}
         />
-        <button type="button" className="wiki-new-page" onClick={() => setIsCreateOpen(true)}>
-          + New work item
-        </button>
+
+        <div style={{ marginTop: 10, marginBottom: 10 }}>
+          <input
+            type="text"
+            className="v2-rail-quickadd-input"
+            placeholder="+ Quick add task… (Enter)"
+            aria-label="Quick add task"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                const val = e.currentTarget.value.trim()
+                if (val) {
+                  void quickAdd('backlog', val)
+                  e.currentTarget.value = ''
+                }
+              }
+            }}
+          />
+        </div>
+
         <input
           type="search"
           className="tasks-filter-input"
@@ -836,7 +387,7 @@ export function TasksView({
         {roots.length === 0 ? (
           <EmptyState
             title="No work yet"
-            hint="Create your first epic, story, or task."
+            hint="Type above and press Enter to create your first task."
           />
         ) : (
           <div className="list-view">
@@ -854,11 +405,29 @@ export function TasksView({
       </aside>
 
       <main className="tasks-main">
+        {viewMode === 'list' && (
+          <div className="v2-tasks-list-quickadd" style={{ padding: '0 0 14px 0' }}>
+            <input
+              type="text"
+              className="v2-list-quickadd-input"
+              aria-label="Add a work item to list"
+              placeholder="+ Add a work item to backlog… (Press Enter to add)"
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter') return
+                const target = event.currentTarget
+                if (target.value.trim()) {
+                  void quickAdd('backlog', target.value)
+                  target.value = ''
+                }
+              }}
+            />
+          </div>
+        )}
+
         {filteredItems.length === 0 ? (
           <EmptyState
-            icon="📋"
             title="No work items found"
-            hint="Adjust the filter, or create a new work item to start tracking."
+            hint="Adjust the filter, or type in the composer above to start tracking."
           />
         ) : viewMode === 'board' ? (
           <div className="tasks-board" aria-label="Task board">
@@ -890,6 +459,7 @@ export function TasksView({
                     {column.label}
                     <span className="tasks-column-count">{columnItems.length}</span>
                   </header>
+
                   <div className="tasks-column-cards">
                     {columnItems.map((card) => (
                       <article
@@ -925,16 +495,19 @@ export function TasksView({
                       </article>
                     ))}
                   </div>
+
                   <input
                     type="text"
                     className="tasks-quick-add"
                     aria-label={`Quick add to ${column.label}`}
-                    placeholder="+ Quick add"
+                    placeholder={`+ Add to ${column.label}…`}
                     onKeyDown={(event) => {
                       if (event.key !== 'Enter') return
                       const target = event.currentTarget
-                      void quickAdd(column.value, target.value)
-                      target.value = ''
+                      if (target.value.trim()) {
+                        void quickAdd(column.value, target.value)
+                        target.value = ''
+                      }
                     }}
                   />
                 </section>
@@ -970,104 +543,273 @@ export function TasksView({
         )}
       </main>
 
-      {isCreateOpen && (
-        <div className="wiki-create-modal-backdrop" onClick={() => setIsCreateOpen(false)}>
-          <div
-            className="wiki-create-modal"
-            role="dialog"
-            aria-label="Create work item"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <h2>Create work item</h2>
-            <label htmlFor="tasks-create-kind">Kind</label>
-            <select
-              id="tasks-create-kind"
-              value={createDraft.kind}
-              onChange={(event) =>
-                setCreateDraft((current) => ({
-                  ...current,
-                  kind: event.target.value as WorkItemKind,
-                  parentId: '',
-                }))
-              }
-            >
-              {KIND_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-
-            {parentOptions.length > 0 && (
-              <>
-                <label htmlFor="tasks-create-parent">Parent</label>
-                <select
-                  id="tasks-create-parent"
-                  value={createDraft.parentId}
-                  onChange={(event) =>
-                    setCreateDraft((current) => ({ ...current, parentId: event.target.value }))
-                  }
-                >
-                  <option value="">None (standalone)</option>
-                  {parentOptions.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.title}
-                    </option>
-                  ))}
-                </select>
-              </>
-            )}
-
-            <label htmlFor="tasks-create-title">Title</label>
+      {/* Detail Slide-Over */}
+      {selectedWorkItem && (
+        <aside className="tasks-detail" aria-label="Work item detail">
+          <header className="tasks-detail-header">
             <input
-              id="tasks-create-title"
               type="text"
-              value={createDraft.title}
-              onChange={(event) =>
-                setCreateDraft((current) => ({ ...current, title: event.target.value }))
-              }
+              className="tasks-detail-title-input"
+              aria-label="Work item title"
+              value={selectedWorkItem.title}
+              onChange={(event) => void onRenameWorkItem(selectedWorkItem, event.target.value)}
             />
-
-            <label htmlFor="tasks-create-type">Type</label>
-            <select
-              id="tasks-create-type"
-              value={createDraft.workType}
-              onChange={(event) =>
-                setCreateDraft((current) => ({
-                  ...current,
-                  workType: event.target.value as WorkItemType,
-                }))
-              }
+            <button
+              type="button"
+              className="tasks-detail-close"
+              aria-label="Close detail"
+              onClick={() => selectWorkItem(null)}
             >
-              {TYPE_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+              ×
+            </button>
+          </header>
 
-            {createError && (
-              <p className="view-error" role="alert">
-                {createError}
-              </p>
-            )}
-            <div className="wiki-create-actions">
-              <button type="button" onClick={submitCreate} disabled={!createDraft.title.trim()}>
-                Create
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsCreateOpen(false)
-                  setCreateDraft(EMPTY_DRAFT)
-                  setCreateError(null)
-                }}
+          <div className="tasks-detail-body">
+            <div className="tasks-field-row">
+              <label htmlFor="tasks-edit-status">Status</label>
+              <select
+                id="tasks-edit-status"
+                aria-label="Status"
+                value={selectedWorkItem.status}
+                onChange={(event) =>
+                  void commitUpdate({ status: event.target.value as WorkItemStatus })
+                }
               >
-                Cancel
-              </button>
+                {STATUS_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
             </div>
+
+            <div className="tasks-field-row">
+              <label>Kind</label>
+              <div style={{ display: 'flex', alignItems: 'center' }}>
+                <Pill tone={selectedWorkItem.kind === 'epic' ? 'violet' : selectedWorkItem.kind === 'story' ? 'brass' : 'teal'}>
+                  {selectedWorkItem.kind}
+                </Pill>
+              </div>
+            </div>
+
+            <div className="tasks-field-row">
+              <label htmlFor="tasks-edit-priority">Priority</label>
+              <select
+                id="tasks-edit-priority"
+                aria-label="Priority"
+                value={selectedWorkItem.priority ?? ''}
+                onChange={(event) =>
+                  void commitUpdate({
+                    priority: (event.target.value as WorkItemPriority) || null,
+                  })
+                }
+              >
+                <option value="">None</option>
+                {PRIORITY_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="tasks-field-row">
+              <label htmlFor="tasks-edit-assignee">Assignee</label>
+              <input
+                id="tasks-edit-assignee"
+                type="text"
+                value={selectedWorkItem.assignee ?? ''}
+                placeholder="Assignee username"
+                onChange={(event) =>
+                  void commitUpdate({ assignee: event.target.value.trim() || null })
+                }
+              />
+            </div>
+
+            <div className="tasks-field-row">
+              <label htmlFor="tasks-edit-due-date">Due date</label>
+              <input
+                id="tasks-edit-due-date"
+                type="date"
+                value={selectedWorkItem.due_date ?? ''}
+                onChange={(event) =>
+                  void commitUpdate({ due_date: event.target.value || null })
+                }
+              />
+            </div>
+
+            <div className="tasks-field-row">
+              <label htmlFor="tasks-edit-progress">Progress %</label>
+              <input
+                id="tasks-edit-progress"
+                type="number"
+                min={0}
+                max={100}
+                value={selectedWorkItem.progress_percent ?? ''}
+                onChange={(event) => {
+                  const val = event.target.value === '' ? undefined : Number(event.target.value)
+                  void commitUpdate({ progress_percent: val })
+                }}
+              />
+            </div>
+
+            <div className="tasks-field-row">
+              <label htmlFor="tasks-edit-blockers">Blockers</label>
+              <input
+                id="tasks-edit-blockers"
+                type="text"
+                value={selectedWorkItem.blockers ?? ''}
+                placeholder="Summary of blockers"
+                onChange={(event) =>
+                  void commitUpdate({ blockers: event.target.value.trim() || null })
+                }
+              />
+            </div>
+
+            {/* Checklist Section */}
+            <section className="tasks-checklist-section" aria-label="Checklist">
+              <h3>Checklist</h3>
+              <div className="tasks-checklist-items">
+                {(detail?.checklist_items ?? []).map((item, index) => (
+                  <div key={item.id} className="tasks-checklist-row">
+                    <input
+                      type="checkbox"
+                      checked={item.is_completed}
+                      onChange={() => void toggleChecklistItem(item)}
+                      aria-label={`Mark ${item.label} complete`}
+                    />
+                    <span className={item.is_completed ? 'tasks-checklist-done' : ''}>
+                      {item.label}
+                    </span>
+                    <div className="tasks-checklist-actions">
+                      <button
+                        type="button"
+                        disabled={index === 0}
+                        onClick={() => void moveChecklistItem(index, index - 1)}
+                        aria-label={`Move ${item.label} up`}
+                      >
+                        ▲
+                      </button>
+                      <button
+                        type="button"
+                        disabled={index === (detail?.checklist_items.length ?? 0) - 1}
+                        onClick={() => void moveChecklistItem(index, index + 1)}
+                        aria-label={`Move ${item.label} down`}
+                      >
+                        ▼
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void removeChecklistItem(item.id)}
+                        aria-label={`Delete ${item.label}`}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="tasks-checklist-add">
+                <input
+                  type="text"
+                  placeholder="New checklist item…"
+                  aria-label="New checklist item"
+                  value={newChecklistLabel}
+                  onChange={(event) => setNewChecklistLabel(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') void submitChecklistItem()
+                  }}
+                />
+                <button type="button" onClick={() => void submitChecklistItem()}>
+                  Add
+                </button>
+              </div>
+            </section>
+
+            {/* Linked Documents */}
+            <section className="tasks-links-section" aria-label="Linked documents">
+              <h3>Linked Documents</h3>
+              <div className="tasks-linked-docs">
+                {(detail?.linked_documents ?? []).map((link) => {
+                  const doc = documents.find((d) => d.id === link.document_id)
+                  return (
+                    <div key={link.id} className="tasks-link-row">
+                      <button
+                        type="button"
+                        className="tasks-link-btn"
+                        onClick={() => onNavigateDocument?.(link.document_id)}
+                      >
+                        📄 {doc?.title || link.document_id}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void detachDocument(link.document_id)}
+                        aria-label={`Detach ${doc?.title || link.document_id}`}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+              {linkableDocuments.length > 0 && (
+                <div className="tasks-link-add">
+                  <select
+                    value={linkTargetId}
+                    onChange={(event) => setLinkTargetId(event.target.value)}
+                    aria-label="Document to attach"
+                  >
+                    <option value="">Attach document…</option>
+                    {linkableDocuments.map((doc) => (
+                      <option key={doc.id} value={doc.id}>
+                        {doc.title}
+                      </option>
+                    ))}
+                  </select>
+                  <button type="button" onClick={() => void attachDocument()} disabled={!linkTargetId}>
+                    Attach
+                  </button>
+                </div>
+              )}
+            </section>
+
+            {/* Body / Description Section */}
+            <section className="tasks-body-section" aria-label="Description">
+              <div className="tasks-body-header">
+                <h3>Description</h3>
+                <SegmentedControl
+                  ariaLabel="Description mode"
+                  options={[
+                    { value: 'write', label: 'Write' },
+                    { value: 'preview', label: 'Preview' },
+                  ]}
+                  value={descriptionMode}
+                  onChange={(val) => setDescriptionMode(val as 'write' | 'preview')}
+                />
+                {isDirty && (
+                  <button type="button" className="primary-action" onClick={() => void saveBody()}>
+                    Save description
+                  </button>
+                )}
+              </div>
+
+              {descriptionMode === 'write' ? (
+                <textarea
+                  className="tasks-body-textarea"
+                  aria-label="Work item description"
+                  value={bodyDraft}
+                  onChange={(event) => setBodyDraft(event.target.value)}
+                  placeholder="Add detailed markdown specifications, acceptance criteria, or logs…"
+                />
+              ) : (
+                <div
+                  className="tasks-body-preview markdown-body"
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(bodyDraft || '*No description*') }}
+                />
+              )}
+            </section>
           </div>
-        </div>
+        </aside>
       )}
     </div>
   )
@@ -1085,22 +827,24 @@ function WorkItemNode({
   onSelect: (id: string) => void
 }) {
   const children = childrenOf(item.id)
+  const isSelected = selectedId === item.id
+
   return (
-    <div className="tasks-tree-node">
+    <div className="tree-node">
       <button
         type="button"
-        className="node-row wiki-page-row"
-        aria-current={item.id === selectedId}
+        className={`tree-node-row ${isSelected ? 'tree-node-selected' : ''}`}
         onClick={() => onSelect(item.id)}
+        aria-selected={isSelected}
       >
-        <span className="node-row-title">{item.title}</span>
-        <span className="node-row-meta">
-          <span className="node-row-type">{item.kind}</span>
-          <span className="node-row-type">{item.status}</span>
+        <span className="tree-node-icon">
+          {item.kind === 'epic' ? '🟣' : item.kind === 'story' ? '🟡' : '🟢'}
         </span>
+        <span className="tree-node-title">{item.title}</span>
+        <Pill tone={STATUS_TONE[item.status]}>{STATUS_LABEL[item.status]}</Pill>
       </button>
       {children.length > 0 && (
-        <div className="tasks-tree-children">
+        <div className="tree-children">
           {children.map((child) => (
             <WorkItemNode
               key={child.id}

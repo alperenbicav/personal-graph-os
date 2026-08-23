@@ -33,6 +33,7 @@ import { SchemaEditor } from './components/SchemaEditor'
 import type {
   Agent,
   AgentRun,
+  AgentSystemStatus,
   CreateAgentInput,
   UpdateAgentInput,
   RelatedNode,
@@ -81,6 +82,7 @@ function App() {
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false)
   const [agents, setAgents] = useState<Agent[]>([])
   const [agentRuns, setAgentRuns] = useState<AgentRun[]>([])
+  const [agentSystemStatus, setAgentSystemStatus] = useState<AgentSystemStatus | null>(null)
   const [isDockOpen, setIsDockOpen] = useState(false)
   const [isAgentRunning, setIsAgentRunning] = useState(false)
   const [activeChatAgentId, setActiveChatAgentId] = useState<string | null>(null)
@@ -186,9 +188,15 @@ function App() {
 
   const reloadAgents = useCallback(async () => {
     try {
-      const fetchedAgents = (await api.listAgents().catch(() => [])) ?? []
-      setAgents(fetchedAgents)
-      if (fetchedAgents.length > 0) {
+      const [fetchedAgents, status] = await Promise.all([
+        api.listAgents().catch(() => []),
+        api.getAgentSystemStatus().catch(() => null),
+      ])
+      setAgents(fetchedAgents ?? [])
+      if (status) {
+        setAgentSystemStatus(status)
+      }
+      if (fetchedAgents && fetchedAgents.length > 0) {
         const runPromises = fetchedAgents.map((a) =>
           api.listAgentRuns(a.id, 5).catch(() => [])
         )
@@ -765,6 +773,7 @@ function App() {
           workspace={workspace}
           activeView={activeView}
           activeAgentCount={agents.length}
+          isLlmConfigured={agentSystemStatus?.configured ?? false}
           isDockOpen={isDockOpen}
           onToggleDock={() => setIsDockOpen(!isDockOpen)}
           onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
@@ -1060,6 +1069,9 @@ function App() {
                   onDeleteAgent={handleDeleteAgent}
                   activeChatAgentId={activeChatAgentId}
                   onSelectChatAgent={setActiveChatAgentId}
+                  isLlmConfigured={agentSystemStatus?.configured ?? false}
+                  llmProvider={agentSystemStatus?.provider}
+                  unconfiguredReason={agentSystemStatus?.unconfigured_reason}
                 />
               </div>
             )}
@@ -1095,6 +1107,7 @@ function App() {
               runs={agentRuns}
               onAskAgent={handleAskAgent}
               isAgentRunning={isAgentRunning}
+              isLlmConfigured={agentSystemStatus?.configured ?? false}
               lastError={actionError}
               onClearError={() => setActionError(null)}
               onOpenAgent={(agentId) => {

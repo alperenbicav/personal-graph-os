@@ -517,3 +517,12 @@ export interface UpdateAgentInput {
   write_mode?: AgentWriteMode
 }
 
+export interface AgentSystemStatus {
+  configured: boolean
+  provider: string
+  model: string
+  available_agents_count: number
+  unconfigured_reason?: string | null
+}
+
+

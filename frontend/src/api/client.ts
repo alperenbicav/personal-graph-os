@@ -4,6 +4,7 @@ import type {
   Agent,
   AgentExecutionResult,
   AgentRun,
+  AgentSystemStatus,
   Attachment,
   Canvas,
   CanvasPlacement,
@@ -791,6 +792,10 @@ export function verifyFileReference(fileReferenceId: string): Promise<FileRefere
 
 export function listAgents(): Promise<Agent[]> {
   return request('/agents')
+}
+
+export function getAgentSystemStatus(): Promise<AgentSystemStatus> {
+  return request('/agents/status')
 }
 
 export function getAgent(agentId: string): Promise<Agent> {

@@ -7,6 +7,7 @@ export interface AskAgentComposerProps {
   onSelectAgent?: (id: string) => void
   onSubmit: (agentId: string, prompt: string) => Promise<void>
   isSubmitting?: boolean
+  isLlmConfigured?: boolean
 }
 
 export function AskAgentComposer({
@@ -15,6 +16,7 @@ export function AskAgentComposer({
   onSelectAgent,
   onSubmit,
   isSubmitting = false,
+  isLlmConfigured = true,
 }: AskAgentComposerProps) {
   const [prompt, setPrompt] = useState('')
   const currentAgentId = selectedAgentId || (agents.length > 0 ? agents[0].id : '')
@@ -22,7 +24,7 @@ export function AskAgentComposer({
 
   async function handleSend() {
     const trimmed = prompt.trim()
-    if (!trimmed || !currentAgentId || isSubmitting) return
+    if (!trimmed || !currentAgentId || isSubmitting || !isLlmConfigured) return
     setPrompt('')
     await onSubmit(currentAgentId, trimmed)
   }
@@ -37,6 +39,13 @@ export function AskAgentComposer({
     }
   }
 
+  const isInputDisabled = isSubmitting || !isLlmConfigured
+  const placeholderText = !isLlmConfigured
+    ? 'LLM provider not configured (PGOS_LLM_* env required)'
+    : isSubmitting
+      ? 'Agent is working…'
+      : '✦ Ask an agent to research, plan, or execute…'
+
   return (
     <div className="v2-ask-box">
       <div className="v2-ask-row">
@@ -45,7 +54,7 @@ export function AskAgentComposer({
             className="v2-ask-select"
             value={currentAgentId}
             onChange={(e) => onSelectAgent?.(e.target.value)}
-            disabled={isSubmitting}
+            disabled={isInputDisabled}
             aria-label="Target Agent"
           >
             {agents.map((a) => (
@@ -71,13 +80,17 @@ export function AskAgentComposer({
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={isSubmitting ? 'Agent is working…' : '✦ Ask an agent to research, plan, or execute…'}
-          disabled={isSubmitting}
+          placeholder={placeholderText}
+          disabled={isInputDisabled}
           aria-label="Ask Agent Prompt"
         />
       </div>
       <div className="v2-ask-hint" aria-hidden="true">
-        <span>Press <kbd className="v2-inline-kbd">⌘↵</kbd> or <kbd className="v2-inline-kbd">↵</kbd> to dispatch</span>
+        {isLlmConfigured ? (
+          <span>Press <kbd className="v2-inline-kbd">⌘↵</kbd> or <kbd className="v2-inline-kbd">↵</kbd> to dispatch</span>
+        ) : (
+          <span style={{ color: 'var(--v2-am)' }}>⚠️ LLM provider not configured (PGOS_LLM_API_KEY)</span>
+        )}
       </div>
     </div>
   )

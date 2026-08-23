@@ -7,6 +7,7 @@ export interface AgentDockProps {
   runs: AgentRun[]
   onAskAgent: (agentId: string, prompt: string) => Promise<void>
   isAgentRunning?: boolean
+  isLlmConfigured?: boolean
   onOpenAgent?: (agentId: string) => void
   lastError?: string | null
   onClearError?: () => void
@@ -32,6 +33,7 @@ export function AgentDock({
   runs,
   onAskAgent,
   isAgentRunning = false,
+  isLlmConfigured = true,
   onOpenAgent,
   lastError,
   onClearError,
@@ -168,6 +170,7 @@ export function AgentDock({
         onSelectAgent={setSelectedAgentId}
         onSubmit={onAskAgent}
         isSubmitting={isAgentRunning}
+        isLlmConfigured={isLlmConfigured}
       />
     </aside>
   )

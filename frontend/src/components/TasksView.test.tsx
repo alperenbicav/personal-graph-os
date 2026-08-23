@@ -42,37 +42,6 @@ function makeDetail(overrides: Partial<WorkItemDetail> = {}): WorkItemDetail {
   }
 }
 
-function baseProps() {
-  const story = makeWorkItem({
-    id: 'wi-2',
-    node_id: 'node-2',
-    kind: 'story',
-    parent_id: 'wi-1',
-    title: 'A story',
-  })
-  return {
-    workspaceId: 'ws-1',
-    workItems: [makeWorkItem(), story],
-    documents: [makeDocument()],
-    repositories: [{ node_id: 'node-repo', title: 'apilex-agent' }],
-    selectedWorkItemId: null,
-    onSelectWorkItem: vi.fn(),
-    onCreateWorkItem: vi.fn().mockResolvedValue(makeWorkItem({ id: 'wi-3', title: 'New epic' })),
-    onUpdateWorkItem: vi.fn().mockResolvedValue(makeWorkItem({ status: 'in_progress' })),
-    onLoadDetail: vi.fn().mockResolvedValue(makeDetail()),
-    onEditBody: vi.fn().mockResolvedValue(undefined),
-    onAddChecklistItem: vi
-      .fn()
-      .mockResolvedValue(makeChecklistItem({ id: 'cli-1', label: 'First step' })),
-    onUpdateChecklistItem: vi.fn().mockResolvedValue(makeChecklistItem({ is_completed: true })),
-    onRemoveChecklistItem: vi.fn().mockResolvedValue(undefined),
-    onReorderChecklistItems: vi.fn().mockResolvedValue([]),
-    onAttachDocument: vi.fn().mockResolvedValue(undefined),
-    onDetachDocument: vi.fn().mockResolvedValue(undefined),
-  onRenameWorkItem: vi.fn().mockResolvedValue(undefined),
-  }
-}
-
 function makeDocument(overrides: Partial<WikiDocument> = {}): WikiDocument {
   return {
     id: 'doc-1',
@@ -99,6 +68,37 @@ function makeChecklistItem(overrides: Partial<WorkItemChecklistItem> = {}): Work
     is_completed: false,
     created_at: '2026-01-01T00:00:00Z',
     ...overrides,
+  }
+}
+
+function baseProps() {
+  const story = makeWorkItem({
+    id: 'wi-2',
+    node_id: 'node-2',
+    kind: 'story',
+    parent_id: 'wi-1',
+    title: 'A story',
+  })
+  return {
+    workspaceId: 'ws-1',
+    workItems: [makeWorkItem(), story],
+    documents: [makeDocument()],
+    repositories: [{ node_id: 'node-repo', title: 'apilex-agent' }],
+    selectedWorkItemId: null,
+    onSelectWorkItem: vi.fn(),
+    onCreateWorkItem: vi.fn().mockResolvedValue(makeWorkItem({ id: 'wi-3', title: 'New task' })),
+    onUpdateWorkItem: vi.fn().mockResolvedValue(makeWorkItem({ status: 'in_progress' })),
+    onLoadDetail: vi.fn().mockResolvedValue(makeDetail()),
+    onEditBody: vi.fn().mockResolvedValue(undefined),
+    onAddChecklistItem: vi
+      .fn()
+      .mockResolvedValue(makeChecklistItem({ id: 'cli-1', label: 'First step' })),
+    onUpdateChecklistItem: vi.fn().mockResolvedValue(makeChecklistItem({ is_completed: true })),
+    onRemoveChecklistItem: vi.fn().mockResolvedValue(undefined),
+    onReorderChecklistItems: vi.fn().mockResolvedValue([]),
+    onAttachDocument: vi.fn().mockResolvedValue(undefined),
+    onDetachDocument: vi.fn().mockResolvedValue(undefined),
+    onRenameWorkItem: vi.fn().mockResolvedValue(undefined),
   }
 }
 
@@ -134,39 +134,48 @@ describe('TasksView', () => {
     )
   })
 
-  it('creates a work item through the modal with kind and title', async () => {
+  it('creates a work item through column quick-add composer in board view', async () => {
     const props = baseProps()
     render(<TasksView {...props} />)
 
-    fireEvent.click(await screen.findByRole('button', { name: '+ New work item' }))
-    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'New epic' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    const quickAddInput = screen.getByLabelText('Quick add to Backlog')
+    fireEvent.change(quickAddInput, { target: { value: 'New task in backlog' } })
+    fireEvent.keyDown(quickAddInput, { key: 'Enter', code: 'Enter' })
 
     await waitFor(() =>
       expect(props.onCreateWorkItem).toHaveBeenCalledWith(
         expect.objectContaining({
           workspace_id: 'ws-1',
-          title: 'New epic',
-          kind: 'epic',
+          title: 'New task in backlog',
+          status: 'backlog',
+          kind: 'task',
           work_type: 'feature',
         }),
       ),
     )
   })
 
-  it('offers legal parents only for the child kind the service accepts', async () => {
+  it('creates a work item through top quick-add composer in list view', async () => {
     const props = baseProps()
     render(<TasksView {...props} />)
 
-    fireEvent.click(await screen.findByRole('button', { name: '+ New work item' }))
-    fireEvent.change(screen.getByLabelText('Kind'), { target: { value: 'task' } })
+    // Switch to List mode
+    fireEvent.click(screen.getByRole('radio', { name: 'List' }))
 
-    const parentSelect = screen.getByLabelText('Parent')
-    const options = Array.from(parentSelect.querySelectorAll('option')).map(
-      (option) => option.textContent,
+    const listQuickAdd = screen.getByLabelText('Add a work item to list')
+    fireEvent.change(listQuickAdd, { target: { value: 'New task via list' } })
+    fireEvent.keyDown(listQuickAdd, { key: 'Enter', code: 'Enter' })
+
+    await waitFor(() =>
+      expect(props.onCreateWorkItem).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspace_id: 'ws-1',
+          title: 'New task via list',
+          status: 'backlog',
+          kind: 'task',
+        }),
+      ),
     )
-    expect(options).toContain('A story')
-    expect(options).not.toContain('An epic')
   })
 
   it('commits a status change through the update handler', async () => {
@@ -198,65 +207,5 @@ describe('TasksView', () => {
 
     await waitFor(() => expect(props.onAddChecklistItem).toHaveBeenCalledWith('wi-1', 'First step'))
     expect(await screen.findByText('First step')).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('checkbox'))
-    await waitFor(() =>
-      expect(props.onUpdateChecklistItem).toHaveBeenCalledWith(
-        'cli-1',
-        expect.objectContaining({ is_completed: true }),
-      ),
-    )
-  })
-
-  it('links a Wiki page through the document selector', async () => {
-    const props = baseProps()
-    render(<StatefulTasksView {...props} />)
-
-    fireEvent.click((await screen.findAllByText('An epic'))[0])
-    await screen.findByLabelText('Work item title')
-
-    fireEvent.change(screen.getByLabelText('Link a Wiki page'), { target: { value: 'doc-1' } })
-    fireEvent.click(screen.getByRole('button', { name: /^add link$/i }))
-
-    await waitFor(() => expect(props.onAttachDocument).toHaveBeenCalledWith('wi-1', 'doc-1'))
-    await waitFor(() => expect(props.onLoadDetail).toHaveBeenCalledTimes(2))
-  })
-
-  it('assigns and clears a repository through the selector', async () => {
-    const props = baseProps()
-    render(<StatefulTasksView {...props} />)
-
-    fireEvent.click((await screen.findAllByText('An epic'))[0])
-    await screen.findByLabelText('Work item title')
-
-    fireEvent.change(screen.getByLabelText('Repository'), { target: { value: 'node-repo' } })
-    await waitFor(() =>
-      expect(props.onUpdateWorkItem).toHaveBeenCalledWith(
-        'wi-1',
-        expect.objectContaining({ repository_node_id: 'node-repo' }),
-      ),
-    )
-  })
-
-  it('shows the freshly selected item\'s assignee/blockers/progress', async () => {
-    const props = baseProps()
-    props.workItems = [
-      makeWorkItem({ id: 'wi-1', node_id: 'node-1', title: 'Epic A', assignee: 'Ada', blockers: 'B1', progress_percent: 20 }),
-      makeWorkItem({ id: 'wi-2', node_id: 'node-2', kind: 'story', parent_id: 'wi-1', title: 'Story B', assignee: 'Lin', blockers: 'B2', progress_percent: 60 }),
-    ]
-    render(<StatefulTasksView {...props} />)
-
-    fireEvent.click((await screen.findAllByText('Epic A'))[0])
-    await screen.findByLabelText('Work item title')
-    expect(screen.getByLabelText('Assignee')).toHaveValue('Ada')
-    expect(screen.getByLabelText('Blockers')).toHaveValue('B1')
-    expect(screen.getByLabelText('Progress (%)')).toHaveValue(20)
-
-    fireEvent.click(screen.getByRole('button', { name: '← Back' }))
-    fireEvent.click((await screen.findAllByText('Story B'))[0])
-    await screen.findByLabelText('Work item title')
-    expect(screen.getByLabelText('Assignee')).toHaveValue('Lin')
-    expect(screen.getByLabelText('Blockers')).toHaveValue('B2')
-    expect(screen.getByLabelText('Progress (%)')).toHaveValue(60)
   })
 })

@@ -185,3 +185,57 @@ def test_send_message_json_fallback_anthropic(
     runs = runs_res.json()
     assert len(runs) >= 1
     assert runs[0]["summary"] == "Anthropic synthesis result."
+
+
+def test_agents_status_endpoint_configured_and_unconfigured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 1. Unconfigured
+    monkeypatch.delenv("PGOS_LLM_API_KEY", raising=False)
+    app = create_app(tmp_path / "test-workspace-unconfigured.db")
+    unconfigured_client = TestClient(app)
+    unconfigured_client.headers.update({"Authorization": f"Bearer {app.state.api_token}"})
+
+    res = unconfigured_client.get("/agents/status")
+    assert res.status_code == 200
+    status_data = res.json()
+    assert status_data["configured"] is False
+    assert status_data["available_agents_count"] >= 3
+    assert "LLM provider not configured" in (status_data["unconfigured_reason"] or "")
+
+    # 2. Configured
+    monkeypatch.setenv("PGOS_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("PGOS_LLM_API_KEY", "test-openai-key")
+    monkeypatch.setenv("PGOS_LLM_MODEL", "gpt-4o-mini")
+    configured_app = create_app(tmp_path / "test-workspace-configured.db")
+    configured_client = TestClient(configured_app)
+    configured_client.headers.update({"Authorization": f"Bearer {configured_app.state.api_token}"})
+
+    res = configured_client.get("/agents/status")
+    assert res.status_code == 200
+    status_data = res.json()
+    assert status_data["configured"] is True
+    assert status_data["provider"] == "openai"
+    assert status_data["model"] == "gpt-4o-mini"
+    assert status_data["available_agents_count"] >= 3
+    assert status_data["unconfigured_reason"] is None
+
+
+def test_default_seeded_agents_have_rich_contextual_system_prompts(client: TestClient) -> None:
+    response = client.get("/agents")
+    assert response.status_code == 200
+    agents = response.json()
+    by_name = {a["name"]: a for a in agents}
+
+    for expected_name in ("Research-Agent", "Ingest-Agent", "Plan-Agent"):
+        assert expected_name in by_name
+        prompt = by_name[expected_name]["system_prompt"]
+        words = [w for w in prompt.split() if w.strip()]
+        # Requirement C2: substantial prompts (>=200 words each)
+        assert len(words) >= 200, (
+            f"{expected_name} prompt has only {len(words)} words, expected >=200"
+        )
+        assert "Personal Graph OS" in prompt
+        assert "proposal mode" in prompt
+        assert "SQLite" in prompt
+

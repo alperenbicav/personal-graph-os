@@ -4611,6 +4611,525 @@ select.status-select {
   border-color: #f87171;
 }
 
+/* ==========================================================================
+   C1 & C3: Redesigned Views (Wiki Notion Model, Tasks Quick-Add, Status)
+   ========================================================================== */
+
+/* Live Pill Unconfigured State (C3) */
+.v2-live-pill.unconfigured {
+  background: rgba(240, 179, 91, 0.14);
+  color: var(--v2-am);
+  border: 1px solid rgba(240, 179, 91, 0.35);
+}
+
+.v2-pulse.amber {
+  background: var(--v2-am);
+  box-shadow: 0 0 0 0 rgba(240, 179, 91, 0.5);
+}
+
+.v2-agents-status-banner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 18px;
+  border-radius: 12px;
+  background: rgba(240, 179, 91, 0.09);
+  border: 1px solid rgba(240, 179, 91, 0.28);
+  margin-bottom: 20px;
+  color: var(--v2-t1);
+}
+
+.v2-status-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+}
+
+.v2-status-text strong {
+  color: var(--v2-am);
+  font-weight: 600;
+}
+
+.v2-status-text code {
+  background: var(--v2-s2);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: #93c5fd;
+}
+
+/* Redesigned Wiki View (Notion-style Full-Page Editor) */
+.v2-wiki-layout {
+  display: flex;
+  height: 100%;
+  width: 100%;
+  background: var(--v2-bg);
+  overflow: hidden;
+}
+
+.v2-wiki-sidebar {
+  width: 270px;
+  flex: none;
+  background: rgba(20, 22, 29, 0.75);
+  backdrop-filter: blur(18px);
+  border-right: 1px solid var(--v2-line);
+  display: flex;
+  flex-direction: column;
+  padding: 16px 14px;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+.v2-wiki-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.v2-wiki-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.v2-wiki-icon {
+  font-size: 16px;
+  color: var(--v2-ac);
+}
+
+.v2-wiki-heading {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--v2-t1);
+  letter-spacing: -0.01em;
+}
+
+.v2-wiki-search-box {
+  margin-bottom: 6px;
+}
+
+.v2-wiki-search-input {
+  width: 100%;
+  background: var(--v2-s1);
+  border: 1px solid var(--v2-line);
+  border-radius: 8px;
+  padding: 6px 10px;
+  color: var(--v2-t1);
+  font-size: 12.5px;
+  outline: none;
+}
+
+.v2-wiki-search-input:focus {
+  border-color: var(--v2-ac);
+}
+
+.v2-wiki-section-header {
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.1em;
+  color: var(--v2-t3);
+  margin-top: 6px;
+  margin-bottom: 2px;
+}
+
+.v2-wiki-collections-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.v2-wiki-collection-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: transparent;
+  border: none;
+  color: var(--v2-t2);
+  font-size: 12.5px;
+  cursor: pointer;
+  text-align: left;
+  transition: 0.15s;
+}
+
+.v2-wiki-collection-btn:hover {
+  background: var(--v2-s2);
+  color: var(--v2-t1);
+}
+
+.v2-wiki-collection-btn.active {
+  background: var(--v2-acs);
+  color: var(--v2-ac);
+  font-weight: 600;
+}
+
+.v2-count-pill {
+  font-size: 10.5px;
+  background: var(--v2-s2);
+  border: 1px solid var(--v2-line);
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--v2-t3);
+}
+
+.v2-wiki-add-col-input {
+  width: 100%;
+  background: transparent;
+  border: 1px dashed var(--v2-line);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 11.5px;
+  color: var(--v2-t2);
+  outline: none;
+  margin-top: 4px;
+}
+
+.v2-wiki-add-col-input:focus {
+  border-color: var(--v2-ac);
+  background: var(--v2-s1);
+}
+
+.v2-wiki-pages-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+}
+
+.v2-wiki-page-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: transparent;
+  border: none;
+  color: var(--v2-t2);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  transition: 0.15s;
+  width: 100%;
+}
+
+.v2-wiki-page-item:hover {
+  background: var(--v2-s2);
+  color: var(--v2-t1);
+}
+
+.v2-wiki-page-item.active {
+  background: var(--v2-s2);
+  color: var(--v2-t1);
+  border-left: 2px solid var(--v2-ac);
+  font-weight: 550;
+}
+
+.v2-page-icon {
+  font-size: 13px;
+  flex: none;
+}
+
+.v2-page-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+
+.v2-wiki-sidebar-empty {
+  font-size: 12px;
+  color: var(--v2-t3);
+  padding: 10px 8px;
+  font-style: italic;
+}
+
+.v2-wiki-canvas {
+  flex: 1;
+  background: var(--v2-cv);
+  overflow-y: auto;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.v2-wiki-canvas::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(800px 300px at 50% -80px, var(--v2-acs), transparent);
+  pointer-events: none;
+}
+
+.v2-wiki-doc-container {
+  max-width: 780px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 48px 36px 120px;
+  position: relative;
+  z-index: 1;
+}
+
+.v2-wiki-by-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+.v2-wiki-by-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--v2-t3);
+  background: var(--v2-s1);
+  border: 1px solid var(--v2-line);
+  padding: 5px 12px;
+  border-radius: 999px;
+}
+
+.v2-pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--v2-gr);
+  display: inline-block;
+}
+
+.v2-wiki-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.v2-wiki-title-row {
+  margin-bottom: 12px;
+}
+
+.v2-wiki-title-input {
+  width: 100%;
+  font-size: 38px;
+  font-weight: 700;
+  color: var(--v2-t1);
+  background: transparent;
+  border: none;
+  outline: none;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+  font-family: var(--v2-f);
+}
+
+.v2-wiki-title-input::placeholder {
+  color: var(--v2-t3);
+}
+
+.v2-wiki-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+.v2-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--v2-s1);
+  border: 1px solid var(--v2-line);
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--v2-t2);
+}
+
+.v2-meta-label {
+  font-size: 11.5px;
+  color: var(--v2-t3);
+  font-weight: 500;
+}
+
+.v2-meta-select {
+  background: transparent;
+  border: none;
+  color: var(--v2-t1);
+  font-size: 12px;
+  outline: none;
+  cursor: pointer;
+  font-family: var(--v2-f);
+}
+
+.v2-meta-select option {
+  background: var(--v2-s1);
+  color: var(--v2-t1);
+}
+
+.v2-wiki-tags-cluster {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.v2-wiki-tag-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--v2-s1);
+  border: 1px solid var(--v2-line2);
+  border-radius: 6px;
+  padding: 2px 7px;
+  font-size: 11.5px;
+  color: var(--v2-ac);
+}
+
+.v2-tag-remove-btn {
+  background: transparent;
+  border: none;
+  color: var(--v2-t3);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.v2-tag-remove-btn:hover {
+  color: var(--v2-rd);
+}
+
+.v2-wiki-inline-tag-input {
+  background: transparent;
+  border: 1px dashed var(--v2-line);
+  border-radius: 6px;
+  padding: 2px 7px;
+  font-size: 11.5px;
+  color: var(--v2-t2);
+  outline: none;
+  width: 70px;
+}
+
+.v2-wiki-inline-tag-input:focus {
+  border-color: var(--v2-ac);
+  width: 100px;
+  background: var(--v2-s1);
+}
+
+.v2-wiki-body-frame {
+  width: 100%;
+  min-height: 480px;
+}
+
+.v2-wiki-body-textarea {
+  width: 100%;
+  min-height: 480px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: #c9cfdd;
+  font-family: var(--v2-f);
+  font-size: 15px;
+  line-height: 1.75;
+  resize: vertical;
+  outline: none;
+  border-radius: 8px;
+  padding: 8px 0;
+}
+
+.v2-wiki-body-textarea:focus {
+  border-color: var(--v2-line);
+}
+
+.v2-wiki-preview-content {
+  color: #c9cfdd;
+  line-height: 1.75;
+  font-size: 15px;
+}
+
+.v2-wiki-empty-canvas {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+}
+
+.v2-wiki-error-banner {
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  color: #fca5a5;
+  padding: 10px 16px;
+  font-size: 13px;
+  margin: 14px;
+  border-radius: 8px;
+}
+
+/* Tasks Quick-Add Composers (C1) */
+.v2-rail-quickadd-input {
+  width: 100%;
+  background: var(--v2-s1);
+  border: 1px solid var(--v2-line2);
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: var(--v2-t1);
+  font-size: 12.5px;
+  outline: none;
+  transition: 0.15s;
+}
+
+.v2-rail-quickadd-input:focus {
+  border-color: var(--v2-ac);
+}
+
+.v2-tasks-list-quickadd {
+  margin-bottom: 12px;
+}
+
+.v2-list-quickadd-input {
+  width: 100%;
+  background: var(--v2-s1);
+  border: 1px solid var(--v2-line2);
+  border-radius: 10px;
+  padding: 10px 14px;
+  color: var(--v2-t1);
+  font-size: 13.5px;
+  outline: none;
+  transition: 0.15s;
+}
+
+.v2-list-quickadd-input:focus {
+  border-color: var(--v2-ac);
+}
+
+/* Research & Repositories & Activity v2 Overrides (C1) */
+.research-view,
+.repositories-view,
+.activity-view {
+  background: var(--v2-bg);
+  color: var(--v2-t1);
+  font-family: var(--v2-f);
+}
+
+.research-row,
+.repo-card,
+.activity-row {
+  background: var(--v2-s1);
+  border: 1px solid var(--v2-line);
+  border-radius: var(--v2-r);
+}
+
+.research-row:hover,
+.repo-card:hover,
+.activity-row:hover {
+  background: var(--v2-s2);
+  border-color: var(--v2-line2);
+}
+
+
 
 
 
