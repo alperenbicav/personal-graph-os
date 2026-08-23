@@ -559,7 +559,7 @@ export function createWorkItem(payload: CreateWorkItemInput): Promise<WorkItem> 
 export interface UpdateWorkItemPatch {
   work_type?: WorkItemType
   status?: WorkItemStatus
-  priority?: WorkItemPriority
+  priority?: WorkItemPriority | null
   due_date?: string | null
   assignee?: string | null
   blockers?: string | null
@@ -577,9 +577,30 @@ export function updateWorkItem(
   workItemId: string,
   patch: UpdateWorkItemPatch,
 ): Promise<WorkItem> {
+  const payload: UpdateWorkItemPatch = { ...patch }
+  if (patch.assignee === null || patch.assignee === '') {
+    payload.clear_assignee = true
+    payload.assignee = null
+  }
+  if (patch.blockers === null || patch.blockers === '') {
+    payload.clear_blockers = true
+    payload.blockers = null
+  }
+  if (patch.due_date === null || patch.due_date === '') {
+    payload.clear_due_date = true
+    payload.due_date = null
+  }
+  if (patch.priority === null || (patch.priority as unknown) === '') {
+    payload.clear_priority = true
+    payload.priority = undefined
+  }
+  if (patch.progress_percent === null || patch.clear_progress_percent) {
+    payload.clear_progress_percent = true
+    delete payload.progress_percent
+  }
   return request(`/work-items/${encodeURIComponent(workItemId)}`, {
     method: 'PATCH',
-    body: JSON.stringify(patch),
+    body: JSON.stringify(payload),
   })
 }
 

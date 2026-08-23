@@ -208,4 +208,121 @@ describe('TasksView', () => {
     await waitFor(() => expect(props.onAddChecklistItem).toHaveBeenCalledWith('wi-1', 'First step'))
     expect(await screen.findByText('First step')).toBeInTheDocument()
   })
+
+  it('clears assignee when typing "A" and then backspacing to empty string (D1 regression)', async () => {
+    const props = baseProps()
+    let currentWorkItem = makeWorkItem({ assignee: null })
+    props.onUpdateWorkItem = vi.fn().mockImplementation((_id, patch) => {
+      currentWorkItem = {
+        ...currentWorkItem,
+        ...patch,
+        assignee: patch.clear_assignee ? null : (patch.assignee ?? currentWorkItem.assignee),
+      }
+      return Promise.resolve(currentWorkItem)
+    })
+    props.onLoadDetail = vi.fn().mockImplementation(() =>
+      Promise.resolve(makeDetail({ work_item: currentWorkItem })),
+    )
+
+    function DynamicTasksView() {
+      const [items, setItems] = useState([currentWorkItem])
+      const [selectedId, setSelectedId] = useState<string | null>('wi-1')
+      return (
+        <TasksView
+          {...props}
+          workItems={items}
+          selectedWorkItemId={selectedId}
+          onSelectWorkItem={setSelectedId}
+          onUpdateWorkItem={async (id, patch) => {
+            const updated = await props.onUpdateWorkItem(id, patch)
+            setItems([updated])
+            return updated
+          }}
+        />
+      )
+    }
+
+    render(<DynamicTasksView />)
+
+    const assigneeInput = (await screen.findByLabelText('Assignee')) as HTMLInputElement
+    expect(assigneeInput.value).toBe('')
+
+    // Type 'A'
+    fireEvent.change(assigneeInput, { target: { value: 'A' } })
+    await waitFor(() =>
+      expect(props.onUpdateWorkItem).toHaveBeenCalledWith(
+        'wi-1',
+        expect.objectContaining({ assignee: 'A' }),
+      ),
+    )
+
+    // Backspace 'A' to ''
+    fireEvent.change(assigneeInput, { target: { value: '' } })
+    await waitFor(() =>
+      expect(props.onUpdateWorkItem).toHaveBeenCalledWith(
+        'wi-1',
+        expect.objectContaining({ assignee: null, clear_assignee: true }),
+      ),
+    )
+    expect(assigneeInput.value).toBe('')
+  })
+
+  it('clears optional fields (blockers, due date, progress %, priority) with clear_* flags when cleared', async () => {
+    const initialItem = makeWorkItem({
+      blockers: 'Initial blocker',
+      due_date: '2026-12-31',
+      progress_percent: 50,
+      priority: 'high',
+    })
+    const props = baseProps()
+    props.workItems = [initialItem]
+    props.onLoadDetail = vi.fn().mockResolvedValue(makeDetail({ work_item: initialItem }))
+    props.onUpdateWorkItem = vi.fn().mockImplementation((_id, patch) =>
+      Promise.resolve({ ...initialItem, ...patch }),
+    )
+
+    render(<TasksView {...props} selectedWorkItemId="wi-1" />)
+
+    await screen.findByLabelText('Work item title')
+
+    // Blockers
+    const blockersInput = screen.getByLabelText('Blockers')
+    fireEvent.change(blockersInput, { target: { value: '' } })
+    await waitFor(() =>
+      expect(props.onUpdateWorkItem).toHaveBeenCalledWith(
+        'wi-1',
+        expect.objectContaining({ blockers: null, clear_blockers: true }),
+      ),
+    )
+
+    // Due Date
+    const dueDateInput = screen.getByLabelText('Due date')
+    fireEvent.change(dueDateInput, { target: { value: '' } })
+    await waitFor(() =>
+      expect(props.onUpdateWorkItem).toHaveBeenCalledWith(
+        'wi-1',
+        expect.objectContaining({ due_date: null, clear_due_date: true }),
+      ),
+    )
+
+    // Progress %
+    const progressInput = screen.getByLabelText('Progress %')
+    fireEvent.change(progressInput, { target: { value: '' } })
+    await waitFor(() =>
+      expect(props.onUpdateWorkItem).toHaveBeenCalledWith(
+        'wi-1',
+        expect.objectContaining({ progress_percent: undefined, clear_progress_percent: true }),
+      ),
+    )
+
+    // Priority
+    const prioritySelect = screen.getByLabelText('Priority')
+    fireEvent.change(prioritySelect, { target: { value: '' } })
+    await waitFor(() =>
+      expect(props.onUpdateWorkItem).toHaveBeenCalledWith(
+        'wi-1',
+        expect.objectContaining({ priority: null, clear_priority: true }),
+      ),
+    )
+  })
 })
