@@ -50,7 +50,10 @@ export function CreateNodeControl({ nodeTypes, isDisabled, onCreate }: CreateNod
         value={title}
         onChange={(event) => setTitle(event.target.value)}
         onKeyDown={(event) => {
-          if (event.key === 'Enter') submit()
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            submit()
+          }
         }}
       />
       <button type="button" onClick={submit} disabled={isDisabled || !title.trim()}>
