@@ -24,6 +24,7 @@ from starlette.types import Scope
 from personal_graph_os.api.auth import TOKEN_FILE_NAME, get_or_create_api_token, require_api_token
 from personal_graph_os.api.routers import (
     activity,
+    agents,
     canvases,
     capture,
     clickup,
@@ -50,6 +51,7 @@ from personal_graph_os.application.activity_service import (
     ActivityService,
     InvalidActivityCursorError,
 )
+from personal_graph_os.application.agent_service import AgentService
 from personal_graph_os.application.bootstrap import (
     backfill_search_index,
     get_or_create_default_canvas,
@@ -90,6 +92,7 @@ from personal_graph_os.application.file_service import (
 from personal_graph_os.application.file_service import (
     NodeNotFoundError as FileServiceNodeNotFoundError,
 )
+from personal_graph_os.application.llm_provider import LlmNotConfiguredError
 from personal_graph_os.application.projections import ProjectionService
 from personal_graph_os.application.research_dashboard import ResearchDashboardService
 from personal_graph_os.application.resource_content_service import ResourceContentNotFoundError
@@ -127,6 +130,7 @@ from personal_graph_os.application.workflow_chain import (
     WorkflowChainService,
     WorkflowStepNodeTypeMissingError,
 )
+from personal_graph_os.domain.agents import AgentNotFoundError
 from personal_graph_os.domain.capture import CaptureIdempotencyConflictError
 from personal_graph_os.domain.errors import (
     AttachmentContentCorruptedError,
@@ -151,6 +155,7 @@ from personal_graph_os.infrastructure.extraction.github_metadata_adapter import 
 from personal_graph_os.infrastructure.extraction.html_article_parser import HtmlArticleParser
 from personal_graph_os.infrastructure.extraction.http_content_fetcher import HttpContentFetcher
 from personal_graph_os.infrastructure.extraction.pdf_text import extract_pdf_text
+from personal_graph_os.infrastructure.llm.provider_factory import build_llm_provider_from_env
 from personal_graph_os.infrastructure.local_file_store import LocalManagedFileStore
 from personal_graph_os.infrastructure.mcp.auth import with_bearer_token
 from personal_graph_os.infrastructure.mcp.gateway import AgentGatewayService
@@ -159,6 +164,7 @@ from personal_graph_os.infrastructure.sqlite.connection import open_connection
 from personal_graph_os.infrastructure.sqlite.migrations.runner import run_migrations
 from personal_graph_os.infrastructure.sqlite.repositories import (
     SqliteActivityEventRepository,
+    SqliteAgentRepository,
     SqliteAttachmentRepository,
     SqliteBm25SearchEngine,
     SqliteCanvasPlacementRepository,
@@ -239,6 +245,7 @@ def create_app(
     clickup_transport: httpx.BaseTransport | None = None,
     telegram_transport: httpx.BaseTransport | None = None,
     agent_chat_transport: httpx.BaseTransport | None = None,
+    llm_provider_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     # The interactive docs surface (`/docs`, `/redoc`, `/openapi.json`) is served by FastAPI
     # outside every router dependency, so bearer auth cannot cover it; it is disabled by
@@ -320,6 +327,7 @@ def create_app(
         default_workspace,
     )
 
+    agent_repository = SqliteAgentRepository(connection)
     app.state.connection = connection
     app.state.workspace_repository = workspace_repository
     app.state.node_repository = node_repository
@@ -330,6 +338,7 @@ def create_app(
     app.state.saved_view_repository = saved_view_repository
     app.state.search_index_repository = search_index_repository
     app.state.activity_event_repository = activity_event_repository
+    app.state.agent_repository = agent_repository
     app.state.file_service = FileService(
         node_repository,
         attachment_repository,
@@ -531,6 +540,12 @@ def create_app(
         app.state.file_service,
         context_pack_repository,
     )
+    llm_provider = build_llm_provider_from_env(os.environ, transport=llm_provider_transport)
+    app.state.agent_service = AgentService(
+        agent_repository,
+        llm_provider,
+        lambda: SqliteResearchUnitOfWork(connection),
+    )
     app.state.default_workspace_id = default_workspace.id
     app.state.default_canvas_id = default_canvas.id
     app.state.db_lock = anyio.Lock()
@@ -698,6 +713,7 @@ def create_app(
     app.include_router(wiki.router, dependencies=auth_dependency)
     app.include_router(work_items.router, dependencies=auth_dependency)
     app.include_router(work_items.checklist_router, dependencies=auth_dependency)
+    app.include_router(agents.router, dependencies=auth_dependency)
 
     if static_dir is not None:
         # A distinct `/app` prefix, mounted after every API router: it cannot shadow `/mcp`
@@ -746,6 +762,7 @@ def create_app(
     app.add_exception_handler(UndoConflictError, _undo_conflict)
     app.add_exception_handler(InvalidActivityCursorError, _unprocessable)
     app.add_exception_handler(EnrichmentNotConfiguredError, _enrichment_not_configured)
+    app.add_exception_handler(LlmNotConfiguredError, _enrichment_not_configured)
     app.add_exception_handler(ClickUpNotConfiguredError, _clickup_not_configured)
     app.add_exception_handler(ClickUpAccessDeniedError, _clickup_access_denied)
     app.add_exception_handler(ClickUpFetchFailedError, _clickup_gateway_error)
@@ -776,6 +793,7 @@ def create_app(
         WorkItemNotFoundError,
         WorkItemChecklistItemNotFoundError,
         ClickUpTaskNotFoundError,
+        AgentNotFoundError,
     ):
         app.add_exception_handler(not_found_error_type, _not_found)
     app.add_exception_handler(DomainError, _unprocessable)

@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import Request
 
 from personal_graph_os.application.activity_service import ActivityService
+from personal_graph_os.application.agent_service import AgentService
 from personal_graph_os.application.capture_planning_orchestrator import (
     CapturePlanningOrchestrator,
 )
@@ -21,6 +22,7 @@ from personal_graph_os.application.extraction_service import ExtractionService
 from personal_graph_os.application.file_service import FileService
 from personal_graph_os.application.projections import ProjectionService
 from personal_graph_os.application.repositories import (
+    AgentRepository,
     CanvasPlacementRepository,
     CanvasRepository,
     EdgeRepository,
@@ -183,3 +185,11 @@ def get_default_workspace_id(request: Request) -> WorkspaceId:
 
 def get_default_canvas_id(request: Request) -> CanvasId:
     return request.app.state.default_canvas_id
+
+
+def get_agent_repository(request: Request) -> AgentRepository:
+    return request.app.state.agent_repository
+
+
+def get_agent_service(request: Request) -> AgentService:
+    return request.app.state.agent_service

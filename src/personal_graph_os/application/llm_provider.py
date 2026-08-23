@@ -35,7 +35,7 @@ class LlmProvider(Protocol):
         """Generate a complete non-streaming assistant reply."""
         ...
 
-    async def stream(
+    def stream(
         self,
         *,
         system_prompt: str,

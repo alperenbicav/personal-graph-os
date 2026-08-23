@@ -30,6 +30,11 @@ from personal_graph_os.application.resource_detail_service import (
 from personal_graph_os.application.work_planning_service import WorkPlanOutcome
 from personal_graph_os.application.workflow_chain import WorkflowChainStep
 from personal_graph_os.domain.activity import ActivityEvent
+from personal_graph_os.domain.agents import (
+    Agent,
+    AgentRun,
+    AgentWriteMode,
+)
 from personal_graph_os.domain.capture import CaptureIntent, CapturePayloadKind
 from personal_graph_os.domain.documents import (
     Collection,
@@ -796,3 +801,81 @@ class ActivityEventPageResponse(BaseModel):
             ],
             next_cursor=page.next_cursor,
         )
+
+
+class CreateAgentRequest(BaseModel):
+    name: str
+    system_prompt: str
+    emoji: str = "🤖"
+    tool_allowlist: list[str] = Field(default_factory=list)
+    model: str | None = None
+    write_mode: AgentWriteMode = AgentWriteMode.PROPOSAL
+
+
+class UpdateAgentRequest(BaseModel):
+    name: str | None = None
+    system_prompt: str | None = None
+    emoji: str | None = None
+    tool_allowlist: list[str] | None = None
+    model: str | None = None
+    write_mode: AgentWriteMode | None = None
+
+
+class AgentResponse(BaseModel):
+    id: str
+    name: str
+    emoji: str
+    system_prompt: str
+    tool_allowlist: list[str]
+    model: str | None
+    write_mode: str
+    created_at: datetime
+
+    @classmethod
+    def from_domain(cls, agent: Agent) -> AgentResponse:
+        return cls(
+            id=str(agent.id),
+            name=agent.name,
+            emoji=agent.emoji,
+            system_prompt=agent.system_prompt,
+            tool_allowlist=agent.tool_allowlist,
+            model=agent.model,
+            write_mode=agent.write_mode.value,
+            created_at=agent.created_at,
+        )
+
+
+class AgentRunResponse(BaseModel):
+    id: str
+    agent_id: str
+    action: str
+    entity_type: str | None
+    entity_id: str | None
+    status: str
+    summary: str
+    diff_json: str | None
+    created_at: datetime
+
+    @classmethod
+    def from_domain(cls, run: AgentRun) -> AgentRunResponse:
+        return cls(
+            id=str(run.id),
+            agent_id=str(run.agent_id),
+            action=run.action,
+            entity_type=run.entity_type,
+            entity_id=run.entity_id,
+            status=run.status.value,
+            summary=run.summary,
+            diff_json=run.diff_json,
+            created_at=run.created_at,
+        )
+
+
+class AgentMessageRequest(BaseModel):
+    content: str
+
+
+class AgentMessageResponse(BaseModel):
+    reply: str
+    run_id: str
+
