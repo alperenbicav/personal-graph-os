@@ -692,6 +692,35 @@ function App() {
     [reloadAgents],
   )
 
+  const handleApproveRun = useCallback(
+    async (runId: string) => {
+      setActionError(null)
+      try {
+        await api.approveAgentRun(runId)
+        await reloadAgents()
+        if (workspace) {
+          await reloadGraphData(workspace.id, activeCanvasId)
+        }
+      } catch (err) {
+        setActionError(`Failed to approve proposal: ${messageFor(err)}`)
+      }
+    },
+    [reloadAgents, workspace, activeCanvasId, reloadGraphData],
+  )
+
+  const handleRejectRun = useCallback(
+    async (runId: string) => {
+      setActionError(null)
+      try {
+        await api.rejectAgentRun(runId)
+        await reloadAgents()
+      } catch (err) {
+        setActionError(`Failed to reject proposal: ${messageFor(err)}`)
+      }
+    },
+    [reloadAgents],
+  )
+
   const handleCreateAgent = useCallback(
     async (input: CreateAgentInput) => {
       setActionError(null)
@@ -1114,6 +1143,8 @@ function App() {
                 setActiveView('agents')
                 setActiveChatAgentId(agentId)
               }}
+              onApproveRun={handleApproveRun}
+              onRejectRun={handleRejectRun}
             />
           )}
         </div>

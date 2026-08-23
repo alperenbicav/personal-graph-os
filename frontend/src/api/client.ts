@@ -850,6 +850,18 @@ export function listAgentRuns(agentId?: string, limit = 50): Promise<AgentRun[]>
   return request(`/agents/runs?limit=${limit}`)
 }
 
+export function approveAgentRun(runId: string): Promise<AgentRun> {
+  return request(`/agents/runs/${encodeURIComponent(runId)}/approve`, {
+    method: 'POST',
+  })
+}
+
+export function rejectAgentRun(runId: string): Promise<AgentRun> {
+  return request(`/agents/runs/${encodeURIComponent(runId)}/reject`, {
+    method: 'POST',
+  })
+}
+
 export async function messageAgent(
   agentId: string,
   content: string,

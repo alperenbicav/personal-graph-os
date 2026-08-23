@@ -7,10 +7,15 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 
-from personal_graph_os.application.llm_provider import LlmProviderRequestError
+from personal_graph_os.application.llm_provider import (
+    LlmProviderRequestError,
+    LlmResponse,
+    LlmToolCall,
+)
 
 
 class OpenAiLlmProvider:
@@ -44,14 +49,30 @@ class OpenAiLlmProvider:
         user_message: str,
         model: str | None = None,
     ) -> str:
-        payload = {
-            "model": model or self._default_model,
-            "messages": [
+        res = await self.chat_turn(
+            messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
             ],
+            model=model,
+        )
+        return res.content or ""
+
+    async def chat_turn(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+    ) -> LlmResponse:
+        payload: dict[str, Any] = {
+            "model": model or self._default_model,
+            "messages": messages,
             "stream": False,
         }
+        if tools:
+            payload["tools"] = tools
+
         url = f"{self._base_url}/chat/completions"
         try:
             async with httpx.AsyncClient(
@@ -62,7 +83,32 @@ class OpenAiLlmProvider:
                 response = await client.post(url, json=payload)
                 response.raise_for_status()
                 data = response.json()
-                return data["choices"][0]["message"]["content"]
+                choice = data["choices"][0]
+                message = choice.get("message", {})
+                content = message.get("content")
+                raw_tool_calls = message.get("tool_calls") or []
+                tool_calls: list[LlmToolCall] = []
+                for tc in raw_tool_calls:
+                    fn = tc.get("function", {})
+                    fn_name = fn.get("name", "")
+                    raw_args = fn.get("arguments", "{}")
+                    try:
+                        args = (
+                            json.loads(raw_args)
+                            if isinstance(raw_args, str)
+                            else (raw_args or {})
+                        )
+                    except Exception:
+                        args = {}
+                    tool_calls.append(
+                        LlmToolCall(
+                            id=tc.get("id", ""),
+                            name=fn_name,
+                            arguments=args,
+                        )
+                    )
+
+                return LlmResponse(content=content, tool_calls=tool_calls)
         except httpx.HTTPError as error:
             raise LlmProviderRequestError(
                 f"OpenAI chat completions request failed: {error}"

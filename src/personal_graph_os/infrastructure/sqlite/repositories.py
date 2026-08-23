@@ -2466,6 +2466,16 @@ class SqliteAgentRepository:
         ).fetchone()
         return None if row is None else self._hydrate_run(row)
 
+    def update_run_status_without_commit(
+        self, run_id: AgentRunId, status: AgentRunStatus | str
+    ) -> AgentRun | None:
+        status_val = status.value if isinstance(status, AgentRunStatus) else str(status)
+        self._connection.execute(
+            "UPDATE agent_runs SET status = ? WHERE id = ?",
+            (status_val, str(run_id)),
+        )
+        return self.get_run(run_id)
+
     def list_runs_for_agent(
         self, agent_id: AgentId, *, limit: int = 50
     ) -> tuple[AgentRun, ...]:
@@ -2474,6 +2484,14 @@ class SqliteAgentRepository:
             "created_at FROM agent_runs WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?"
         )
         rows = self._connection.execute(row_query, (str(agent_id), limit)).fetchall()
+        return tuple(self._hydrate_run(row) for row in rows)
+
+    def list_recent_runs(self, *, limit: int = 50) -> tuple[AgentRun, ...]:
+        row_query = (
+            "SELECT id, agent_id, action, entity_type, entity_id, status, summary, diff_json, "
+            "created_at FROM agent_runs ORDER BY created_at DESC LIMIT ?"
+        )
+        rows = self._connection.execute(row_query, (limit,)).fetchall()
         return tuple(self._hydrate_run(row) for row in rows)
 
     def _hydrate_agent(self, row: sqlite3.Row) -> Agent:
