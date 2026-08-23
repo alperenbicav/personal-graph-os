@@ -72,12 +72,18 @@ second copy to keep in sync, and no export/import step between your task list an
   workspace, keyboard-operable object list as an accessible alternative to dragging.
 - **Schema editor** — add/edit node types, fields (8 field types including `object_reference`
   and `select`), statuses, and edge types, all from the UI.
-- **Structured views** — the Tasks tab renders work items grouped Kanban-style; every view is
-  a live projection of the same graph.
+- **Tasks board** — Linear/Jira-style Board (drag between status columns, per-column quick
+    add) or List; opening an item gives a full-area detail page. Every view is a live
+    projection of the same graph.
+- **Wiki pages** — Notion-style full-page editor with inline title, meta chips, Write/Preview,
+  versions/links/backlinks in an on-demand panel.
+- **Research library** — Readwise-style rows (lifecycle pills, progress bars) opening a
+  full-page detail with takeaways and the enrichment card.
 - **Research workflow** — a dashboard of resources by lifecycle status, discovery
   preview/import, a guided "next step" workflow chain (Resource → Takeaway → Decision → Task →
   Implementation) and a detail panel per resource.
-- **Search** — full-text search across nodes and resources.
+- **Search** — command-palette-style full-text search across nodes and resources, with
+  arrow-key navigation.
 - **Files** — managed attachments (uploaded, copied, checksummed, downloadable) and file
   references (provenance pointers to files that live outside the app, with on-demand
   verification).
@@ -220,7 +226,8 @@ Use the nav tabs to switch between:
   view and save it for later).
 - **Kanban** — nodes grouped into columns by status.
 - **Timeline** — nodes ordered by their creation date.
-- **Search** — full-text search across nodes and resources.
+- **Search** — command-palette-style full-text search across nodes and resources, with
+  arrow-key navigation.
 
 ### Research workflow
 

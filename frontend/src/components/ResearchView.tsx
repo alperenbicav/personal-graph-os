@@ -1,14 +1,23 @@
 import { useMemo, useState } from 'react'
+import type { UpdateResourcePatch } from '../api/client'
 import type { ResearchDashboard, Resource, ResourceKind, ResourceLifecycleStatus } from '../types'
+import { EmptyState, Pill, type PillTone } from './ui'
+import { ResearchDetailPanel as ResearchDetailSection } from './ResearchDetailPanel'
 
 interface ResearchViewProps {
   dashboard: ResearchDashboard | null
   resources: Resource[]
   selectedNodeId: string | null
   onSelectNode: (nodeId: string) => void
+  onClearSelection: () => void
   onCreateResource: (title: string, rawSource: string, kind: ResourceKind) => Promise<Resource>
   onArchiveResource: (resourceId: string) => Promise<void>
   onDeleteResource: (resourceId: string) => Promise<void>
+  onUpdateDetail: (patch: UpdateResourcePatch) => Promise<boolean>
+  /** Composed by App: the enrichment/evidence card for one resource. */
+  renderEnrichment?: (resource: Resource) => React.ReactNode
+  /** Composed by App: the guided workflow-chain proposal for the current selection. */
+  workflowPanel?: React.ReactNode
 }
 
 function CreatePaperOrArticleForm({
@@ -25,7 +34,7 @@ function CreatePaperOrArticleForm({
 
   if (!isOpen) {
     return (
-      <button type="button" className="wiki-new-page" onClick={() => setIsOpen(true)}>
+      <button type="button" className="primary-action" onClick={() => setIsOpen(true)}>
         + New paper/article
       </button>
     )
@@ -73,6 +82,7 @@ function CreatePaperOrArticleForm({
       />
       <select
         aria-label="Kind"
+        className="chip-select"
         value={kind}
         onChange={(event) => setKind(event.target.value as 'paper' | 'article')}
       >
@@ -101,12 +111,12 @@ type BucketKey = 'all' | keyof ResearchDashboard
 // "Inbox" and "Needs Takeaway" must still render as exactly one selectable row.
 const BUCKETS: { key: BucketKey; label: string }[] = [
   { key: 'all', label: 'All' },
-  { key: 'inbox', label: 'Research Inbox' },
+  { key: 'inbox', label: 'Inbox' },
   { key: 'continue_reading', label: 'Continue Reading' },
-  { key: 'stale', label: 'Stale Resources' },
+  { key: 'stale', label: 'Stale' },
   { key: 'needs_takeaway', label: 'Needs Takeaway' },
-  { key: 'unlinked', label: 'Unlinked Research' },
-  { key: 'applied', label: 'Applied Sources' },
+  { key: 'unlinked', label: 'Unlinked' },
+  { key: 'applied', label: 'Applied' },
 ]
 
 const TYPE_OPTIONS: { value: '' | ResourceKind; label: string }[] = [
@@ -135,6 +145,22 @@ const READ_STATE_OPTIONS: { value: '' | ResourceLifecycleStatus; label: string }
   { value: 'archived', label: 'Archived' },
 ]
 
+const LIFECYCLE_TONE: Record<ResourceLifecycleStatus, PillTone> = {
+  inbox: 'teal',
+  to_review: 'violet',
+  reading: 'brass',
+  paused: 'neutral',
+  reviewed: 'moss',
+  applied: 'moss',
+  archived: 'neutral',
+}
+
+function formatDay(iso: string): string {
+  return iso.slice(0, 10)
+}
+
+/** Readwise-style rich row: prominent title, lifecycle/kind pills, progress bar, next-action
+ * hint, and hover-revealed destructive actions. */
 function ResourceRow({
   resource,
   isSelected,
@@ -152,20 +178,56 @@ function ResourceRow({
   const isArchived = resource.lifecycle_status === 'archived'
 
   return (
-    <div className="node-row" aria-current={isSelected}>
-      <button type="button" className="node-row-title" onClick={() => onSelect(resource.node_id)}>
-        {resource.title}
-      </button>
-      <span className="node-row-meta">
-        {resource.source_url && (
-          <a href={resource.source_url} target="_blank" rel="noreferrer">
-            source
-          </a>
+    <div className={`research-row${isSelected ? ' research-row-selected' : ''}`}>
+      {/* The canonical-source link must never nest inside the row-selecting control
+          (S6-F02): the wrapper handles clicks, the title is its keyboard-accessible button,
+          and the link sits beside it as a sibling. */}
+      <div
+        role="presentation"
+        className="research-row-main"
+        onClick={() => onSelect(resource.node_id)}
+      >
+        <span className="research-row-titleline">
+          <button
+            type="button"
+            className="research-row-title"
+            onClick={(event) => {
+              event.stopPropagation()
+              onSelect(resource.node_id)
+            }}
+          >
+            {resource.title}
+          </button>
+          {resource.source_url && (
+            <a
+              href={resource.source_url}
+              target="_blank"
+              rel="noreferrer"
+              className="research-row-source"
+              onClick={(event) => event.stopPropagation()}
+            >
+              source ↗
+            </a>
+          )}
+        </span>
+        {resource.next_action && !resource.next_action_dismissed && (
+          <span className="research-row-next">→ {resource.next_action}</span>
         )}
-        <span className="node-row-type">{resource.kind}</span>
-        <span className="node-row-lifecycle">{resource.lifecycle_status}</span>
-      </span>
-      <span className="node-row-actions">
+        <span className="research-row-meta">
+          <Pill tone={LIFECYCLE_TONE[resource.lifecycle_status]}>{resource.lifecycle_status}</Pill>
+          <span className="pill pill-neutral">{resource.kind}</span>
+          {resource.progress_percent != null && (
+            <span className="research-progress" aria-label={`Progress ${resource.progress_percent}%`}>
+              <span
+                className="research-progress-fill"
+                style={{ width: `${resource.progress_percent}%` }}
+              />
+            </span>
+          )}
+          <span className="research-row-date">{formatDay(resource.last_activity_at)}</span>
+        </span>
+      </div>
+      <span className="research-row-actions">
         {!isArchived && (
           <button type="button" onClick={() => void onArchiveResource(resource.id)}>
             Archive
@@ -195,9 +257,13 @@ export function ResearchView({
   resources,
   selectedNodeId,
   onSelectNode,
+  onClearSelection,
   onCreateResource,
   onArchiveResource,
   onDeleteResource,
+  onUpdateDetail,
+  renderEnrichment,
+  workflowPanel,
 }: ResearchViewProps) {
   const [bucket, setBucket] = useState<BucketKey>('all')
   const [kindFilter, setKindFilter] = useState<'' | ResourceKind>('')
@@ -220,20 +286,89 @@ export function ResearchView({
       .filter((resource) => !dateTo || resource.last_activity_at.slice(0, 10) <= dateTo)
   }, [resources, bucketMemberIds, kindFilter, readStateFilter, dateFrom, dateTo])
 
+  // The selected resource (by backing node id) gets a full-page detail view, Readwise-style.
+  const selectedResource =
+    (selectedNodeId && resources.find((candidate) => candidate.node_id === selectedNodeId)) ||
+    null
+
   if (!dashboard) {
     return <p className="view-empty">Loading research dashboard…</p>
   }
 
+  if (selectedResource && isAdmittedKind(selectedResource)) {
+    const isArchived = selectedResource.lifecycle_status === 'archived'
+    return (
+      <div className="research-detail-page" aria-label="Research detail">
+        <div className="tasks-detail-top">
+          <button type="button" className="back-link" onClick={onClearSelection}>
+            ← Back to library
+          </button>
+          <Pill tone={LIFECYCLE_TONE[selectedResource.lifecycle_status]}>
+            {selectedResource.lifecycle_status}
+          </Pill>
+          <span className="pill pill-neutral">{selectedResource.kind}</span>
+          {!isArchived && (
+            <button
+              type="button"
+              className="options-button"
+              style={{ marginLeft: 'auto' }}
+              onClick={() => void onArchiveResource(selectedResource.id)}
+            >
+              Archive
+            </button>
+          )}
+        </div>
+
+        <h1 className="research-detail-title">{selectedResource.title}</h1>
+
+        <div className="wiki-editor-bar">
+          {workflowPanel}
+          {selectedResource.source_url && (
+            <a
+              href={selectedResource.source_url}
+              target="_blank"
+              rel="noreferrer"
+              className="back-link"
+            >
+              Open source ↗
+            </a>
+          )}
+        </div>
+
+        {/* Existing field editors (lifecycle, next action, progress, review date, takeaways,
+            open questions) — reused verbatim, restyled by the shared design-system CSS. */}
+        <div className="research-detail-fields">
+          <ResearchDetailSection resource={selectedResource} onUpdate={onUpdateDetail} />
+        </div>
+
+        {renderEnrichment?.(selectedResource)}
+      </div>
+    )
+  }
+
   return (
     <div className="research-view" aria-label="Research dashboard">
-      <CreatePaperOrArticleForm onCreateResource={onCreateResource} />
+      <div className="page-header">
+        <div className="page-header-text">
+          <h1 className="page-header-title">Research library</h1>
+          <p className="page-header-description">
+            Papers and articles you are reading — capture, triage, and turn takeaways into
+            decisions.
+          </p>
+        </div>
+        <div className="page-header-actions">
+          <CreatePaperOrArticleForm onCreateResource={onCreateResource} />
+        </div>
+      </div>
 
-      <div className="research-filter-bar" role="group" aria-label="Filter by workflow bucket">
+      <div className="research-tabs" role="group" aria-label="Filter by workflow bucket">
         {BUCKETS.map((option) => (
           <button
             key={option.key}
             type="button"
-            className="node-row-label"
+            className={
+              bucket === option.key ? 'research-tab research-tab-active' : 'research-tab'
+            }
             aria-current={bucket === option.key}
             onClick={() => setBucket(option.key)}
           >
@@ -251,6 +386,7 @@ export function ResearchView({
       <div className="research-filter-bar">
         <select
           aria-label="Filter by type"
+          className="chip-select"
           value={kindFilter}
           onChange={(event) => setKindFilter(event.target.value as '' | ResourceKind)}
         >
@@ -262,6 +398,7 @@ export function ResearchView({
         </select>
         <select
           aria-label="Filter by read state"
+          className="chip-select"
           value={readStateFilter}
           onChange={(event) => setReadStateFilter(event.target.value as '' | ResourceLifecycleStatus)}
         >
@@ -290,7 +427,10 @@ export function ResearchView({
         <span className="research-section-count">{filtered.length}</span>
       </div>
       {filtered.length === 0 ? (
-        <p className="view-empty">Nothing here.</p>
+        <EmptyState
+          title="Nothing here"
+          hint="Adjust the filters above, or add a new paper/article."
+        />
       ) : (
         <div className="list-view">
           {filtered.map((resource) => (

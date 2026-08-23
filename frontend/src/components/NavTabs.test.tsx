@@ -25,28 +25,19 @@ describe('NavTabs', () => {
     }
   })
 
-  it('toggles a tab\'s info popover open and closed', () => {
+  it('exposes each tab description as a native tooltip', () => {
     render(<NavTabs activeView="graph" onSelectView={vi.fn()} />)
-    expect(screen.queryByRole('note')).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'About Search' }))
-    expect(screen.getByRole('note')).toHaveTextContent(/full-text search/i)
-
-    fireEvent.click(screen.getByRole('button', { name: 'About Search' }))
-    expect(screen.queryByRole('note')).not.toBeInTheDocument()
+    const graphTab = screen.getByRole('button', { name: 'Graph' })
+    expect(graphTab.getAttribute('title')).toMatch(/visual graph canvas/i)
+    expect(screen.queryByRole('button', { name: /about graph/i })).not.toBeInTheDocument()
   })
 
-  it('shows only one info popover at a time and closes it when a tab is selected', () => {
-    const onSelectView = vi.fn()
-    render(<NavTabs activeView="graph" onSelectView={onSelectView} />)
+  it('keeps descriptions available on every tab without persistent info buttons', () => {
+    render(<NavTabs activeView="tasks" onSelectView={vi.fn()} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'About Search' }))
-    fireEvent.click(screen.getByRole('button', { name: 'About Research' }))
-    expect(screen.getAllByRole('note')).toHaveLength(1)
-    expect(screen.getByRole('note')).toHaveTextContent(/research resources/i)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Tasks' }))
-    expect(onSelectView).toHaveBeenCalledWith('tasks')
-    expect(screen.queryByRole('note')).not.toBeInTheDocument()
+    for (const label of ['Graph', 'Tasks', 'Wiki', 'Research', 'Repositories', 'Search', 'Activity']) {
+      expect(screen.getByRole('button', { name: label })).toHaveAttribute('title')
+    }
   })
 })

@@ -217,11 +217,11 @@ test.describe('ST-09.4 complete pilot journey and recovery (real server, real bu
 
       // 4. Place: a new canvas, then explicitly placing an already-captured node onto it via
       // the real "existing object to place" control — not just relying on capture's own
-      // auto-placement on the canvas active at capture time. "+ New canvas" prompts via a
-      // native `window.prompt`, which Playwright auto-dismisses unless a `dialog` handler
-      // accepts it first.
-      page.once('dialog', (dialog) => dialog.accept('Pilot second canvas'))
+      // auto-placement on the canvas active at capture time. "+ New canvas" opens the styled
+      // NewCanvasModal (ST-08 of the UX overhaul replaced window.prompt).
       await page.getByRole('button', { name: '+ New canvas' }).click()
+      await page.getByLabel('Canvas name').fill('Pilot second canvas')
+      await page.getByRole('button', { name: 'Create canvas' }).click()
       await expect(page.getByRole('button', { name: 'Pilot second canvas' })).toBeVisible()
       await page.getByLabel(/existing object to place on this canvas/i).selectOption({
         label: sourceTitle,

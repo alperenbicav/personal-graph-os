@@ -69,6 +69,7 @@ function baseProps() {
     onReorderChecklistItems: vi.fn().mockResolvedValue([]),
     onAttachDocument: vi.fn().mockResolvedValue(undefined),
     onDetachDocument: vi.fn().mockResolvedValue(undefined),
+  onRenameWorkItem: vi.fn().mockResolvedValue(undefined),
   }
 }
 
@@ -122,13 +123,15 @@ describe('TasksView', () => {
     const props = baseProps()
     render(<StatefulTasksView {...props} />)
 
-    const epicRow = await screen.findByText('An epic')
-    const storyRow = await screen.findByText('A story')
+    const epicRow = (await screen.findAllByText('An epic'))[0]
+    const storyRow = (await screen.findAllByText('A story'))[0]
     expect(storyRow).toBeInTheDocument()
 
     fireEvent.click(epicRow)
     await waitFor(() => expect(props.onLoadDetail).toHaveBeenCalledWith('wi-1'))
-    expect(await screen.findByRole('heading', { name: 'An epic' })).toBeInTheDocument()
+    expect(((await screen.findByLabelText('Work item title')) as HTMLInputElement).value).toBe(
+      'An epic',
+    )
   })
 
   it('creates a work item through the modal with kind and title', async () => {
@@ -170,8 +173,8 @@ describe('TasksView', () => {
     const props = baseProps()
     render(<StatefulTasksView {...props} />)
 
-    fireEvent.click(await screen.findByText('An epic'))
-    await screen.findByRole('heading', { name: 'An epic' })
+    fireEvent.click((await screen.findAllByText('An epic'))[0])
+    await screen.findByLabelText('Work item title')
 
     fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'in_progress' } })
     await waitFor(() =>
@@ -186,8 +189,8 @@ describe('TasksView', () => {
     const props = baseProps()
     render(<StatefulTasksView {...props} />)
 
-    fireEvent.click(await screen.findByText('An epic'))
-    await screen.findByRole('heading', { name: 'An epic' })
+    fireEvent.click((await screen.findAllByText('An epic'))[0])
+    await screen.findByLabelText('Work item title')
 
     const input = screen.getByLabelText('New checklist item')
     fireEvent.change(input, { target: { value: 'First step' } })
@@ -209,8 +212,8 @@ describe('TasksView', () => {
     const props = baseProps()
     render(<StatefulTasksView {...props} />)
 
-    fireEvent.click(await screen.findByText('An epic'))
-    await screen.findByRole('heading', { name: 'An epic' })
+    fireEvent.click((await screen.findAllByText('An epic'))[0])
+    await screen.findByLabelText('Work item title')
 
     fireEvent.change(screen.getByLabelText('Link a Wiki page'), { target: { value: 'doc-1' } })
     fireEvent.click(screen.getByRole('button', { name: /^add link$/i }))
@@ -223,8 +226,8 @@ describe('TasksView', () => {
     const props = baseProps()
     render(<StatefulTasksView {...props} />)
 
-    fireEvent.click(await screen.findByText('An epic'))
-    await screen.findByRole('heading', { name: 'An epic' })
+    fireEvent.click((await screen.findAllByText('An epic'))[0])
+    await screen.findByLabelText('Work item title')
 
     fireEvent.change(screen.getByLabelText('Repository'), { target: { value: 'node-repo' } })
     await waitFor(() =>
@@ -243,14 +246,15 @@ describe('TasksView', () => {
     ]
     render(<StatefulTasksView {...props} />)
 
-    fireEvent.click(await screen.findByText('Epic A'))
-    await screen.findByRole('heading', { name: 'Epic A' })
+    fireEvent.click((await screen.findAllByText('Epic A'))[0])
+    await screen.findByLabelText('Work item title')
     expect(screen.getByLabelText('Assignee')).toHaveValue('Ada')
     expect(screen.getByLabelText('Blockers')).toHaveValue('B1')
     expect(screen.getByLabelText('Progress (%)')).toHaveValue(20)
 
-    fireEvent.click(await screen.findByText('Story B'))
-    await screen.findByRole('heading', { name: 'Story B' })
+    fireEvent.click(screen.getByRole('button', { name: '← Back' }))
+    fireEvent.click((await screen.findAllByText('Story B'))[0])
+    await screen.findByLabelText('Work item title')
     expect(screen.getByLabelText('Assignee')).toHaveValue('Lin')
     expect(screen.getByLabelText('Blockers')).toHaveValue('B2')
     expect(screen.getByLabelText('Progress (%)')).toHaveValue(60)

@@ -14,7 +14,6 @@ import { Inspector, type RelationRow } from './components/Inspector'
 import { NavTabs, type AppView } from './components/NavTabs'
 import { PlaceExistingNodeControl } from './components/PlaceExistingNodeControl'
 import { RepositoriesView } from './components/RepositoriesView'
-import { ResearchDetailPanel } from './components/ResearchDetailPanel'
 import { ResearchView } from './components/ResearchView'
 import { SearchView } from './components/SearchView'
 import { TasksView } from './components/TasksView'
@@ -447,6 +446,18 @@ function App() {
     [selectedNodeId],
   )
 
+  const handleRenameWorkItem = useCallback(
+    async (workItem: WorkItem, title: string) => {
+      const updated = await api.updateNode(workItem.node_id, { title })
+      setNodes((current) => current.map((node) => (node.id === updated.id ? updated : node)))
+      setWorkItems((current) =>
+        current.map((entry) => (entry.id === workItem.id ? { ...entry, title } : entry)),
+      )
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+
   const {
     handleCreateWorkItem,
     handleUpdateWorkItem,
@@ -590,7 +601,12 @@ function App() {
     setArchiveArmed(false)
   }, [selectedNodeId])
 
-if (!isUnlocked) {
+// Detail column (EP-2026-013 ST-01): the Inspector belongs to the Graph canvas only; on
+  // Research/Repositories the rich resource panels appear when a resource is selected and the
+  // column collapses entirely otherwise — never a dead placeholder bar.
+  const detailColumnVisible = activeView === 'graph'
+
+  if (!isUnlocked) {
     return <UnlockScreen onUnlocked={() => setIsUnlocked(true)} />
   }
 
@@ -639,11 +655,17 @@ if (!isUnlocked) {
         className={
           activeView === 'graph'
             ? 'workbench'
-            : activeView === 'tasks' || activeView === 'activity' || activeView === 'wiki'
+            : activeView === 'tasks' ||
+                activeView === 'activity' ||
+                activeView === 'wiki' ||
+                activeView === 'research' ||
+                activeView === 'repositories'
               ? 'workbench workbench-full'
-              : activeView === 'research'
-                ? 'workbench workbench-no-rail workbench-research'
-                : 'workbench workbench-no-rail'
+              : detailColumnVisible
+                ? activeView === 'research'
+                  ? 'workbench workbench-no-rail workbench-research'
+                  : 'workbench workbench-no-rail'
+                : 'workbench workbench-full'
         }
       >
         {activeView === 'graph' && (
@@ -745,6 +767,33 @@ if (!isUnlocked) {
               }
               selectedNodeId={selectedNodeId}
               onSelectNode={setSelectedNodeId}
+              onActivateResult={(result) => {
+                // Route to the owning tab so the result is actually visible (ST-06 review P1).
+                const targetScope = result.scope
+                if (targetScope === 'wiki') {
+                  setActiveView('wiki')
+                  if (result.node?.id) setSelectedNodeId(result.node.id)
+                  return
+                }
+                if (targetScope === 'tasks') {
+                  setActiveView('tasks')
+                  const match = workItems.find((entry) => entry.node_id === result.node?.id)
+                  if (match) setSelectedWorkItemId(match.id)
+                  return
+                }
+                if (targetScope === 'research' || targetScope === 'repositories') {
+                  setActiveView(targetScope)
+                  if (result.node?.id) setSelectedNodeId(result.node.id)
+                  return
+                }
+                // graph / all: node-backed results live on the canvas
+                if (result.node?.id) {
+                  setSelectedNodeId(result.node.id)
+                  setActiveView('graph')
+                } else if (result.document) {
+                  setActiveView('wiki')
+                }
+              }}
             />
           </div>
         )}
@@ -767,6 +816,7 @@ if (!isUnlocked) {
               onRemoveChecklistItem={handleRemoveChecklistItem}
               onReorderChecklistItems={handleReorderChecklistItems}
               onAttachDocument={handleAttachWorkItemDocument}
+            onRenameWorkItem={handleRenameWorkItem}
               onDetachDocument={handleDetachWorkItemDocument}
             />
           </div>
@@ -775,7 +825,6 @@ if (!isUnlocked) {
         {activeView === 'wiki' && workspace && (
           <div className="view-frame">
             <WikiView
-              workspaceId={workspace.id}
               onLoadDocuments={(collectionId) => api.listDocuments(workspace.id, { collectionId })}
               onLoadDetail={(documentId) => api.getDocumentDetail(documentId)}
               onLoadVersions={(documentId) => api.listDocumentVersions(documentId)}
@@ -803,9 +852,28 @@ if (!isUnlocked) {
               resources={resources}
               selectedNodeId={selectedNodeId}
               onSelectNode={setSelectedNodeId}
+              onClearSelection={() => setSelectedNodeId(null)}
               onCreateResource={handleCreateResource}
               onArchiveResource={handleArchiveResource}
               onDeleteResource={handleDeleteResource}
+              onUpdateDetail={handleUpdateResource}
+              renderEnrichment={(resource) => (
+                <EnrichmentDetailPanel
+                  key={`enrichment-${resource.id}`}
+                  resourceId={resource.id}
+                  onLoadDetail={api.getResourceDetail}
+                  onGoToRelation={handleGoToRelation}
+                />
+              )}
+              workflowPanel={
+                nextWorkflowStep ? (
+                  <WorkflowChainPanel
+                    nodeSystemKey={selectedNodeType?.system_key}
+                    existingTargetCandidates={workflowChainCandidates}
+                    onAdvance={(input) => handleAdvanceWorkflow(nextWorkflowStep.step, input)}
+                  />
+                ) : null
+              }
             />
           </div>
         )}
@@ -816,6 +884,16 @@ if (!isUnlocked) {
               resources={resources}
               selectedNodeId={selectedNodeId}
               onSelectNode={setSelectedNodeId}
+              onClearSelection={() => setSelectedNodeId(null)}
+              onUpdateDetail={handleUpdateResource}
+              renderEnrichment={(resource) => (
+                <EnrichmentDetailPanel
+                  key={`enrichment-${resource.id}`}
+                  resourceId={resource.id}
+                  onLoadDetail={api.getResourceDetail}
+                  onGoToRelation={handleGoToRelation}
+                />
+              )}
               onSetLabel={handleSetRepositoryLabel}
               onCreateResource={(title, rawSource) =>
                 handleCreateResource(title, rawSource, 'github_repository')
@@ -845,37 +923,21 @@ if (!isUnlocked) {
           </div>
         )}
 
-        {activeView !== 'tasks' && activeView !== 'activity' && activeView !== 'wiki' && (
+        {detailColumnVisible && (
           <div className="inspector-column">
-            <Inspector
-              node={selectedNode}
-              nodeType={selectedNodeType}
-              relations={relations}
-              referenceableNodes={referenceableNodes}
-              onChangeStatus={handleChangeStatus}
-              onChangeBody={handleChangeBody}
-              onChangeField={handleChangeField}
-              onArchive={handleArchiveSelected}
-              archiveArmed={archiveArmed}
-              goToLabel={goToTarget?.label ?? null}
-              onGoTo={handleGoToProjected}
-            />
-            {/* Research/Repositories own the rich canonical Resource detail (review finding
-                S6-F01); every other view keeps only the generic Inspector above, even when a
-                stale Resource selection carries over from a prior tab. */}
-            {selectedResource && activeView === 'research' && (
-              <ResearchDetailPanel
-                key={selectedResource.id}
-                resource={selectedResource}
-                onUpdate={handleUpdateResource}
-              />
-            )}
-            {selectedResource && (activeView === 'research' || activeView === 'repositories') && (
-              <EnrichmentDetailPanel
-                key={`enrichment-${selectedResource.id}`}
-                resourceId={selectedResource.id}
-                onLoadDetail={api.getResourceDetail}
-                onGoToRelation={handleGoToRelation}
+            {activeView === 'graph' && (
+              <Inspector
+                node={selectedNode}
+                nodeType={selectedNodeType}
+                relations={relations}
+                referenceableNodes={referenceableNodes}
+                onChangeStatus={handleChangeStatus}
+                onChangeBody={handleChangeBody}
+                onChangeField={handleChangeField}
+                onArchive={handleArchiveSelected}
+                archiveArmed={archiveArmed}
+                goToLabel={goToTarget?.label ?? null}
+                onGoTo={handleGoToProjected}
               />
             )}
             {nextWorkflowStep && (

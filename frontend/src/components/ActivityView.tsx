@@ -33,9 +33,139 @@ function disabledReasonLabel(reason: ActivityEventSummary['disabled_reason']): s
   return DISABLED_REASON_LABELS[reason] ?? 'Not undoable.'
 }
 
-/** Read-only activity/audit feed plus stale-safe undo (ST-07.1/07.3): entity-type filter,
- * lazy detail drill-in (the list page never carries a before/after snapshot, ST07-F06), and
- * per-row confirm/undo/retry feedback. Redo is out of scope. */
+/** One event in the timeline: actor chip, action badge, entity, time; expandable detail with
+ * before/after JSON and stale-safe undo (ST-07.1/07.3). Redo is out of scope. */
+function ActivityRow({
+  event,
+  reversedEventIds,
+  expandedEventId,
+  detailState,
+  undoState,
+  reasonDraft,
+  onToggle,
+  onBeginUndo,
+  onCancelUndo,
+  onConfirmUndo,
+  onReasonDraft,
+}: {
+  event: ActivityEventSummary
+  reversedEventIds: Set<string>
+  expandedEventId: string | null
+  detailState: Record<string, DetailState>
+  undoState: Record<string, UndoRowState>
+  reasonDraft: Record<string, string>
+  onToggle: (eventId: string) => void
+  onBeginUndo: (eventId: string) => void
+  onCancelUndo: (eventId: string) => void
+  onConfirmUndo: (eventId: string) => void
+  onReasonDraft: (eventId: string, value: string) => void
+}) {
+  const isExpanded = expandedEventId === event.id
+  const isAlreadyReversed = reversedEventIds.has(event.id)
+  const isCompensating = event.reverses_event_id !== null
+  const rowUndoState = undoState[event.id] ?? { status: 'idle' }
+  const canUndo = event.is_undoable && !isAlreadyReversed && !isCompensating
+
+  return (
+    <div className="activity-row-group">
+      <button
+        type="button"
+        className="activity-row"
+        data-undoable={event.is_undoable}
+        onClick={() => onToggle(event.id)}
+      >
+        <span className="activity-timeline-dot" aria-hidden />
+        <span className="pill pill-neutral">{event.actor_name}</span>
+        <span className="activity-row-action">{event.action}</span>
+        <span className="activity-row-entity">
+          {event.entity_type} {event.entity_id}
+        </span>
+        <span className="activity-row-occurred-at">
+          {new Date(event.occurred_at).toLocaleTimeString()}
+        </span>
+        {isCompensating && <span className="activity-row-badge">undo</span>}
+        {isAlreadyReversed && <span className="activity-row-badge">reversed</span>}
+      </button>
+
+      {isExpanded && (
+        <div className="activity-row-detail">
+          {event.reason && <p>Reason: {event.reason}</p>}
+          {(() => {
+            const detail = detailState[event.id]
+            if (!detail || detail.status === 'loading') {
+              return <p>Loading detail…</p>
+            }
+            if (detail.status === 'error') {
+              return (
+                <p className="view-error" role="alert">
+                  {detail.message}
+                </p>
+              )
+            }
+            return (
+              <pre>
+                {JSON.stringify(
+                  { before: detail.event.before_state, after: detail.event.after_state },
+                  null,
+                  2,
+                )}
+              </pre>
+            )
+          })()}
+
+          {canUndo && rowUndoState.status === 'idle' && (
+            <button type="button" onClick={() => onBeginUndo(event.id)}>
+              Undo
+            </button>
+          )}
+          {!event.is_undoable && !isCompensating && (
+            <p className="activity-row-disabled-reason" data-reason={event.disabled_reason}>
+              {disabledReasonLabel(event.disabled_reason)}
+            </p>
+          )}
+
+          {rowUndoState.status === 'confirming' && (
+            <div className="activity-undo-confirm">
+              <label htmlFor={`undo-reason-${event.id}`}>Reason for undo</label>
+              <input
+                id={`undo-reason-${event.id}`}
+                type="text"
+                value={reasonDraft[event.id] ?? ''}
+                onChange={(inputEvent) => onReasonDraft(event.id, inputEvent.target.value)}
+              />
+              <button
+                type="button"
+                onClick={() => onConfirmUndo(event.id)}
+                disabled={!(reasonDraft[event.id] ?? '').trim()}
+              >
+                Confirm undo
+              </button>
+              <button type="button" onClick={() => onCancelUndo(event.id)}>
+                Cancel
+              </button>
+            </div>
+          )}
+          {rowUndoState.status === 'submitting' && <p role="status">Undoing…</p>}
+          {rowUndoState.status === 'done' && <p role="status">Undone.</p>}
+          {rowUndoState.status === 'error' && (
+            <div>
+              <p className="view-error" role="alert">
+                {rowUndoState.message}
+              </p>
+              <button type="button" onClick={() => onBeginUndo(event.id)}>
+                Retry
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Read-only activity/audit feed as a day-grouped timeline (EP-2026-013 ST-07): entity-type
+ * filter, lazy detail drill-in (the list page never carries a before/after snapshot, ST07-F06),
+ * and per-row confirm/undo/retry feedback. */
 export function ActivityView({ onLoadPage, onLoadDetail, onUndo }: ActivityViewProps) {
   const [events, setEvents] = useState<ActivityEventSummary[]>([])
   const [cursor, setCursor] = useState<string | null>(null)
@@ -97,6 +227,30 @@ export function ActivityView({ onLoadPage, onLoadDetail, onUndo }: ActivityViewP
       ? events
       : events.filter((event) => event.entity_type === entityTypeFilter)
 
+  // Day-grouped timeline (ST-07): consecutive events share one date header.
+  const eventDayGroups = useMemo(() => {
+    const groups: { day: string; label: string; events: typeof visibleEvents }[] = []
+    for (const event of visibleEvents) {
+      const day = event.occurred_at.slice(0, 10)
+      const last = groups[groups.length - 1]
+      if (last && last.day === day) {
+        last.events.push(event)
+      } else {
+        groups.push({
+          day,
+          label: new Date(event.occurred_at).toLocaleDateString(undefined, {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+          }),
+          events: [event],
+        })
+      }
+    }
+    return groups
+  }, [visibleEvents])
+
   function toggleExpand(eventId: string) {
     if (expandedEventId === eventId) {
       setExpandedEventId(null)
@@ -149,20 +303,28 @@ export function ActivityView({ onLoadPage, onLoadDetail, onUndo }: ActivityViewP
 
   return (
     <div className="activity-view" aria-label="Activity view">
-      <div className="activity-view-filters">
-        <label htmlFor="activity-entity-type-filter">Entity type</label>
-        <select
-          id="activity-entity-type-filter"
-          value={entityTypeFilter}
-          onChange={(event) => setEntityTypeFilter(event.target.value)}
-        >
-          <option value="all">All</option>
-          {entityTypes.map((entityType) => (
-            <option key={entityType} value={entityType}>
-              {entityType}
-            </option>
-          ))}
-        </select>
+      <div className="page-header">
+        <div className="page-header-text">
+          <h1 className="page-header-title">Activity</h1>
+          <p className="page-header-description">
+            Every mutation, append-only. Select an entry for its before/after states and undo.
+          </p>
+        </div>
+        <div className="page-header-actions">
+          <select
+            aria-label="Entity type"
+            className="wiki-chip-select"
+            value={entityTypeFilter}
+            onChange={(event) => setEntityTypeFilter(event.target.value)}
+          >
+            <option value="all">All types</option>
+            {entityTypes.map((entityType) => (
+              <option key={entityType} value={entityType}>
+                {entityType}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
       {loadError && (
@@ -176,114 +338,30 @@ export function ActivityView({ onLoadPage, onLoadDetail, onUndo }: ActivityViewP
         </p>
       )}
 
-      <div className="list-view">
-        {visibleEvents.map((event) => {
-          const isExpanded = expandedEventId === event.id
-          const isAlreadyReversed = reversedEventIds.has(event.id)
-          const isCompensating = event.reverses_event_id !== null
-          const rowUndoState = undoState[event.id] ?? { status: 'idle' }
-          const canUndo = event.is_undoable && !isAlreadyReversed && !isCompensating
-
-          return (
-            <div key={event.id} className="activity-row-group">
-              <button
-                type="button"
-                className="activity-row"
-                data-undoable={event.is_undoable}
-                onClick={() => toggleExpand(event.id)}
-              >
-                <span className="activity-row-actor">{event.actor_name}</span>
-                <span className="activity-row-action">{event.action}</span>
-                <span className="activity-row-entity">
-                  {event.entity_type} {event.entity_id}
-                </span>
-                <span className="activity-row-occurred-at">
-                  {new Date(event.occurred_at).toLocaleString()}
-                </span>
-                {isCompensating && <span className="activity-row-badge">undo</span>}
-                {isAlreadyReversed && <span className="activity-row-badge">reversed</span>}
-              </button>
-
-              {isExpanded && (
-                <div className="activity-row-detail">
-                  {event.reason && <p>Reason: {event.reason}</p>}
-                  {(() => {
-                    const detail = detailState[event.id]
-                    if (!detail || detail.status === 'loading') {
-                      return <p>Loading detail…</p>
-                    }
-                    if (detail.status === 'error') {
-                      return (
-                        <p className="view-error" role="alert">
-                          {detail.message}
-                        </p>
-                      )
-                    }
-                    return (
-                      <pre>
-                        {JSON.stringify(
-                          { before: detail.event.before_state, after: detail.event.after_state },
-                          null,
-                          2,
-                        )}
-                      </pre>
-                    )
-                  })()}
-
-                  {canUndo && rowUndoState.status === 'idle' && (
-                    <button type="button" onClick={() => beginUndo(event.id)}>
-                      Undo
-                    </button>
-                  )}
-                  {!event.is_undoable && !isCompensating && (
-                    <p className="activity-row-disabled-reason" data-reason={event.disabled_reason}>
-                      {disabledReasonLabel(event.disabled_reason)}
-                    </p>
-                  )}
-
-                  {rowUndoState.status === 'confirming' && (
-                    <div className="activity-undo-confirm">
-                      <label htmlFor={`undo-reason-${event.id}`}>Reason for undo</label>
-                      <input
-                        id={`undo-reason-${event.id}`}
-                        type="text"
-                        value={reasonDraft[event.id] ?? ''}
-                        onChange={(inputEvent) =>
-                          setReasonDraft((current) => ({
-                            ...current,
-                            [event.id]: inputEvent.target.value,
-                          }))
-                        }
-                      />
-                      <button
-                        type="button"
-                        onClick={() => confirmUndo(event.id)}
-                        disabled={!(reasonDraft[event.id] ?? '').trim()}
-                      >
-                        Confirm undo
-                      </button>
-                      <button type="button" onClick={() => cancelUndo(event.id)}>
-                        Cancel
-                      </button>
-                    </div>
-                  )}
-                  {rowUndoState.status === 'submitting' && <p role="status">Undoing…</p>}
-                  {rowUndoState.status === 'done' && <p role="status">Undone.</p>}
-                  {rowUndoState.status === 'error' && (
-                    <div>
-                      <p className="view-error" role="alert">
-                        {rowUndoState.message}
-                      </p>
-                      <button type="button" onClick={() => beginUndo(event.id)}>
-                        Retry
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )
-        })}
+      <div className="activity-feed">
+        {eventDayGroups.map((group) => (
+          <div key={group.day} className="activity-day">
+            <h3 className="activity-day-label">{group.label}</h3>
+            {group.events.map((event) => (
+              <ActivityRow
+                key={event.id}
+                event={event}
+                reversedEventIds={reversedEventIds}
+                expandedEventId={expandedEventId}
+                detailState={detailState}
+                undoState={undoState}
+                reasonDraft={reasonDraft}
+                onToggle={toggleExpand}
+                onBeginUndo={beginUndo}
+                onCancelUndo={cancelUndo}
+                onConfirmUndo={confirmUndo}
+                onReasonDraft={(id, value) =>
+                  setReasonDraft((current) => ({ ...current, [id]: value }))
+                }
+              />
+            ))}
+          </div>
+        ))}
       </div>
 
       {hasMore && (

@@ -1,12 +1,19 @@
 import { useMemo, useState } from 'react'
-import type { RepositoryLabel, Resource } from '../types'
+import type { UpdateResourcePatch } from '../api/client'
+import type { RepositoryLabel, Resource, ResourceLifecycleStatus } from '../types'
+import { EmptyState, Pill, type PillTone } from './ui'
+import { ResearchDetailPanel } from './ResearchDetailPanel'
 
 interface RepositoriesViewProps {
   resources: Resource[]
   selectedNodeId: string | null
   onSelectNode: (nodeId: string) => void
+  onClearSelection: () => void
   onSetLabel: (resourceId: string, label: RepositoryLabel) => void
+  onUpdateDetail: (patch: UpdateResourcePatch) => Promise<boolean>
   onCreateResource: (title: string, rawSource: string) => Promise<Resource>
+  /** Composed by App: the enrichment/evidence card for one resource. */
+  renderEnrichment?: (resource: Resource) => React.ReactNode
 }
 
 function CreateRepositoryForm({
@@ -22,7 +29,7 @@ function CreateRepositoryForm({
 
   if (!isOpen) {
     return (
-      <button type="button" className="wiki-new-page" onClick={() => setIsOpen(true)}>
+      <button type="button" className="primary-action" onClick={() => setIsOpen(true)}>
         + New repository
       </button>
     )
@@ -84,7 +91,7 @@ function CreateRepositoryForm({
 }
 
 const LABEL_FILTERS: { value: '' | RepositoryLabel; label: string }[] = [
-  { value: '', label: 'All repositories' },
+  { value: '', label: 'All' },
   { value: 'personal', label: 'Personal' },
   { value: 'apilex', label: 'Apilex' },
   { value: 'liked_external', label: 'Liked external' },
@@ -95,6 +102,22 @@ const LABEL_OPTIONS: { value: RepositoryLabel; label: string }[] = [
   { value: 'apilex', label: 'Apilex' },
   { value: 'liked_external', label: 'Liked external' },
 ]
+
+const LABEL_TONE: Record<RepositoryLabel, PillTone> = {
+  personal: 'violet',
+  apilex: 'brass',
+  liked_external: 'teal',
+}
+
+const LIFECYCLE_TONE: Record<ResourceLifecycleStatus, PillTone> = {
+  inbox: 'teal',
+  to_review: 'violet',
+  reading: 'brass',
+  paused: 'neutral',
+  reviewed: 'moss',
+  applied: 'moss',
+  archived: 'neutral',
+}
 
 function RepositoryRow({
   resource,
@@ -108,32 +131,55 @@ function RepositoryRow({
   onSetLabel: (resourceId: string, label: RepositoryLabel) => void
 }) {
   return (
-    <div className="node-row" aria-current={isSelected}>
-      <button type="button" className="node-row-title" onClick={() => onSelect(resource.node_id)}>
-        {resource.title}
-      </button>
-      <span className="node-row-meta">
-        {resource.source_url && (
-          <a href={resource.source_url} target="_blank" rel="noreferrer">
-            source
-          </a>
-        )}
-        <select
-          aria-label={`Ownership label for ${resource.title}`}
-          className="repository-label-select"
-          value={resource.repository_label ?? ''}
-          onChange={(event) => onSetLabel(resource.id, event.target.value as RepositoryLabel)}
-        >
-          <option value="" disabled>
-            Set label…
+    <div className={`research-row${isSelected ? ' research-row-selected' : ''}`}>
+      {/* Same structural invariant as research rows (S6-F02): the external link is a sibling
+          of the row-selecting title button, never nested inside it. */}
+      <div
+        role="presentation"
+        className="research-row-main"
+        onClick={() => onSelect(resource.node_id)}
+      >
+        <span className="research-row-titleline">
+          <button
+            type="button"
+            className="research-row-title"
+            onClick={(event) => {
+              event.stopPropagation()
+              onSelect(resource.node_id)
+            }}
+          >
+            {resource.title}
+          </button>
+          {resource.source_url && (
+            <a href={resource.source_url} target="_blank" rel="noreferrer" className="research-row-source">
+              github ↗
+            </a>
+          )}
+        </span>
+        <span className="research-row-meta">
+          {resource.repository_label ? (
+            <Pill tone={LABEL_TONE[resource.repository_label]}>{resource.repository_label}</Pill>
+          ) : (
+            <Pill tone="neutral">unlabeled</Pill>
+          )}
+          <Pill tone={LIFECYCLE_TONE[resource.lifecycle_status]}>{resource.lifecycle_status}</Pill>
+        </span>
+      </div>
+      <select
+        aria-label={`Ownership label for ${resource.title}`}
+        className="chip-select"
+        value={resource.repository_label ?? ''}
+        onChange={(event) => onSetLabel(resource.id, event.target.value as RepositoryLabel)}
+      >
+        <option value="" disabled>
+          Set label…
+        </option>
+        {LABEL_OPTIONS.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
           </option>
-          {LABEL_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </span>
+        ))}
+      </select>
     </div>
   )
 }
@@ -142,8 +188,11 @@ export function RepositoriesView({
   resources,
   selectedNodeId,
   onSelectNode,
+  onClearSelection,
   onSetLabel,
+  onUpdateDetail,
   onCreateResource,
+  renderEnrichment,
 }: RepositoriesViewProps) {
   const [labelFilter, setLabelFilter] = useState<'' | RepositoryLabel>('')
 
@@ -157,16 +206,73 @@ export function RepositoriesView({
     [repositories, labelFilter],
   )
 
+  const selectedRepository =
+    (selectedNodeId && repositories.find((candidate) => candidate.node_id === selectedNodeId)) ||
+    null
+
+  if (selectedRepository) {
+    return (
+      <div className="research-detail-page" aria-label="Repository detail">
+        <div className="tasks-detail-top">
+          <button type="button" className="back-link" onClick={onClearSelection}>
+            ← Back to shelf
+          </button>
+          {selectedRepository.repository_label && (
+            <Pill tone={LABEL_TONE[selectedRepository.repository_label]}>
+              {selectedRepository.repository_label}
+            </Pill>
+          )}
+          <Pill tone={LIFECYCLE_TONE[selectedRepository.lifecycle_status]}>
+            {selectedRepository.lifecycle_status}
+          </Pill>
+        </div>
+
+        <h1 className="research-detail-title">{selectedRepository.title}</h1>
+
+        <div className="wiki-editor-bar">
+          {selectedRepository.source_url && (
+            <a
+              href={selectedRepository.source_url}
+              target="_blank"
+              rel="noreferrer"
+              className="back-link"
+            >
+              Open on GitHub ↗
+            </a>
+          )}
+        </div>
+
+        <div className="research-detail-fields">
+          <ResearchDetailPanel resource={selectedRepository} onUpdate={onUpdateDetail} />
+        </div>
+
+        {renderEnrichment?.(selectedRepository)}
+      </div>
+    )
+  }
+
   return (
     <div className="repositories-view" aria-label="Repositories">
-      <CreateRepositoryForm onCreateResource={onCreateResource} />
+      <div className="page-header">
+        <div className="page-header-text">
+          <h1 className="page-header-title">Repository shelf</h1>
+          <p className="page-header-description">
+            GitHub repositories you are studying — labeled by how they matter to you.
+          </p>
+        </div>
+        <div className="page-header-actions">
+          <CreateRepositoryForm onCreateResource={onCreateResource} />
+        </div>
+      </div>
 
-      <div className="repositories-filter-bar">
+      <div className="research-tabs" role="group" aria-label="Filter by ownership label">
         {LABEL_FILTERS.map((option) => (
           <button
             key={option.value || 'all'}
             type="button"
-            className="node-row-label"
+            className={
+              labelFilter === option.value ? 'research-tab research-tab-active' : 'research-tab'
+            }
             aria-current={labelFilter === option.value}
             onClick={() => setLabelFilter(option.value)}
           >
@@ -174,8 +280,12 @@ export function RepositoriesView({
           </button>
         ))}
       </div>
+
       {filtered.length === 0 ? (
-        <p className="view-empty">No repositories match this filter.</p>
+        <EmptyState
+          title="No repositories here"
+          hint="Adjust the label filter, or add a repository with its GitHub URL."
+        />
       ) : (
         <div className="list-view">
           {filtered.map((resource) => (

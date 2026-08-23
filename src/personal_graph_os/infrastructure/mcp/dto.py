@@ -727,9 +727,18 @@ class ActivityEventSummaryDTO(BaseModel):
     is_undoable: bool
     occurred_at: datetime
     reverses_event_id: str | None
+    entity_title: str | None = None
 
     @classmethod
     def from_domain(cls, event: ActivityEvent) -> ActivityEventSummaryDTO:
+        entity_title: str | None = None
+        for state in (event.after_state, event.before_state):
+            if not isinstance(state, dict):
+                continue
+            candidate = state.get("title") or state.get("name")
+            if isinstance(candidate, str) and candidate.strip():
+                entity_title = candidate.strip()
+                break
         return cls(
             id=event.id,
             workspace_id=event.workspace_id,
@@ -743,6 +752,7 @@ class ActivityEventSummaryDTO(BaseModel):
             is_undoable=event.is_undoable,
             occurred_at=event.occurred_at,
             reverses_event_id=event.reverses_event_id,
+            entity_title=entity_title,
         )
 
 
