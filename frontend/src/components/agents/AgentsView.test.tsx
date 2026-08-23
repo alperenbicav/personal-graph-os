@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentsView } from './AgentsView'
 import type { Agent } from '../../types'
@@ -36,6 +36,42 @@ describe('AgentsView', () => {
     fireEvent.click(screen.getByRole('button', { name: /\+ create agent/i }))
     expect(screen.getByRole('dialog')).toBeInTheDocument()
     expect(screen.getByText('Create New Agent')).toBeInTheDocument()
+  })
+
+  it('validates required fields before submitting create agent', async () => {
+    const onCreate = vi.fn().mockResolvedValue(undefined)
+    render(
+      <AgentsView
+        agents={mockAgents}
+        onRefresh={vi.fn().mockResolvedValue(undefined)}
+        onCreateAgent={onCreate}
+        onUpdateAgent={vi.fn().mockResolvedValue(undefined)}
+        onDeleteAgent={vi.fn().mockResolvedValue(undefined)}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /\+ create agent/i }))
+
+    // Submit with empty name
+    const dialog = screen.getByRole('dialog')
+    const submitBtn = within(dialog).getByRole('button', { name: /^create agent$/i })
+    fireEvent.click(submitBtn)
+
+    expect(screen.getByText(/please provide an agent name/i)).toBeInTheDocument()
+    expect(onCreate).not.toHaveBeenCalled()
+
+    // Fill valid name and submit
+    const nameInput = screen.getByLabelText(/agent name/i)
+    fireEvent.change(nameInput, { target: { value: 'Planner-Pro' } })
+    fireEvent.click(submitBtn)
+
+    expect(onCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'Planner-Pro',
+        emoji: '🤖',
+        write_mode: 'proposal',
+      })
+    )
   })
 
   it('selects agent for chat playground', () => {

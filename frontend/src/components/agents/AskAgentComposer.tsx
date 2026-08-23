@@ -55,7 +55,13 @@ export function AskAgentComposer({
             ))}
           </select>
         )}
-        <span className="v2-kbd">⌘↵</span>
+        <span
+          className="v2-kbd"
+          title="Press ⌘+Enter or Enter to dispatch task"
+          aria-label="Keyboard shortcut: Command + Enter to send"
+        >
+          ⌘↵
+        </span>
       </div>
       <div className="v2-ask-row">
         <textarea
@@ -69,6 +75,9 @@ export function AskAgentComposer({
           disabled={isSubmitting}
           aria-label="Ask Agent Prompt"
         />
+      </div>
+      <div className="v2-ask-hint" aria-hidden="true">
+        <span>Press <kbd className="v2-inline-kbd">⌘↵</kbd> or <kbd className="v2-inline-kbd">↵</kbd> to dispatch</span>
       </div>
     </div>
   )

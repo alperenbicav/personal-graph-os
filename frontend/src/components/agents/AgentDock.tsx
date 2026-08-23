@@ -8,6 +8,8 @@ export interface AgentDockProps {
   onAskAgent: (agentId: string, prompt: string) => Promise<void>
   isAgentRunning?: boolean
   onOpenAgent?: (agentId: string) => void
+  lastError?: string | null
+  onClearError?: () => void
 }
 
 function timeAgo(isoDate: string): string {
@@ -31,6 +33,8 @@ export function AgentDock({
   onAskAgent,
   isAgentRunning = false,
   onOpenAgent,
+  lastError,
+  onClearError,
 }: AgentDockProps) {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
 
@@ -48,6 +52,8 @@ export function AgentDock({
   }
 
   const agentMap = new Map<string, Agent>(agents.map((a) => [a.id, a]))
+  const isLlmUnconfigured =
+    Boolean(lastError && (lastError.includes('LLM provider not configured') || lastError.includes('503')))
 
   return (
     <aside className="v2-dock" aria-label="Agent Stream & Dock">
@@ -58,9 +64,45 @@ export function AgentDock({
         </div>
 
         <div className="v2-dock-events">
-          {runs.length === 0 && (
-            <div style={{ color: 'var(--v2-t3)', fontSize: '12.5px', padding: '16px 0', textAlign: 'center' }}>
-              No recent agent events. Send a task below!
+          {lastError && (
+            <div className="v2-llm-error-card" role="alert">
+              <div className="v2-llm-error-header">
+                <span className="v2-llm-error-title">
+                  {isLlmUnconfigured ? '⚠️ LLM Provider Not Configured' : 'Agent Error'}
+                </span>
+                {onClearError && (
+                  <button
+                    type="button"
+                    className="v2-llm-error-dismiss"
+                    onClick={onClearError}
+                    aria-label="Dismiss error"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+              <p className="v2-llm-error-desc">
+                {isLlmUnconfigured
+                  ? 'Agent reasoning requires a configured LLM provider. Set these environment variables in your server environment:'
+                  : lastError}
+              </p>
+              {isLlmUnconfigured && (
+                <div className="v2-llm-error-code">
+                  <div><code>PGOS_LLM_PROVIDER=openai</code> <span className="v2-comment"># openai | anthropic | openrouter</span></div>
+                  <div><code>PGOS_LLM_API_KEY=your-api-key</code></div>
+                  <div><code>PGOS_LLM_MODEL=gpt-4o-mini</code> <span className="v2-comment"># optional model override</span></div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {runs.length === 0 && !lastError && (
+            <div className="v2-dock-empty-state">
+              <div className="v2-dock-empty-icon" aria-hidden="true">🤖</div>
+              <div className="v2-dock-empty-title">Agent Stream Idle</div>
+              <p className="v2-dock-empty-desc">
+                No recent agent events. Dispatch a task below to see live executions!
+              </p>
             </div>
           )}
 

@@ -28,6 +28,7 @@ server to another device.
 - [CLI reference](#cli-reference)
 - [REST API](#rest-api)
 - [MCP (AI agent) integration](#mcp-ai-agent-integration)
+- [Agentic Platform](#agentic-platform)
 - [Backup, export, and portability](#backup-export-and-portability)
 - [Remote access](#remote-access)
 - [Security model](#security-model)
@@ -370,6 +371,88 @@ off to an agent session):
 Every mutation is attributed and recorded in the same Activity log the UI shows — there is no
 separate, invisible "agent" write path. Point any MCP-compatible client at
 `http://127.0.0.1:8000/mcp` with header `Authorization: Bearer <token>` (from `pgos-token show`).
+
+## Agentic Platform
+
+Personal Graph OS provides an integrated autonomous agent engine that connects LLMs directly to your personal knowledge graph. You can create custom specialized agents, interact with them via the Mission-Control UI or Telegram, and run tasks with configurable read-only tool allowlists.
+
+### Architecture
+
+```mermaid
+graph TD
+    subgraph Interfaces ["User Interfaces"]
+        UI["React Mission Control (UI)"]
+        TG["Telegram Bot (/agents, @Agent)"]
+        MCPClient["External MCP Clients"]
+    end
+
+    subgraph AgentCore ["Personal Graph OS Agent Core"]
+        Router["/agents REST Router"]
+        TgService["Telegram Service"]
+        AgentSvc["Agent Service & Registry"]
+        Repo[("SQLite Agent Repository")]
+        ToolBridge["Tool Allowlist Bridge"]
+    end
+
+    subgraph Intelligence ["Multi-Provider LLM Adapter"]
+        OpenAI["OpenAI (gpt-4o, gpt-4o-mini)"]
+        Anthropic["Anthropic (Claude 3.5 Sonnet)"]
+        OpenRouter["OpenRouter (Universal API)"]
+    end
+
+    subgraph KnowledgeGraph ["Graph OS Engine"]
+        REST["REST Endpoints (/nodes, /resources, /search)"]
+        MCP["MCP Server Tools"]
+    end
+
+    UI --> Router
+    TG <--> TgService
+    MCPClient <--> MCP
+
+    Router --> AgentSvc
+    TgService --> AgentSvc
+    MCP --> AgentSvc
+
+    AgentSvc <--> Repo
+    AgentSvc --> Intelligence
+    AgentSvc --> ToolBridge
+    ToolBridge --> KnowledgeGraph
+```
+
+### Environment Variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PGOS_LLM_PROVIDER` | `openai` | LLM provider backend: `openai`, `anthropic`, or `openrouter`. |
+| `PGOS_LLM_API_KEY` | unset | API key for the chosen LLM provider. |
+| `PGOS_LLM_MODEL` | Provider default | Default model name (e.g. `gpt-4o-mini`, `claude-3-5-sonnet-20241022`). Individual agents can override this. |
+| `PGOS_LLM_BASE_URL` | Provider default | Custom API base URL override (e.g. for local proxies or alternative endpoints). |
+| `PGOS_TELEGRAM_BOT_TOKEN` | unset | Telegram Bot token for bidirectional chat. |
+| `PGOS_TELEGRAM_ALLOWED_USERS` | unset | Comma-separated allowlist of Telegram user IDs or usernames. |
+
+### Quickstart: Custom Agent & Telegram Chat
+
+#### 1. Creating a Custom Agent via the UI
+
+1. Open the app and click the **🤖 Agents** tab on the left rail.
+2. Click **+ Create Agent** to open the agent configuration modal.
+3. Configure your agent:
+   - **Name & Emoji**: e.g. `🔬 Synthesis-Agent`
+   - **System Prompt**: Specify instructions, persona, and research boundaries.
+   - **Write Mode**: Choose `Proposal (Review required)` or `Direct (Write directly)`.
+   - **Tool Allowlist**: Select permitted read-only capabilities (`search`, `list_nodes`, `read_node`, `list_resources`, `list_work_items`).
+   - **Model Override** (optional): e.g. `claude-3-5-sonnet` or `gpt-4o`.
+4. Click **Create Agent**. Your agent is immediately active in the fleet and available in the right-side **Agent Dock**.
+5. Test your agent directly using the interactive chat playground or the bottom dock composer (`⌘↵`).
+
+#### 2. Chatting via Telegram
+
+When `PGOS_TELEGRAM_BOT_TOKEN` is configured:
+
+- Send `/agents` to list all configured agents in your fleet.
+- Send `@AgentName <your message>` (e.g. `@Research-Agent summarize recent papers on graph neural networks`) to route directly to a specific agent.
+- Plain text messages without an `@` prefix automatically route to the default agent.
+- Every conversation run is logged into the `agent_runs` stream and visible in the UI dock.
 
 ## Backup, export, and portability
 

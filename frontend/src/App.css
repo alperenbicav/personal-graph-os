@@ -4295,8 +4295,11 @@ select.status-select {
   padding: 10px 12px;
   line-height: 1.5;
   border: 1px solid var(--v2-line);
-  max-height: 90px;
-  overflow-y: auto;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
 }
 
 .v2-agent-tools {
@@ -4461,6 +4464,151 @@ select.status-select {
   font-size: 12.5px;
   color: var(--v2-t2);
   cursor: pointer;
+}
+
+/* Agent Dock Empty & Error States */
+.v2-dock-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 24px 12px;
+  gap: 6px;
+}
+
+.v2-dock-empty-icon {
+  font-size: 24px;
+  margin-bottom: 2px;
+  opacity: 0.85;
+}
+
+.v2-dock-empty-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--v2-t1);
+}
+
+.v2-dock-empty-desc {
+  font-size: 12px;
+  color: var(--v2-t3);
+  line-height: 1.45;
+  margin: 0;
+}
+
+.v2-llm-error-card {
+  background: rgba(248, 113, 113, 0.09);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.v2-llm-error-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.v2-llm-error-title {
+  font-size: 12.5px;
+  font-weight: 650;
+  color: #fca5a5;
+}
+
+.v2-llm-error-dismiss {
+  background: transparent;
+  border: none;
+  color: #fca5a5;
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 11px;
+  border-radius: 4px;
+  opacity: 0.75;
+  transition: opacity 0.15s ease;
+}
+
+.v2-llm-error-dismiss:hover {
+  opacity: 1;
+  background: rgba(248, 113, 113, 0.2);
+}
+
+.v2-llm-error-desc {
+  font-size: 12px;
+  color: #f1f5f9;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.v2-llm-error-code {
+  background: rgba(10, 11, 15, 0.85);
+  border: 1px solid rgba(248, 113, 113, 0.25);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 4px;
+}
+
+.v2-llm-error-code code {
+  color: #93c5fd;
+}
+
+.v2-comment {
+  color: #94a3b8;
+  font-size: 10.5px;
+  margin-left: 4px;
+}
+
+/* Ask Agent Hint */
+.v2-ask-hint {
+  font-size: 11px;
+  color: var(--v2-t3);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-top: 2px;
+}
+
+.v2-inline-kbd {
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--v2-s2);
+  border: 1px solid var(--v2-line);
+  color: var(--v2-t2);
+  font-family: ui-monospace, monospace;
+  margin: 0 2px;
+}
+
+/* Form Validation Messages */
+.v2-field-error {
+  font-size: 11.5px;
+  color: #f87171;
+  font-weight: 500;
+  margin-top: 2px;
+}
+
+.v2-form-error-alert {
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: #fca5a5;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.v2-form-input.error,
+.v2-form-textarea.error {
+  border-color: #f87171;
 }
 
 

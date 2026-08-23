@@ -1095,6 +1095,8 @@ function App() {
               runs={agentRuns}
               onAskAgent={handleAskAgent}
               isAgentRunning={isAgentRunning}
+              lastError={actionError}
+              onClearError={() => setActionError(null)}
               onOpenAgent={(agentId) => {
                 setActiveView('agents')
                 setActiveChatAgentId(agentId)
