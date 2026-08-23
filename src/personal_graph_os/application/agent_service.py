@@ -61,7 +61,11 @@ class AgentService:
             model=model,
             write_mode=write_mode,
         )
-        self._repository.save_without_commit(agent)
+        if self._uow_factory is not None:
+            with self._uow_factory() as uow:
+                uow.agents.save_without_commit(agent)
+        else:
+            self._repository.save_without_commit(agent)
         return agent
 
     def update_agent(
@@ -99,12 +103,20 @@ class AgentService:
             )
 
         updated_agent = agent.model_copy(update=updates)
-        self._repository.save_without_commit(updated_agent)
+        if self._uow_factory is not None:
+            with self._uow_factory() as uow:
+                uow.agents.save_without_commit(updated_agent)
+        else:
+            self._repository.save_without_commit(updated_agent)
         return updated_agent
 
     def delete_agent(self, agent_id: AgentId) -> None:
         self.get_agent(agent_id)
-        self._repository.delete_without_commit(agent_id)
+        if self._uow_factory is not None:
+            with self._uow_factory() as uow:
+                uow.agents.delete_without_commit(agent_id)
+        else:
+            self._repository.delete_without_commit(agent_id)
 
     def record_run(
         self,
@@ -126,7 +138,11 @@ class AgentService:
             status=status,
             diff_json=diff_json,
         )
-        self._repository.record_run_without_commit(run)
+        if self._uow_factory is not None:
+            with self._uow_factory() as uow:
+                uow.agents.record_run_without_commit(run)
+        else:
+            self._repository.record_run_without_commit(run)
         return run
 
     def list_runs(self, agent_id: AgentId, limit: int = 50) -> list[AgentRun]:

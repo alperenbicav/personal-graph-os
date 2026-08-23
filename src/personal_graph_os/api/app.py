@@ -637,6 +637,7 @@ def create_app(
         default_workspace.id,
         _telegram_unit_of_work,
         agent_loop=agent_loop,
+        agent_service=app.state.agent_service,
         pdf_text_extractor=extract_pdf_text,
     )
     app.state.telegram_poller = (

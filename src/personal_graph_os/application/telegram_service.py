@@ -23,6 +23,7 @@ from collections.abc import Callable
 from enum import StrEnum
 
 from personal_graph_os.application.agent_adapters import GraphAgent
+from personal_graph_os.application.agent_service import AgentService
 from personal_graph_os.application.capture_planning_orchestrator import (
     CapturePlanningOrchestrator,
 )
@@ -37,6 +38,7 @@ from personal_graph_os.application.telegram_adapters import (
     TelegramUpdate,
 )
 from personal_graph_os.application.work_planning_service import WorkPlanOutcome
+from personal_graph_os.domain.agents import Agent
 from personal_graph_os.domain.capture import (
     CaptureEnvelope,
     CaptureIdempotencyConflictError,
@@ -86,6 +88,7 @@ class TelegramService:
         workspace_id: WorkspaceId,
         unit_of_work_factory: Callable[[], ResearchUnitOfWork],
         agent_loop: GraphAgent | None = None,
+        agent_service: AgentService | None = None,
         pdf_text_extractor: PdfTextExtractor | None = None,
     ) -> None:
         self._telegram_client = telegram_client
@@ -93,6 +96,7 @@ class TelegramService:
         self._workspace_id = workspace_id
         self._unit_of_work_factory = unit_of_work_factory
         self._agent_loop = agent_loop
+        self._agent_service = agent_service
         self._pdf_text_extractor = pdf_text_extractor
 
     def current_offset(self) -> int | None:
@@ -135,8 +139,25 @@ class TelegramService:
             self._advance_cursor(update.update_id)
             return TelegramUpdateOutcome.SKIPPED_NO_URL
 
+        trimmed = content.strip()
+        if trimmed == "/agents" or trimmed.startswith("/agents "):
+            return self._list_agents_reply(client, message.chat.id, update.update_id)
+
+        if self._agent_service is not None and self._agent_service.llm_provider is not None:
+            target_agent, query = self._resolve_agent_and_query(trimmed)
+            if target_agent is not None:
+                return self._answer_via_agent_service(
+                    client, message, target_agent, query, update.update_id
+                )
+
         parsed = parse_capture_text(content)
         if parsed.detected_url is None:
+            if self._agent_service is not None and self._agent_service.llm_provider is not None:
+                default_agent = self._get_default_agent()
+                if default_agent is not None:
+                    return self._answer_via_agent_service(
+                        client, message, default_agent, trimmed, update.update_id
+                    )
             if self._agent_loop is not None:
                 return self._answer_via_agent(client, message, content, update.update_id)
             # Ack first, then advance (S11-F03): a failed ack must leave the update pending so
@@ -150,6 +171,12 @@ class TelegramService:
             # A URL plus free-form intent (e.g. "save this and summarize it"): with an agent
             # configured the natural-language intent is handled by the agent (it can capture the
             # URL and answer); without one the bounded vocabulary clarification stays.
+            if self._agent_service is not None and self._agent_service.llm_provider is not None:
+                default_agent = self._get_default_agent()
+                if default_agent is not None:
+                    return self._answer_via_agent_service(
+                        client, message, default_agent, trimmed, update.update_id
+                    )
             if self._agent_loop is not None:
                 return self._answer_via_agent(client, message, content, update.update_id)
             client.send_message(
@@ -348,3 +375,70 @@ class TelegramService:
                     cursor_value=str(update_id).zfill(TELEGRAM_CURSOR_WIDTH),
                 )
             )
+
+    def _resolve_agent_and_query(self, text: str) -> tuple[Agent | None, str]:
+        if self._agent_service is None:
+            return None, text
+        agents = self._agent_service.list_agents()
+        if not agents:
+            return None, text
+        if text.startswith("@"):
+            parts = text[1:].split(maxsplit=1)
+            target_name = parts[0].lower().strip()
+            rest = parts[1].strip() if len(parts) > 1 else ""
+            for agent in agents:
+                if (
+                    agent.name.lower() == target_name
+                    or str(agent.id).lower() == target_name
+                    or agent.name.lower().replace("-", "") == target_name.replace("-", "")
+                ):
+                    return agent, rest or text
+        return None, text
+
+    def _get_default_agent(self) -> Agent | None:
+        if self._agent_service is None:
+            return None
+        agents = self._agent_service.list_agents()
+        if not agents:
+            return None
+        for a in agents:
+            if "research" in a.name.lower():
+                return a
+        return agents[0]
+
+    def _answer_via_agent_service(
+        self,
+        client: TelegramClient,
+        message: TelegramMessage,
+        agent: Agent,
+        query: str,
+        update_id: int,
+    ) -> TelegramUpdateOutcome:
+        assert self._agent_service is not None
+        reply = self._agent_service.complete_message_sync(agent, query)
+        self._agent_service.record_run(
+            agent_id=agent.id,
+            action="message",
+            summary=reply[:200] if reply else query[:200],
+        )
+        response_text = f"{agent.emoji} {agent.name}:\n{reply}"
+        client.send_message(message.chat.id, response_text)
+        self._advance_cursor(update_id)
+        return TelegramUpdateOutcome.AGENT_ANSWERED
+
+    def _list_agents_reply(
+        self, client: TelegramClient, chat_id: int, update_id: int
+    ) -> TelegramUpdateOutcome:
+        if self._agent_service is not None:
+            agents = self._agent_service.list_agents()
+        else:
+            agents = []
+        if not agents:
+            client.send_message(chat_id, "No agents configured.")
+        else:
+            lines = ["🤖 Available Agents:"]
+            for a in agents:
+                lines.append(f"{a.emoji} {a.name} (@{a.name})\n{a.system_prompt[:90]}...")
+            client.send_message(chat_id, "\n\n".join(lines))
+        self._advance_cursor(update_id)
+        return TelegramUpdateOutcome.AGENT_ANSWERED
