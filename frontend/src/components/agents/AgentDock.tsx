@@ -9,6 +9,8 @@ export interface AgentDockProps {
   isAgentRunning?: boolean
   isLlmConfigured?: boolean
   onOpenAgent?: (agentId: string) => void
+  onApproveRun?: (runId: string) => Promise<void>
+  onRejectRun?: (runId: string) => Promise<void>
   lastError?: string | null
   onClearError?: () => void
 }
@@ -35,6 +37,8 @@ export function AgentDock({
   isAgentRunning = false,
   isLlmConfigured = true,
   onOpenAgent,
+  onApproveRun,
+  onRejectRun,
   lastError,
   onClearError,
 }: AgentDockProps) {
@@ -131,17 +135,58 @@ export function AgentDock({
                   </div>
                   <div className="v2-when">
                     {timeAgo(run.created_at)} · {run.action}
+                    {run.status === 'pending_review' && (
+                      <span
+                        style={{
+                          marginLeft: '6px',
+                          fontSize: '11px',
+                          padding: '1px 6px',
+                          borderRadius: '4px',
+                          background: 'rgba(234, 179, 8, 0.15)',
+                          color: '#eab308',
+                          fontWeight: 500,
+                        }}
+                      >
+                        Onay Bekliyor
+                      </span>
+                    )}
                   </div>
-                  {onOpenAgent && agent && (
-                    <div className="v2-acts">
+                  {run.status === 'pending_review' ? (
+                    <div className="v2-acts" style={{ marginTop: '6px', display: 'flex', gap: '6px' }}>
                       <button
                         type="button"
                         className="v2-chipbtn prime"
-                        onClick={() => onOpenAgent(agent.id)}
+                        onClick={() => onApproveRun && onApproveRun(run.id)}
+                        style={{
+                          background: 'var(--v2-ac)',
+                          color: 'var(--v2-bg)',
+                          borderColor: 'transparent',
+                          fontWeight: 600,
+                        }}
                       >
-                        Chat
+                        Kabul et
+                      </button>
+                      <button
+                        type="button"
+                        className="v2-chipbtn"
+                        onClick={() => onRejectRun && onRejectRun(run.id)}
+                        style={{ color: 'var(--v2-tx2)' }}
+                      >
+                        Reddet
                       </button>
                     </div>
+                  ) : (
+                    onOpenAgent && agent && (
+                      <div className="v2-acts">
+                        <button
+                          type="button"
+                          className="v2-chipbtn prime"
+                          onClick={() => onOpenAgent(agent.id)}
+                        >
+                          Chat
+                        </button>
+                      </div>
+                    )
                   )}
                 </div>
               </div>

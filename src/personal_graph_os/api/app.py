@@ -119,6 +119,7 @@ from personal_graph_os.application.services import (
 )
 from personal_graph_os.application.telegram_poller import TelegramPoller
 from personal_graph_os.application.telegram_service import TelegramService
+from personal_graph_os.application.tool_bridge import ToolBridge
 from personal_graph_os.application.undo_service import UndoConflictError, UndoService
 from personal_graph_os.application.work_item_service import (
     WorkItemChecklistItemNotFoundError,
@@ -541,11 +542,24 @@ def create_app(
         context_pack_repository,
     )
     llm_provider = build_llm_provider_from_env(os.environ, transport=llm_provider_transport)
+    tool_bridge = ToolBridge(
+        work_item_service=app.state.work_item_service,
+        document_service=app.state.document_service,
+        resource_service=app.state.resource_service,
+        node_service=app.state.node_service,
+        edge_service=app.state.edge_service,
+        activity_service=app.state.activity_service,
+        agent_repository=agent_repository,
+        uow_factory=lambda: SqliteResearchUnitOfWork(connection),
+    )
     app.state.agent_service = AgentService(
         agent_repository,
         llm_provider,
-        lambda: SqliteResearchUnitOfWork(connection),
+        tool_bridge=tool_bridge,
+        workspace_id=default_workspace.id,
+        uow_factory=lambda: SqliteResearchUnitOfWork(connection),
     )
+    app.state.tool_bridge = tool_bridge
     app.state.default_workspace_id = default_workspace.id
     app.state.default_canvas_id = default_canvas.id
     app.state.db_lock = anyio.Lock()

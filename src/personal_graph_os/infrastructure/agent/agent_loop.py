@@ -33,7 +33,15 @@ from personal_graph_os.application.agent_adapters import (
     AgentTool,
     AgentToolCall,
 )
-from personal_graph_os.domain.identifiers import NodeId, WorkspaceId
+from personal_graph_os.application.tool_bridge import WORKSPACE_TOOLS
+from personal_graph_os.domain.documents import DocumentKind
+from personal_graph_os.domain.identifiers import (
+    DocumentId,
+    EdgeTypeId,
+    NodeId,
+    WorkItemId,
+    WorkspaceId,
+)
 from personal_graph_os.domain.work_items import WorkItemKind, WorkItemStatus, WorkItemType
 from personal_graph_os.infrastructure.mcp.gateway import AgentGatewayService
 
@@ -153,7 +161,7 @@ BOT_TOOLS: tuple[AgentTool, ...] = (
     _list_work_items_tool(),
     _create_work_item_tool(),
     _capture_url_tool(),
-)
+) + WORKSPACE_TOOLS
 
 _TOOL_BY_NAME = {tool.name: tool for tool in BOT_TOOLS}
 
@@ -231,9 +239,6 @@ class AgentLoopService:
         for _ in range(self._max_iterations):
             turn = self._provider.complete(input_items=input_items, tools=BOT_TOOLS)
             if turn.tool_calls:
-                # The Responses API requires the model's prior output items (its `reasoning`
-                # traces and each `function_call`) to be re-sent verbatim, followed by one
-                # `function_call_output` per executed call.
                 input_items.extend(turn.output_items)
                 for call in turn.tool_calls:
                     result = self._execute(call, actor_name=actor_name, request_id=request_id)
@@ -261,7 +266,7 @@ class AgentLoopService:
         if handler is None:
             return f"error: unknown tool {call.name!r}"
         try:
-            if call.name == "search_graph":
+            if call.name in ("search_graph", "search"):
                 result = self._gateway.search(
                     self._workspace_id,
                     str(call.arguments.get("query", "")),
@@ -269,27 +274,87 @@ class AgentLoopService:
                 )
             elif call.name == "get_workspace":
                 result = self._gateway.get_workspace(self._workspace_id)
-            elif call.name == "get_node":
-                result = self._gateway.get_node(NodeId(str(call.arguments.get("node_id", ""))))
-            elif call.name == "list_work_items":
+            elif call.name in ("get_node", "graph.list_nodes"):
+                if "node_id" in call.arguments:
+                    result = self._gateway.get_node(NodeId(str(call.arguments.get("node_id", ""))))
+                else:
+                    result = self._gateway.list_nodes(self._workspace_id)
+            elif call.name in ("list_work_items", "tasks.list_tasks"):
                 result = self._gateway.list_work_items(self._workspace_id)
-            elif call.name == "create_work_item":
+            elif call.name in ("create_work_item", "tasks.create"):
                 result = self._gateway.create_work_item(
                     self._workspace_id,
                     kind=WorkItemKind(_str_arg(call.arguments, "kind", "task")),
                     work_type=WorkItemType(_str_arg(call.arguments, "work_type", "feature")),
                     title=_str_arg(call.arguments, "title", ""),
-                    body=_str_arg(call.arguments, "description", ""),
-                    status=WorkItemStatus.BACKLOG,
+                    body=(
+                        _str_arg(call.arguments, "description", "")
+                        or _str_arg(call.arguments, "body", "")
+                    ),
+                    status=WorkItemStatus(_str_arg(call.arguments, "status", "backlog")),
                     parent_id=None,
                     repository_node_id=None,
                     actor_name=actor_name,
                     reason=f"telegram agent request {request_id}",
                     request_id=f"tg-{request_id}",
                 )
+            elif call.name == "tasks.get":
+                task_id = str(call.arguments.get("task_id", ""))
+                result = self._gateway.get_work_item(WorkItemId(task_id))
+            elif call.name == "tasks.set_status":
+                task_id = str(call.arguments.get("task_id", ""))
+                status_str = str(call.arguments.get("status", "backlog"))
+                result = self._gateway.update_work_item(
+                    WorkItemId(task_id),
+                    work_type=None,
+                    status=WorkItemStatus(status_str),
+                    priority=None,
+                    due_date=None,
+                    assignee=None,
+                    blockers=None,
+                    progress_percent=None,
+                    repository_node_id=None,
+                    clear_priority=False,
+                    clear_due_date=False,
+                    clear_assignee=False,
+                    clear_blockers=False,
+                    clear_progress_percent=False,
+                    clear_repository_node_id=False,
+                    actor_name=actor_name,
+                    reason=f"telegram agent request {request_id}",
+                    request_id=f"tg-{request_id}",
+                )
+            elif call.name == "tasks.delete":
+                task_id = str(call.arguments.get("task_id", ""))
+                result = self._gateway.archive_work_item(
+                    WorkItemId(task_id),
+                    actor_name=actor_name,
+                    reason=f"telegram agent request {request_id}",
+                    request_id=f"tg-{request_id}",
+                )
+            elif call.name == "wiki.list":
+                result = self._gateway.list_documents(self._workspace_id)
+            elif call.name == "wiki.read":
+                doc_id = str(call.arguments.get("document_id", ""))
+                result = self._gateway.get_document(DocumentId(doc_id))
+            elif call.name == "wiki.create":
+                result = self._gateway.upsert_document(
+                    self._workspace_id,
+                    title=_str_arg(call.arguments, "title", ""),
+                    body_markdown=_str_arg(call.arguments, "body", ""),
+                    kind=DocumentKind(_str_arg(call.arguments, "kind", "note")),
+                    document_id=None,
+                    collection_id=None,
+                    tag_names=(),
+                    actor_name=actor_name,
+                    reason=f"telegram agent request {request_id}",
+                    request_id=f"tg-{request_id}",
+                )
             elif call.name == "capture_url":
                 summarize = call.arguments.get("summarize", True)
-                operations = ("summarize", "extract_key_findings") if summarize is not False else ()
+                operations = (
+                    ("summarize", "extract_key_findings") if summarize is not False else ()
+                )
                 result = self._gateway.capture(
                     self._workspace_id,
                     source="telegram",
@@ -304,8 +369,22 @@ class AgentLoopService:
                     reason=f"telegram agent request {request_id}",
                     operations=operations,
                 )
-            else:  # pragma: no cover - guarded by handler lookup above
+            elif call.name == "research.list_papers":
+                result = self._gateway.list_resources(self._workspace_id)
+            elif call.name == "graph.connect":
+                result = self._gateway.connect_nodes(
+                    self._workspace_id,
+                    edge_type_id=EdgeTypeId(str(call.arguments.get("edge_type", "relates_to"))),
+                    source_node_id=NodeId(str(call.arguments.get("source_node_id", ""))),
+                    target_node_id=NodeId(str(call.arguments.get("target_node_id", ""))),
+                    actor_name=actor_name,
+                    reason=f"telegram agent request {request_id}",
+                    request_id=f"tg-{request_id}",
+                )
+            elif call.name == "activity.recent":
+                result = self._gateway.list_activity_events(self._workspace_id)
+            else:
                 result = f"error: unhandled tool {call.name!r}"
-        except Exception as error:  # noqa: BLE001 - fed back to the model for recovery
+        except Exception as error:  # noqa: BLE001
             return _bounded(f"tool error: {type(error).__name__}: {error}", _MAX_TOOL_RESULT_CHARS)
         return _bounded(_serialize(result), _MAX_TOOL_RESULT_CHARS)

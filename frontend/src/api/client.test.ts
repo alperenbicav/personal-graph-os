@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, deleteResource, getWorkspace } from './client'
+import { ApiError, deleteResource, getWorkspace, messageAgent } from './client'
 import { clearSession, commitToken, getToken, onSessionUnauthorized } from './session'
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -73,5 +73,78 @@ describe('deleteResource()', () => {
     expect(String(url)).toContain('/resources/res-123/hard')
     expect(String(url)).toContain('confirm_id=res-123')
     expect(init?.method).toBe('DELETE')
+  })
+})
+
+describe('messageAgent()', () => {
+  function sseResponse(events: string[]): Response {
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream({
+      start(controller) {
+        for (const event of events) {
+          controller.enqueue(encoder.encode(event))
+        }
+        controller.close()
+      },
+    })
+    return new Response(stream, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+  }
+
+  it('consumes SSE stream, accumulates text deltas and extracts run_id', async () => {
+    const deltas: string[] = []
+    const sseChunks = [
+      'data: {"text": "Hello "}\n\n',
+      'data: {"text": "world!"}\n\n',
+      'data: {"run_id": "run-123", "done": true}\n\n',
+      'data: [DONE]\n\n',
+    ]
+
+    vi.mocked(fetch).mockResolvedValueOnce(sseResponse(sseChunks))
+
+    const result = await messageAgent('agent-1', 'Hi', undefined, (delta) => {
+      deltas.push(delta)
+    })
+
+    expect(result).toEqual({
+      agent_id: 'agent-1',
+      run_id: 'run-123',
+      reply: 'Hello world!',
+      status: 'applied',
+    })
+    expect(deltas).toEqual(['Hello ', 'world!'])
+  })
+
+  it('falls back to JSON parsing when content-type is application/json', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(200, {
+        reply: 'Static JSON reply',
+        run_id: 'run-json-456',
+        status: 'applied',
+      }),
+    )
+
+    const result = await messageAgent('agent-2', 'Question')
+
+    expect(result).toEqual({
+      agent_id: 'agent-2',
+      run_id: 'run-json-456',
+      reply: 'Static JSON reply',
+      status: 'applied',
+    })
+  })
+
+  it('throws ApiError when stream yields an error event', async () => {
+    const sseChunks = [
+      'data: {"error": "LLM context length exceeded"}\n\n',
+    ]
+
+    vi.mocked(fetch).mockResolvedValueOnce(sseResponse(sseChunks))
+
+    await expect(messageAgent('agent-3', 'Long prompt')).rejects.toThrow(
+      'LLM context length exceeded',
+    )
   })
 })

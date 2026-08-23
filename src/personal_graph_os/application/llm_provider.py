@@ -7,7 +7,8 @@ live in .
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Protocol
+from dataclasses import dataclass, field
+from typing import Any, Protocol
 
 
 class LlmProviderError(Exception):
@@ -22,8 +23,25 @@ class LlmProviderRequestError(LlmProviderError):
     """Raised when an HTTP or upstream provider API call fails."""
 
 
+@dataclass(frozen=True)
+class LlmToolCall:
+    """Represents a tool call emitted by an LLM."""
+
+    id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class LlmResponse:
+    """Represents one model completion turn, containing text and/or tool calls."""
+
+    content: str | None
+    tool_calls: list[LlmToolCall] = field(default_factory=list)
+
+
 class LlmProvider(Protocol):
-    """Protocol for LLM completions and streaming responses."""
+    """Protocol for LLM completions, tool-calling turns, and streaming responses."""
 
     async def complete(
         self,
@@ -43,4 +61,14 @@ class LlmProvider(Protocol):
         model: str | None = None,
     ) -> AsyncIterator[str]:
         """Stream incremental assistant text chunks."""
+        ...
+
+    async def chat_turn(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+    ) -> LlmResponse:
+        """Run a single conversational turn with optional OpenAI-style tools."""
         ...

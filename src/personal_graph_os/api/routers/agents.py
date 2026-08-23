@@ -20,7 +20,7 @@ from personal_graph_os.api.schemas import (
 )
 from personal_graph_os.application.agent_service import AgentService
 from personal_graph_os.application.llm_provider import LlmNotConfiguredError
-from personal_graph_os.domain.identifiers import AgentId
+from personal_graph_os.domain.identifiers import AgentId, AgentRunId
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -51,6 +51,33 @@ def get_agents_status(
         available_agents_count=len(all_agents),
         unconfigured_reason=unconfigured_reason,
     )
+
+
+@router.get("/runs", response_model=list[AgentRunResponse])
+def list_all_agent_runs(
+    limit: int = Query(default=50, ge=1, le=200),
+    agents: AgentService = Depends(get_agent_service),
+) -> list[AgentRunResponse]:
+    runs = agents.list_recent_runs(limit=limit)
+    return [AgentRunResponse.from_domain(run) for run in runs]
+
+
+@router.post("/runs/{run_id}/approve", response_model=AgentRunResponse)
+def approve_agent_run(
+    run_id: str,
+    agents: AgentService = Depends(get_agent_service),
+) -> AgentRunResponse:
+    run = agents.approve_run(AgentRunId(run_id))
+    return AgentRunResponse.from_domain(run)
+
+
+@router.post("/runs/{run_id}/reject", response_model=AgentRunResponse)
+def reject_agent_run(
+    run_id: str,
+    agents: AgentService = Depends(get_agent_service),
+) -> AgentRunResponse:
+    run = agents.reject_run(AgentRunId(run_id))
+    return AgentRunResponse.from_domain(run)
 
 
 @router.post("", response_model=AgentResponse, status_code=201)

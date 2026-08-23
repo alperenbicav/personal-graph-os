@@ -9,11 +9,22 @@ export interface AgentFormModalProps {
 }
 
 const AVAILABLE_TOOLS = [
-  { id: 'search', label: 'Semantic & Fulltext Search (search)' },
-  { id: 'list_nodes', label: 'Query Graph Nodes (list_nodes)' },
-  { id: 'read_node', label: 'Inspect Node Detail (read_node)' },
-  { id: 'list_resources', label: 'List Resources & Papers (list_resources)' },
-  { id: 'list_work_items', label: 'List Work Items & Tasks (list_work_items)' },
+  { id: 'tasks.list_tasks', label: 'List Tasks (tasks.list_tasks)' },
+  { id: 'tasks.get', label: 'Get Task Details (tasks.get)' },
+  { id: 'tasks.create', label: 'Create Task (tasks.create)' },
+  { id: 'tasks.set_status', label: 'Set Task Status (tasks.set_status)' },
+  { id: 'tasks.update_fields', label: 'Update Task Fields (tasks.update_fields)' },
+  { id: 'tasks.delete', label: 'Delete Task (tasks.delete)' },
+  { id: 'wiki.list', label: 'List Wiki Pages (wiki.list)' },
+  { id: 'wiki.read', label: 'Read Wiki Page (wiki.read)' },
+  { id: 'wiki.create', label: 'Create Wiki Page (wiki.create)' },
+  { id: 'wiki.edit_body', label: 'Edit Wiki Body (wiki.edit_body)' },
+  { id: 'wiki.add_tag', label: 'Add Tag to Wiki (wiki.add_tag)' },
+  { id: 'research.list_papers', label: 'List Research Papers (research.list_papers)' },
+  { id: 'research.add_takeaway', label: 'Add Key Takeaway (research.add_takeaway)' },
+  { id: 'graph.list_nodes', label: 'Query Graph Nodes (graph.list_nodes)' },
+  { id: 'graph.connect', label: 'Connect Graph Nodes (graph.connect)' },
+  { id: 'activity.recent', label: 'Recent Workspace Activity (activity.recent)' },
 ]
 
 export function AgentFormModal({

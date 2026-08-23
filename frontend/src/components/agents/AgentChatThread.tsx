@@ -55,15 +55,42 @@ export function AgentChatThread({
     setIsSending(true)
     setError(null)
 
+    const assistantId = `assistant-${Date.now()}`
+    let streamedContent = ''
     try {
-      const res = await api.messageAgent(agent.id, trimmed)
-      const assistantMsg: ChatMessage = {
-        id: `assistant-${Date.now()}`,
-        role: 'assistant',
-        content: res.reply,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      }
-      setMessages((prev) => [...prev, assistantMsg])
+      const res = await api.messageAgent(agent.id, trimmed, undefined, (delta) => {
+        streamedContent += delta
+        setMessages((prev) => {
+          const last = prev[prev.length - 1]
+          if (last && last.id === assistantId) {
+            return [...prev.slice(0, -1), { ...last, content: streamedContent }]
+          }
+          return [
+            ...prev,
+            {
+              id: assistantId,
+              role: 'assistant',
+              content: streamedContent,
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            },
+          ]
+        })
+      })
+      setMessages((prev) => {
+        const last = prev[prev.length - 1]
+        if (last && last.id === assistantId) {
+          return [...prev.slice(0, -1), { ...last, content: res.reply || streamedContent }]
+        }
+        return [
+          ...prev,
+          {
+            id: assistantId,
+            role: 'assistant',
+            content: res.reply,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          },
+        ]
+      })
       onMessageSent?.()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
