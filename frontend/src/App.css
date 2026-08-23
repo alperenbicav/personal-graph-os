@@ -2134,12 +2134,13 @@ select.status-select {
 .empty-state-action button,
 .btn-primary {
   appearance: none;
-  background: var(--brass);
+  background: var(--brass-ink);
   color: #14171d;
-  font-weight: 600;
+  font-weight: 700;
+  font-size: var(--text-md);
   border: 1px solid var(--brass);
   border-radius: var(--r-md);
-  padding: 6px 14px;
+  padding: 7px 16px;
   cursor: pointer;
 }
 
