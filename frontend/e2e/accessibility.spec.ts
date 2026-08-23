@@ -166,6 +166,7 @@ test.describe('ST-09.2 accessibility acceptance (real server, real build)', () =
     await searchPalette.getByLabel(/command palette search/i).fill(firstTitle.split(' ')[0])
     await assertNoSeriousOrCriticalViolations(page, 'command palette search')
     await page.keyboard.press('Escape')
+    await expect(searchPalette).toBeHidden()
 
     await navigateTo(page, 'Research')
     await assertNoSeriousOrCriticalViolations(page, 'research view')
