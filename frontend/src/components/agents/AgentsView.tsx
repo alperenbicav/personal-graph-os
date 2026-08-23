@@ -11,6 +11,9 @@ export interface AgentsViewProps {
   onDeleteAgent: (id: string) => Promise<void>
   activeChatAgentId?: string | null
   onSelectChatAgent?: (id: string | null) => void
+  isLlmConfigured?: boolean
+  llmProvider?: string
+  unconfiguredReason?: string | null
 }
 
 export function AgentsView({
@@ -21,6 +24,9 @@ export function AgentsView({
   onDeleteAgent,
   activeChatAgentId: controlledChatAgentId,
   onSelectChatAgent,
+  isLlmConfigured = true,
+  llmProvider = 'openai',
+  unconfiguredReason,
 }: AgentsViewProps) {
   const [internalChatAgentId, setInternalChatAgentId] = useState<string | null>(null)
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
@@ -77,6 +83,24 @@ export function AgentsView({
         </button>
       </div>
 
+      {isLlmConfigured ? (
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--v2-t3)', marginBottom: 14 }}>
+          <span className="v2-pulse" />
+          <span>Active Provider: <code style={{ color: 'var(--v2-t1)' }}>{llmProvider}</code></span>
+        </div>
+      ) : (
+        <div className="v2-agents-status-banner unconfigured" role="status">
+          <span style={{ fontSize: 24 }}>⚠️</span>
+          <div className="v2-status-text">
+            <strong>LLM yapilandirilmadi (PGOS_LLM_* env)</strong>
+            <span>
+              {unconfiguredReason ||
+                'Server has no PGOS_LLM_API_KEY set. Configure PGOS_LLM_API_KEY (or PGOS_LLM_PROVIDER) to enable live agent runs.'}
+            </span>
+          </div>
+        </div>
+      )}
+
       {actionError && (
         <div style={{ color: 'var(--v2-rd)', background: 'rgba(255,107,122,0.1)', padding: '10px 14px', borderRadius: '8px' }} role="alert">
           {actionError}
@@ -105,6 +129,7 @@ export function AgentsView({
             agent={activeChatAgent}
             onClose={() => setActiveChatId(null)}
             onMessageSent={onRefresh}
+            isLlmConfigured={isLlmConfigured}
           />
         </div>
       ) : (

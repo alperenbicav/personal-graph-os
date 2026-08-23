@@ -31,6 +31,12 @@ export function AgentFormModal({
   const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const [nameTouched, setNameTouched] = useState(false)
+  const [promptTouched, setPromptTouched] = useState(false)
+
+  const nameError = (nameTouched || error) && !name.trim() ? 'Agent name is required' : null
+  const promptError = (promptTouched || error) && !systemPrompt.trim() ? 'System prompt is required' : null
+
   useEffect(() => {
     if (agent) {
       setName(agent.name)
@@ -48,7 +54,21 @@ export function AgentFormModal({
       setSelectedTools(['search', 'list_nodes', 'read_node'])
     }
     setError(null)
+    setNameTouched(false)
+    setPromptTouched(false)
   }, [agent, isOpen])
+
+  useEffect(() => {
+    if (!isOpen) return
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        onClose()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [isOpen, onClose])
 
   if (!isOpen) return null
 
@@ -60,14 +80,17 @@ export function AgentFormModal({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    setNameTouched(true)
+    setPromptTouched(true)
+
     const trimmedName = name.trim()
     const trimmedPrompt = systemPrompt.trim()
     if (!trimmedName) {
-      setError('Agent name is required')
+      setError('Please provide an agent name.')
       return
     }
     if (!trimmedPrompt) {
-      setError('System prompt is required')
+      setError('Please provide a system prompt.')
       return
     }
 
@@ -91,12 +114,12 @@ export function AgentFormModal({
   }
 
   return (
-    <div className="v2-modal-overlay" onClick={onClose} role="dialog" aria-modal="true">
+    <div className="v2-modal-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="agent-form-title">
       <div className="v2-modal-card" onClick={(e) => e.stopPropagation()}>
-        <h3 className="v2-modal-title">{agent ? 'Edit Agent' : 'Create New Agent'}</h3>
+        <h3 id="agent-form-title" className="v2-modal-title">{agent ? 'Edit Agent' : 'Create New Agent'}</h3>
 
         {error && (
-          <div style={{ color: 'var(--v2-rd)', fontSize: '13px' }} role="alert">
+          <div className="v2-form-error-alert" role="alert">
             {error}
           </div>
         )}
@@ -104,8 +127,9 @@ export function AgentFormModal({
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
           <div style={{ display: 'flex', gap: '12px' }}>
             <div className="v2-form-group" style={{ width: '80px' }}>
-              <label className="v2-form-label">Emoji</label>
+              <label className="v2-form-label" htmlFor="agent-emoji-input">Emoji</label>
               <input
+                id="agent-emoji-input"
                 className="v2-form-input"
                 value={emoji}
                 onChange={(e) => setEmoji(e.target.value)}
@@ -114,29 +138,51 @@ export function AgentFormModal({
               />
             </div>
             <div className="v2-form-group" style={{ flex: 1 }}>
-              <label className="v2-form-label">Name</label>
+              <label className="v2-form-label" htmlFor="agent-name-input">Name</label>
               <input
-                className="v2-form-input"
+                id="agent-name-input"
+                className={`v2-form-input ${nameError ? 'error' : ''}`}
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => {
+                  setName(e.target.value)
+                  if (!nameTouched) setNameTouched(true)
+                }}
+                onBlur={() => setNameTouched(true)}
                 placeholder="e.g. Synthesis-Agent"
-                required
+                aria-invalid={Boolean(nameError)}
+                aria-describedby={nameError ? 'agent-name-error' : undefined}
                 aria-label="Agent Name"
               />
+              {nameError && (
+                <span id="agent-name-error" className="v2-field-error" role="alert">
+                  {nameError}
+                </span>
+              )}
             </div>
           </div>
 
           <div className="v2-form-group">
-            <label className="v2-form-label">System Prompt / Instructions</label>
+            <label className="v2-form-label" htmlFor="agent-prompt-input">System Prompt / Instructions</label>
             <textarea
-              className="v2-form-textarea"
+              id="agent-prompt-input"
+              className={`v2-form-textarea ${promptError ? 'error' : ''}`}
               value={systemPrompt}
-              onChange={(e) => setSystemPrompt(e.target.value)}
+              onChange={(e) => {
+                setSystemPrompt(e.target.value)
+                if (!promptTouched) setPromptTouched(true)
+              }}
+              onBlur={() => setPromptTouched(true)}
               placeholder="Define the agent role, capabilities, boundaries, and persona..."
-              required
               rows={4}
+              aria-invalid={Boolean(promptError)}
+              aria-describedby={promptError ? 'agent-prompt-error' : undefined}
               aria-label="Agent System Prompt"
             />
+            {promptError && (
+              <span id="agent-prompt-error" className="v2-field-error" role="alert">
+                {promptError}
+              </span>
+            )}
           </div>
 
           <div style={{ display: 'flex', gap: '12px' }}>

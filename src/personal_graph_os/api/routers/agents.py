@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, Query, Request, Response
@@ -13,6 +14,7 @@ from personal_graph_os.api.schemas import (
     AgentMessageRequest,
     AgentResponse,
     AgentRunResponse,
+    AgentSystemStatusResponse,
     CreateAgentRequest,
     UpdateAgentRequest,
 )
@@ -26,6 +28,29 @@ router = APIRouter(prefix="/agents", tags=["agents"])
 @router.get("", response_model=list[AgentResponse])
 def list_agents(agents: AgentService = Depends(get_agent_service)) -> list[AgentResponse]:
     return [AgentResponse.from_domain(agent) for agent in agents.list_agents()]
+
+
+@router.get("/status", response_model=AgentSystemStatusResponse)
+def get_agents_status(
+    agents: AgentService = Depends(get_agent_service),
+) -> AgentSystemStatusResponse:
+    all_agents = agents.list_agents()
+    is_configured = agents.llm_provider is not None
+    provider_name = os.environ.get("PGOS_LLM_PROVIDER", "openai").lower()
+    model_name = os.environ.get("PGOS_LLM_MODEL", "default")
+    unconfigured_reason = None
+    if not is_configured:
+        unconfigured_reason = (
+            "LLM provider not configured. Set PGOS_LLM_API_KEY (and optionally "
+            "PGOS_LLM_PROVIDER, PGOS_LLM_MODEL) environment variables."
+        )
+    return AgentSystemStatusResponse(
+        configured=is_configured,
+        provider=provider_name,
+        model=model_name,
+        available_agents_count=len(all_agents),
+        unconfigured_reason=unconfigured_reason,
+    )
 
 
 @router.post("", response_model=AgentResponse, status_code=201)

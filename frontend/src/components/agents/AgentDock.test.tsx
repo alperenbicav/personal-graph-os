@@ -85,4 +85,38 @@ describe('AgentDock', () => {
 
     expect(screen.getByText(/analyzing and executing/i)).toBeInTheDocument()
   })
+
+  it('renders empty state when there are no runs', () => {
+    render(
+      <AgentDock
+        agents={mockAgents}
+        runs={[]}
+        onAskAgent={vi.fn()}
+      />
+    )
+
+    expect(screen.getByText(/agent stream idle/i)).toBeInTheDocument()
+    expect(screen.getByText(/no recent agent events/i)).toBeInTheDocument()
+  })
+
+  it('renders LLM provider not configured guidance card when error occurs', () => {
+    const onClearError = vi.fn()
+    render(
+      <AgentDock
+        agents={mockAgents}
+        runs={[]}
+        onAskAgent={vi.fn()}
+        lastError="Agent execution failed: 503 LLM provider not configured"
+        onClearError={onClearError}
+      />
+    )
+
+    expect(screen.getByText(/LLM Provider Not Configured/i)).toBeInTheDocument()
+    expect(screen.getByText(/PGOS_LLM_PROVIDER=openai/i)).toBeInTheDocument()
+    expect(screen.getByText(/PGOS_LLM_API_KEY=your-api-key/i)).toBeInTheDocument()
+
+    const dismissBtn = screen.getByRole('button', { name: /dismiss error/i })
+    fireEvent.click(dismissBtn)
+    expect(onClearError).toHaveBeenCalledTimes(1)
+  })
 })

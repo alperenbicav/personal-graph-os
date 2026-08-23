@@ -6,6 +6,7 @@ export interface TopbarProps {
   workspace: Workspace | null
   activeView: AppView
   activeAgentCount: number
+  isLlmConfigured?: boolean
   isDockOpen: boolean
   onToggleDock: () => void
   onOpenCommandPalette: () => void
@@ -28,6 +29,7 @@ export function Topbar({
   workspace,
   activeView,
   activeAgentCount,
+  isLlmConfigured = true,
   isDockOpen,
   onToggleDock,
   onOpenCommandPalette,
@@ -78,13 +80,17 @@ export function Topbar({
 
       <button
         type="button"
-        className={`v2-live-pill ${isDockOpen ? 'active' : ''}`}
+        className={`v2-live-pill ${isDockOpen ? 'active' : ''} ${isLlmConfigured ? '' : 'unconfigured'}`}
         onClick={onToggleDock}
         title={isDockOpen ? 'Collapse Agent Dock' : 'Expand Agent Dock'}
         aria-label="Active agents indicator"
       >
-        <span className="v2-pulse" />
-        <span>{activeAgentCount} {activeAgentCount === 1 ? 'agent' : 'agents'} active</span>
+        <span className={`v2-pulse ${isLlmConfigured ? '' : 'amber'}`} />
+        <span>
+          {isLlmConfigured
+            ? `${activeAgentCount} ${activeAgentCount === 1 ? 'agent' : 'agents'} active`
+            : 'LLM not configured (PGOS_LLM_*)'}
+        </span>
       </button>
 
       <button

@@ -6,6 +6,7 @@ export interface AgentChatThreadProps {
   agent: Agent
   onClose?: () => void
   onMessageSent?: () => void
+  isLlmConfigured?: boolean
 }
 
 interface ChatMessage {
@@ -15,7 +16,12 @@ interface ChatMessage {
   timestamp: string
 }
 
-export function AgentChatThread({ agent, onClose, onMessageSent }: AgentChatThreadProps) {
+export function AgentChatThread({
+  agent,
+  onClose,
+  onMessageSent,
+  isLlmConfigured = true,
+}: AgentChatThreadProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome',
@@ -35,7 +41,7 @@ export function AgentChatThread({ agent, onClose, onMessageSent }: AgentChatThre
 
   async function handleSend() {
     const trimmed = input.trim()
-    if (!trimmed || isSending) return
+    if (!trimmed || isSending || !isLlmConfigured) return
 
     const userMsg: ChatMessage = {
       id: `user-${Date.now()}`,
@@ -72,6 +78,8 @@ export function AgentChatThread({ agent, onClose, onMessageSent }: AgentChatThre
       handleSend()
     }
   }
+
+  const isInputDisabled = isSending || !isLlmConfigured
 
   return (
     <div className="v2-chat-panel" aria-label={`Chat with ${agent.name}`}>
@@ -125,6 +133,11 @@ export function AgentChatThread({ agent, onClose, onMessageSent }: AgentChatThre
             Error: {error}
           </div>
         )}
+        {!isLlmConfigured && (
+          <div style={{ color: 'var(--v2-am)', fontSize: '12px', padding: '6px 12px' }} role="status">
+            ⚠️ LLM provider is not configured. Set PGOS_LLM_API_KEY in server environment to enable live responses.
+          </div>
+        )}
         <div ref={messagesEndRef} />
       </div>
 
@@ -143,15 +156,19 @@ export function AgentChatThread({ agent, onClose, onMessageSent }: AgentChatThre
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={`Message ${agent.name}…`}
-          disabled={isSending}
+          placeholder={
+            !isLlmConfigured
+              ? 'LLM not configured (PGOS_LLM_* env required)'
+              : `Message ${agent.name}…`
+          }
+          disabled={isInputDisabled}
           aria-label="Message Input"
         />
         <button
           type="button"
           className="v2-chipbtn prime"
           onClick={handleSend}
-          disabled={isSending || !input.trim()}
+          disabled={isInputDisabled || !input.trim()}
         >
           Send
         </button>

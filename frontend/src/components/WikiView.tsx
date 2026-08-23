@@ -9,11 +9,8 @@ import type {
   WikiDocument,
 } from '../types'
 import { renderMarkdown } from '../lib/markdown'
-import { EmptyState, SegmentedControl, SkeletonRow, SlideOver } from './ui'
+import { EmptyState, SegmentedControl, SlideOver } from './ui'
 
-// Every REST mutation from this local single-user client is attributed to the same fixed
-// actor the backend's `MutationContext.rest()` already assumes (`REST_ACTOR_NAME`); there is
-// no per-user identity to collect in this app.
 const REST_ACTOR_NAME = 'human/local-user/rest'
 
 const KIND_OPTIONS: { value: DocumentKind; label: string }[] = [
@@ -36,6 +33,21 @@ function parseTagNames(input: string): string[] {
   )
 }
 
+function timeAgo(isoDate: string): string {
+  try {
+    const diffMs = Date.now() - new Date(isoDate).getTime()
+    const diffSec = Math.floor(diffMs / 1000)
+    if (diffSec < 45) return 'just now'
+    const diffMin = Math.floor(diffSec / 60)
+    if (diffMin < 60) return `${diffMin}m ago`
+    const diffHrs = Math.floor(diffMin / 60)
+    if (diffHrs < 24) return `${diffHrs}h ago`
+    return `${Math.floor(diffHrs / 24)}d ago`
+  } catch {
+    return 'recently'
+  }
+}
+
 interface WikiViewProps {
   onLoadDocuments: (collectionId?: string) => Promise<WikiDocument[]>
   onLoadDetail: (documentId: string) => Promise<DocumentDetail>
@@ -49,22 +61,6 @@ interface WikiViewProps {
   onAddDocumentLink: (documentId: string, targetDocumentId: string) => Promise<void>
   selectedDocumentId?: string | null
   onSelectDocument?: (documentId: string | null) => void
-}
-
-interface CreatePageDraft {
-  title: string
-  kind: DocumentKind
-  collectionId: string
-  tagNames: string
-  bodyMarkdown: string
-}
-
-const EMPTY_DRAFT: CreatePageDraft = {
-  title: '',
-  kind: 'note',
-  collectionId: '',
-  tagNames: '',
-  bodyMarkdown: '',
 }
 
 export function WikiView({
@@ -83,7 +79,7 @@ export function WikiView({
 }: WikiViewProps) {
   const [documents, setDocuments] = useState<WikiDocument[]>([])
   const [collections, setCollections] = useState<Collection[]>([])
-  const [tags, setTags] = useState<Tag[]>([])
+  const [_tags, setTags] = useState<Tag[]>([])
   const [collectionFilter, setCollectionFilter] = useState<'all' | 'uncategorized' | string>('all')
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(externalSelectedDocId ?? null)
   const [detail, setDetail] = useState<DocumentDetail | null>(null)
@@ -94,12 +90,10 @@ export function WikiView({
   const [bodyDraft, setBodyDraft] = useState('')
   const [loadError, setLoadError] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
-  const [isCreateOpen, setIsCreateOpen] = useState(false)
-  const [createDraft, setCreateDraft] = useState<CreatePageDraft>(EMPTY_DRAFT)
-  const [createError, setCreateError] = useState<string | null>(null)
+  const [newCollectionName, setNewCollectionName] = useState('')
+  const [newTagInput, setNewTagInput] = useState('')
   const [newLinkTargetId, setNewLinkTargetId] = useState('')
-  const [isTagEditorOpen, setIsTagEditorOpen] = useState(false)
-  const [collapsedCollections, setCollapsedCollections] = useState<Set<string>>(new Set())
+  const [searchQuery, setSearchQuery] = useState('')
 
   async function refreshTaxonomy() {
     const [loadedCollections, loadedTags] = await Promise.all([onLoadCollections(), onLoadTags()])
@@ -137,7 +131,6 @@ export function WikiView({
     onExternalSelectDoc?.(documentId)
     setDetailsOpen(false)
     setVersions([])
-    setIsTagEditorOpen(false)
     try {
       const loaded = await onLoadDetail(documentId)
       setDetail(loaded)
@@ -148,13 +141,57 @@ export function WikiView({
     }
   }
 
-  const visibleDocuments = useMemo(() => {
-    if (collectionFilter === 'all') return documents
-    if (collectionFilter === 'uncategorized') {
-      return documents.filter((document) => document.collection_id === null)
+  // Instant creation without modal (Notion model)
+  async function handleInstantCreatePage(customTitle?: string) {
+    setLoadError(null)
+    try {
+      const activeColId =
+        collectionFilter !== 'all' && collectionFilter !== 'uncategorized'
+          ? collectionFilter
+          : null
+      const created = await onCreateDocument({
+        title: customTitle || 'Untitled',
+        kind: 'note',
+        source: REST_ACTOR_NAME,
+        body_markdown: '',
+        collection_id: activeColId,
+        tag_names: [],
+      })
+      await refreshDocuments()
+      await refreshTaxonomy()
+      await selectDocument(created.id)
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : String(error))
     }
-    return documents.filter((document) => document.collection_id === collectionFilter)
-  }, [documents, collectionFilter])
+  }
+
+  async function handleCreateCollectionSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    const trimmed = newCollectionName.trim()
+    if (!trimmed) return
+    try {
+      const created = await onCreateCollection(trimmed)
+      setNewCollectionName('')
+      await refreshTaxonomy()
+      setCollectionFilter(created.id)
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  const visibleDocuments = useMemo(() => {
+    let filtered = documents
+    if (collectionFilter === 'uncategorized') {
+      filtered = filtered.filter((d) => d.collection_id === null)
+    } else if (collectionFilter !== 'all') {
+      filtered = filtered.filter((d) => d.collection_id === collectionFilter)
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase()
+      filtered = filtered.filter((d) => d.title.toLowerCase().includes(q))
+    }
+    return filtered
+  }, [documents, collectionFilter, searchQuery])
 
   const isDirty = detail !== null && bodyDraft !== detail.latest_version.body_markdown
 
@@ -171,7 +208,7 @@ export function WikiView({
     }
   }
 
-  // Cmd/Ctrl+S saves the body like a document editor would.
+  // Cmd/Ctrl+S saves the body like a native document editor.
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
@@ -192,21 +229,6 @@ export function WikiView({
     await saveMetadata({ title: trimmed })
   }
 
-  function removeTag(name: string) {
-    if (!detail) return
-    void saveMetadata({ tag_names: detail.tags.map((tag) => tag.name).filter((n) => n !== name) })
-  }
-
-  async function loadVersionsForDetails() {
-    if (!selectedDocumentId) return
-    try {
-      const loaded = await onLoadVersions(selectedDocumentId)
-      setVersions(loaded)
-    } catch (error) {
-      setLoadError(error instanceof Error ? error.message : String(error))
-    }
-  }
-
   async function saveMetadata(patch: UpdateDocumentMetadataPatch) {
     if (!selectedDocumentId) return
     try {
@@ -220,25 +242,28 @@ export function WikiView({
     }
   }
 
-  async function submitCreate() {
-    if (!createDraft.title.trim()) return
-    setCreateError(null)
+  function handleAddTag() {
+    if (!detail) return
+    const parsed = parseTagNames(newTagInput)
+    if (parsed.length === 0) return
+    const existing = detail.tags.map((t) => t.name)
+    const combined = Array.from(new Set([...existing, ...parsed]))
+    setNewTagInput('')
+    void saveMetadata({ tag_names: combined })
+  }
+
+  function handleRemoveTag(name: string) {
+    if (!detail) return
+    void saveMetadata({ tag_names: detail.tags.map((tag) => tag.name).filter((n) => n !== name) })
+  }
+
+  async function loadVersionsForDetails() {
+    if (!selectedDocumentId) return
     try {
-      const created = await onCreateDocument({
-        title: createDraft.title.trim(),
-        kind: createDraft.kind,
-        source: REST_ACTOR_NAME,
-        body_markdown: createDraft.bodyMarkdown,
-        collection_id: createDraft.collectionId || null,
-        tag_names: parseTagNames(createDraft.tagNames),
-      })
-      setIsCreateOpen(false)
-      setCreateDraft(EMPTY_DRAFT)
-      await refreshDocuments()
-      await refreshTaxonomy()
-      await selectDocument(created.id)
+      const loaded = await onLoadVersions(selectedDocumentId)
+      setVersions(loaded)
     } catch (error) {
-      setCreateError(error instanceof Error ? error.message : String(error))
+      setLoadError(error instanceof Error ? error.message : String(error))
     }
   }
 
@@ -254,524 +279,400 @@ export function WikiView({
     }
   }
 
+  const wordCount = useMemo(() => {
+    if (!bodyDraft) return 0
+    return bodyDraft.trim().split(/\s+/).filter(Boolean).length
+  }, [bodyDraft])
+
   return (
-    <div className="wiki-view" aria-label="Wiki">
-      <aside className="wiki-tree" aria-label="Pages">
-        <button type="button" className="wiki-new-page" onClick={() => setIsCreateOpen(true)}>
-          + New page
-        </button>
-        <div className="wiki-collection-filters">
+    <div className="v2-wiki-layout" aria-label="Wiki Workspace">
+      {/* Wiki Left Sidebar: Collections & Pages */}
+      <aside className="v2-wiki-sidebar" aria-label="Wiki Navigation">
+        <div className="v2-wiki-sidebar-header">
+          <div className="v2-wiki-title-group">
+            <span className="v2-wiki-icon" aria-hidden="true">▤</span>
+            <h2 className="v2-wiki-heading">Wiki</h2>
+            <span className="v2-badge">{documents.length}</span>
+          </div>
           <button
             type="button"
-            className="node-row-label"
-            aria-current={collectionFilter === 'all'}
-            onClick={() => setCollectionFilter('all')}
+            className="v2-chipbtn prime"
+            onClick={() => handleInstantCreatePage()}
+            aria-label="+ New page"
+            title="Create new page (instant full-page editor)"
           >
-            All pages
+            + New page
           </button>
-          <button
-            type="button"
-            className="node-row-label"
-            aria-current={collectionFilter === 'uncategorized'}
-            onClick={() => setCollectionFilter('uncategorized')}
-          >
-            Uncategorized
-          </button>
-          {collections.map((collection) => (
-            <button
-              key={collection.id}
-              type="button"
-              className="node-row-label"
-              aria-current={collectionFilter === collection.id}
-              onClick={() => setCollectionFilter(collection.id)}
-            >
-              {collection.name}
-            </button>
-          ))}
         </div>
 
-        {loadError && (
-          <p className="view-error" role="alert">
-            {loadError}
-          </p>
-        )}
-        {visibleDocuments.length === 0 ? (
-          <p className="view-empty">No pages here yet.</p>
-        ) : (
-          <div className="list-view">
-            {(() => {
-              // Notion-style grouping (ST-10 review P3): pages live under their collection as a
-              // collapsible section; 'all' shows every group, 'uncategorized' its own.
-              type Group = { key: string; label: string; pages: typeof visibleDocuments }
-              const groups: Group[] =
-                collectionFilter === 'all'
-                  ? [
-                      ...collections.map((collection) => ({
-                        key: `c-${collection.id}`,
-                        label: collection.name,
-                        pages: visibleDocuments.filter(
-                          (document) => document.collection_id === collection.id,
-                        ),
-                      })),
-                      {
-                        key: 'c-uncategorized',
-                        label: 'Uncategorized',
-                        pages: visibleDocuments.filter(
-                          (document) => document.collection_id === null,
-                        ),
-                      },
-                    ].filter((group) => group.pages.length > 0)
-                  : [{ key: collectionFilter, label: '', pages: visibleDocuments }]
+        <div className="v2-wiki-search-box">
+          <input
+            type="text"
+            className="v2-wiki-search-input"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Filter pages…"
+            aria-label="Filter pages"
+          />
+        </div>
 
-              const toggleCollapsed = (key: string) =>
-                setCollapsedCollections((current) => {
-                  const next = new Set(current)
-                  if (next.has(key)) next.delete(key)
-                  else next.add(key)
-                  return next
-                })
+        {/* Collections Filter Tree */}
+        <div className="v2-wiki-section-header">COLLECTIONS</div>
+        <div className="v2-wiki-collections-list" role="navigation" aria-label="Collections Filter">
+          <button
+            type="button"
+            className={`v2-wiki-collection-btn ${collectionFilter === 'all' ? 'active' : ''}`}
+            onClick={() => setCollectionFilter('all')}
+          >
+            <span>📁 All Documents</span>
+            <span className="v2-count-pill">{documents.length}</span>
+          </button>
+          <button
+            type="button"
+            className={`v2-wiki-collection-btn ${collectionFilter === 'uncategorized' ? 'active' : ''}`}
+            onClick={() => setCollectionFilter('uncategorized')}
+          >
+            <span>📄 Uncategorized</span>
+            <span className="v2-count-pill">
+              {documents.filter((d) => d.collection_id === null).length}
+            </span>
+          </button>
+          {collections.map((col) => {
+            const count = documents.filter((d) => d.collection_id === col.id).length
+            return (
+              <button
+                key={col.id}
+                type="button"
+                className={`v2-wiki-collection-btn ${collectionFilter === col.id ? 'active' : ''}`}
+                onClick={() => setCollectionFilter(col.id)}
+              >
+                <span>📘 {col.name}</span>
+                <span className="v2-count-pill">{count}</span>
+              </button>
+            )
+          })}
+        </div>
 
-              return groups.map((group) => {
-                const isCollapsed = collapsedCollections.has(group.key)
-                return (
-                  <div key={group.key} className="wiki-page-group">
-                    {group.label && (
-                      <button
-                        type="button"
-                        className="wiki-group-header"
-                        aria-expanded={!isCollapsed}
-                        onClick={() => toggleCollapsed(group.key)}
-                      >
-                        <span className={`wiki-group-chevron${isCollapsed ? ' wiki-group-chevron-collapsed' : ''}`} aria-hidden>
-                          ▾
-                        </span>
-                        {group.label}
-                        <span className="wiki-group-count">{group.pages.length}</span>
-                      </button>
-                    )}
-                    {!isCollapsed &&
-                      group.pages.map((document) => (
-                        <button
-                          key={document.id}
-                          type="button"
-                          className="node-row wiki-page-row"
-                          aria-current={document.id === selectedDocumentId}
-                          onClick={() => selectDocument(document.id)}
-                        >
-                          <span className="node-row-title">{document.title}</span>
-                          <span className="node-row-meta">
-                            <span className="node-row-type">{document.kind}</span>
-                          </span>
-                        </button>
-                      ))}
-                  </div>
-                )
-              })
-            })()}
-          </div>
-        )}
+        <form onSubmit={handleCreateCollectionSubmit} className="v2-wiki-add-col-form">
+          <input
+            type="text"
+            className="v2-wiki-add-col-input"
+            placeholder="+ New collection…"
+            value={newCollectionName}
+            onChange={(e) => setNewCollectionName(e.target.value)}
+            aria-label="New collection name"
+          />
+        </form>
+
+        {/* Pages in Active Collection */}
+        <div className="v2-wiki-section-header" style={{ marginTop: 12 }}>
+          PAGES ({visibleDocuments.length})
+        </div>
+        <div className="v2-wiki-pages-list" aria-label="Document list">
+          {visibleDocuments.length === 0 ? (
+            <div className="v2-wiki-sidebar-empty">No pages found</div>
+          ) : (
+            visibleDocuments.map((doc) => {
+              const isSelected = selectedDocumentId === doc.id
+              return (
+                <button
+                  key={doc.id}
+                  type="button"
+                  className={`v2-wiki-page-item ${isSelected ? 'active' : ''}`}
+                  onClick={() => selectDocument(doc.id)}
+                >
+                  <span className="v2-page-icon">
+                    {doc.kind === 'plan' ? '🗺' : doc.kind === 'lesson' ? '💡' : doc.kind === 'documentation' ? '📐' : '📄'}
+                  </span>
+                  <span className="v2-page-title">{doc.title || 'Untitled'}</span>
+                </button>
+              )
+            })
+          )}
+        </div>
       </aside>
 
-      <main className="wiki-page">
+      {/* Main Full-Page Canvas Area */}
+      <section className="v2-wiki-canvas" aria-label="Document Canvas">
+        {loadError && (
+          <div className="v2-wiki-error-banner" role="alert">
+            {loadError}
+          </div>
+        )}
+
         {!detail ? (
-          <div className="wiki-page-scroll">
+          <div className="v2-wiki-empty-canvas">
             <EmptyState
-              icon="📄"
-              title="Nothing open"
-              hint="Pick a page from the sidebar, or create a new one to start writing."
+              title="No page selected"
+              hint="Select a page from the sidebar or create a new untitled page to start writing."
               action={
-                <button type="button" className="wiki-new-page" onClick={() => setIsCreateOpen(true)}>
+                <button
+                  type="button"
+                  className="v2-chipbtn prime"
+                  onClick={() => handleInstantCreatePage()}
+                >
                   + New page
                 </button>
               }
             />
           </div>
         ) : (
-          <div className="wiki-page-scroll">
-            <div className="reading-column wiki-document">
+          <div className="v2-wiki-doc-container">
+            {/* Metadata Pill Banner */}
+            <div className="v2-wiki-by-bar">
+              <span className="v2-wiki-by-pill">
+                <i className="v2-pulse-dot" />
+                <span>Last updated: {timeAgo(detail.document.updated_at)}</span>
+                <span>·</span>
+                <span>{wordCount} words</span>
+                <span>·</span>
+                <span>v{detail.latest_version.version_number}</span>
+              </span>
+
+              <div className="v2-wiki-header-actions">
+                <SegmentedControl
+                  value={editorMode}
+                  onChange={(val) => setEditorMode(val as EditorMode)}
+                  options={[
+                    { value: 'write', label: 'Write' },
+                    { value: 'preview', label: 'Preview' },
+                  ]}
+                  ariaLabel="Editor display mode"
+                />
+
+                <button
+                  type="button"
+                  className={`v2-chipbtn ${isDirty ? 'prime' : ''}`}
+                  onClick={saveBody}
+                  disabled={!isDirty || isSaving}
+                  title="Save document body (⌘S)"
+                >
+                  {isSaving ? 'Saving…' : isDirty ? 'Save (⌘S)' : 'Saved ✓'}
+                </button>
+
+                <button
+                  type="button"
+                  className="v2-chipbtn"
+                  onClick={() => {
+                    setDetailsOpen(true)
+                    void loadVersionsForDetails()
+                  }}
+                  title="View version history and connected graph links"
+                >
+                  Details & Links
+                </button>
+              </div>
+            </div>
+
+            {/* Notion-Style Big Inline Title */}
+            <div className="v2-wiki-title-row">
               <input
-                className="wiki-title-input"
-                aria-label="Page title"
+                type="text"
+                className="v2-wiki-title-input"
                 value={titleDraft}
-                onChange={(event) => setTitleDraft(event.target.value)}
+                onChange={(e) => setTitleDraft(e.target.value)}
                 onBlur={commitTitle}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') event.currentTarget.blur()
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.currentTarget.blur()
+                  }
                 }}
                 placeholder="Untitled"
+                aria-label="Page title"
               />
+            </div>
 
-              <div className="wiki-meta-row">
+            {/* Metadata Chips Bar: Collection, Kind, Tags */}
+            <div className="v2-wiki-meta-row">
+              <div className="v2-meta-chip">
+                <span className="v2-meta-label">Collection:</span>
                 <select
-                  aria-label="Kind"
-                  className="wiki-chip-select"
-                  value={detail.document.kind}
-                  onChange={(event) =>
-                    saveMetadata({ kind: event.target.value as DocumentKind })
-                  }
-                >
-                  {KIND_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-
-                <select
+                  className="v2-meta-select"
+                  value={detail.document.collection_id || ''}
+                  onChange={(e) => saveMetadata({ collection_id: e.target.value || null })}
                   aria-label="Collection"
-                  className="wiki-chip-select"
-                  value={detail.document.collection_id ?? ''}
-                  onChange={(event) =>
-                    event.target.value
-                      ? saveMetadata({ collection_id: event.target.value })
-                      : saveMetadata({ clear_collection: true })
-                  }
                 >
-                  <option value="">Uncategorized</option>
-                  {collections.map((collection) => (
-                    <option key={collection.id} value={collection.id}>
-                      {collection.name}
+                  <option value="">(Uncategorized)</option>
+                  {collections.map((col) => (
+                    <option key={col.id} value={col.id}>
+                      📘 {col.name}
                     </option>
                   ))}
                 </select>
+              </div>
 
-                {detail.tags.map((tag) => (
-                  <span key={tag.id} className="wiki-tag-pill">
-                    {tag.name}
+              <div className="v2-meta-chip">
+                <span className="v2-meta-label">Kind:</span>
+                <select
+                  className="v2-meta-select"
+                  value={detail.document.kind}
+                  onChange={(e) => saveMetadata({ kind: e.target.value as DocumentKind })}
+                  aria-label="Kind"
+                >
+                  {KIND_OPTIONS.map((k) => (
+                    <option key={k.value} value={k.value}>
+                      {k.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Tags inline chips */}
+              <div className="v2-wiki-tags-cluster">
+                {detail.tags.map((t) => (
+                  <span key={t.id} className="v2-wiki-tag-pill">
+                    #{t.name}
                     <button
                       type="button"
-                      className="wiki-tag-remove"
-                      aria-label={`Remove tag ${tag.name}`}
-                      onClick={() => removeTag(tag.name)}
+                      className="v2-tag-remove-btn"
+                      onClick={() => handleRemoveTag(t.name)}
+                      aria-label={`Remove tag ${t.name}`}
                     >
                       ×
                     </button>
                   </span>
                 ))}
-
-                {isTagEditorOpen ? (
-                  <input
-                    className="wiki-tag-add-input"
-                    type="text"
-                    list="wiki-known-tags"
-                    autoFocus
-                    aria-label="Tags (comma-separated)"
-                    defaultValue={detail.tags.map((tag) => tag.name).join(', ')}
-                    onBlur={(event) => {
-                      void saveMetadata({ tag_names: parseTagNames(event.target.value) })
-                      setIsTagEditorOpen(false)
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') event.currentTarget.blur()
-                      if (event.key === 'Escape') setIsTagEditorOpen(false)
-                    }}
-                  />
-                ) : (
-                  <button
-                    type="button"
-                    className="wiki-tag-pill"
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => setIsTagEditorOpen(true)}
-                  >
-                    + tags
-                  </button>
-                )}
-                <datalist id="wiki-known-tags">
-                  {tags.map((tag) => (
-                    <option key={tag.id} value={tag.name} />
-                  ))}
-                </datalist>
-
-                {detail.document.is_archived && (
-                  <span className="pill pill-coral">Archived</span>
-                )}
-
-                <span className="wiki-updated">
-                  updated{' '}
-                  {new Date(detail.latest_version.created_at).toLocaleDateString(undefined, {
-                    year: 'numeric',
-                    month: 'short',
-                    day: 'numeric',
-                  })}
-                </span>
-              </div>
-
-              <div className="wiki-editor-bar">
-                <SegmentedControl
-                  ariaLabel="Editor mode"
-                  options={[
-                    { value: 'write', label: 'Write' },
-                    { value: 'preview', label: 'Preview' },
-                  ]}
-                  value={editorMode}
-                  onChange={setEditorMode}
-                />
-                {isDirty && <span className="wiki-dirty-note">unsaved</span>}
-                <button type="button" onClick={saveBody} disabled={!isDirty || isSaving}>
-                  {isSaving ? 'Saving…' : 'Save'}
-                </button>
-                <button
-                  type="button"
-                  className="wiki-options-button"
-                  aria-label="Page details"
-                  title="Versions, links, backlinks"
-                  onClick={() => {
-                    setDetailsOpen(true)
-                    void loadVersionsForDetails()
+                <input
+                  type="text"
+                  className="v2-wiki-inline-tag-input"
+                  placeholder="+ Tag…"
+                  value={newTagInput}
+                  onChange={(e) => setNewTagInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      handleAddTag()
+                    }
                   }}
-                >
-                  ⋯
-                </button>
+                  onBlur={handleAddTag}
+                  aria-label="Add tag"
+                />
               </div>
+            </div>
 
+            {/* Document Body Editor / Preview */}
+            <div className="v2-wiki-body-frame">
               {editorMode === 'write' ? (
                 <textarea
-                  className="wiki-body-editor"
-                  aria-label="Page body (Markdown)"
+                  className="v2-wiki-body-textarea"
                   value={bodyDraft}
-                  onChange={(event) => setBodyDraft(event.target.value)}
-                  placeholder="Start writing…"
+                  onChange={(e) => setBodyDraft(e.target.value)}
+                  placeholder="Start writing in Markdown, paste research takeaways, or press ⌘S to save…"
+                  aria-label="Page body"
                 />
               ) : (
                 <div
-                  className="wiki-preview"
-                  aria-label="Rendered preview"
-                  // Sanitized by renderMarkdown (DOMPurify) before it ever reaches the DOM.
-                  dangerouslySetInnerHTML={{ __html: renderMarkdown(bodyDraft) }}
+                  className="v2-wiki-preview-content markdown-body"
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(bodyDraft || '*Empty document*') }}
                 />
               )}
             </div>
           </div>
         )}
-      </main>
+      </section>
 
-      {detailsOpen && detail && (
-        <SlideOver title="Page details" onClose={() => setDetailsOpen(false)}>
-          <section>
-            <h3 className="slideover-section-title">Properties</h3>
-            <label>
-              <input
-                type="checkbox"
-                checked={detail.document.is_archived}
-                onChange={(event) => saveMetadata({ is_archived: event.target.checked })}
-              />{' '}
-              Archived
-            </label>
-          </section>
-
-          <section>
-            <h3 className="slideover-section-title">Versions ({detail.version_count})</h3>
-            {versions.length === 0 && detail.version_count > 0 ? (
-              <SkeletonRow count={detail.version_count > 3 ? 3 : detail.version_count} />
-            ) : versions.length === 0 ? (
-              <p className="view-empty">No versions recorded.</p>
-            ) : (
-              <ul className="wiki-version-list">
-                {versions.map((version) => (
-                  <li key={version.id}>
-                    v{version.version_number} · {new Date(version.created_at).toLocaleString()}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          <section>
-            <h3 className="slideover-section-title">Outgoing links</h3>
-            {detail.outbound_links.length === 0 ? (
-              <p className="view-empty">No links yet.</p>
-            ) : (
-              <ul className="wiki-link-list">
-                {detail.outbound_links.map((link) => (
-                  <li key={link.id}>
-                    {link.target_type}: {link.target_id}
-                  </li>
-                ))}
-              </ul>
-            )}
-            <div className="wiki-add-link">
-              <select
-                aria-label="Link a page"
-                value={newLinkTargetId}
-                onChange={(event) => setNewLinkTargetId(event.target.value)}
-              >
-                <option value="">Link a page…</option>
-                {documents
-                  .filter((document) => document.id !== selectedDocumentId)
-                  .map((document) => (
-                    <option key={document.id} value={document.id}>
-                      {document.title}
-                    </option>
-                  ))}
-              </select>
-              <button type="button" onClick={submitLink} disabled={!newLinkTargetId.trim()}>
-                Add link
-              </button>
+      {/* SlideOver for Document Details, Links & Version History */}
+      {detailsOpen && (
+        <SlideOver
+          onClose={() => setDetailsOpen(false)}
+          title={detail ? `Details: ${detail.document.title}` : 'Page Details'}
+        >
+          {detail && (
+          <div className="v2-wiki-slideover-content">
+            <div className="v2-slideover-section">
+              <h4>METADATA</h4>
+              <div className="v2-meta-grid">
+                <div><strong>ID:</strong> <code>{detail.document.id}</code></div>
+                <div><strong>Kind:</strong> {detail.document.kind}</div>
+                <div><strong>Created:</strong> {new Date(detail.document.created_at).toLocaleString()}</div>
+                <div><strong>Updated:</strong> {new Date(detail.document.updated_at).toLocaleString()}</div>
+              </div>
             </div>
-          </section>
 
-          <section>
-            <h3 className="slideover-section-title">Backlinks</h3>
-            {detail.backlinks.length === 0 ? (
-              <p className="view-empty">No pages link here yet.</p>
-            ) : (
-              <ul className="wiki-link-list">
-                {detail.backlinks.map((backlink) => (
-                  <li key={backlink.id}>
-                    <button
-                      type="button"
-                      className="wiki-backlink"
-                      onClick={() => selectDocument(backlink.id)}
-                    >
-                      {backlink.title}
-                    </button>
-                  </li>
+            <div className="v2-slideover-section">
+              <h4>GRAPH CONNECTIONS ({detail.outbound_links.length + detail.backlinks.length})</h4>
+              <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                <select
+                  className="v2-meta-select"
+                  value={newLinkTargetId}
+                  onChange={(e) => setNewLinkTargetId(e.target.value)}
+                  aria-label="Target document for link"
+                >
+                  <option value="">Connect another document…</option>
+                  {documents
+                    .filter((d) => d.id !== selectedDocumentId)
+                    .map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.title}
+                      </option>
+                    ))}
+                </select>
+                <button
+                  type="button"
+                  className="v2-chipbtn prime"
+                  onClick={submitLink}
+                  disabled={!newLinkTargetId}
+                >
+                  Link
+                </button>
+              </div>
+
+              {detail.outbound_links.length > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  <span style={{ fontSize: 11, color: 'var(--v2-t3)' }}>Outbound links:</span>
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
+                    {detail.outbound_links.map((link) => (
+                      <button
+                        key={link.id}
+                        type="button"
+                        className="v2-chipbtn"
+                        onClick={() => selectDocument(link.target_id)}
+                      >
+                        → {link.target_id}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {detail.backlinks.length > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  <span style={{ fontSize: 11, color: 'var(--v2-t3)' }}>Referenced by:</span>
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
+                    {detail.backlinks.map((link) => (
+                      <button
+                        key={link.id}
+                        type="button"
+                        className="v2-chipbtn"
+                        onClick={() => selectDocument(link.id)}
+                      >
+                        ← {link.title || link.id}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="v2-slideover-section">
+              <h4>VERSION HISTORY ({versions.length})</h4>
+              <div className="v2-versions-list">
+                {versions.map((ver) => (
+                  <div key={ver.id} className="v2-version-item">
+                    <div style={{ fontWeight: 600, color: 'var(--v2-t1)' }}>
+                      Version {ver.version_number}
+                    </div>
+                    <div style={{ fontSize: 11.5, color: 'var(--v2-t3)' }}>
+                      {new Date(ver.created_at).toLocaleString()} · {ver.created_by}
+                    </div>
+                  </div>
                 ))}
-              </ul>
-            )}
-          </section>
+              </div>
+            </div>
+          </div>
+        )}
         </SlideOver>
       )}
-
-      {isCreateOpen && (
-        <div className="wiki-create-modal-backdrop" onClick={() => setIsCreateOpen(false)}>
-        <div
-          className="wiki-create-modal"
-          role="dialog"
-          aria-label="Create page"
-          onClick={(event) => event.stopPropagation()}
-        >
-          <h2>Create page</h2>
-          <label htmlFor="wiki-create-title">Title</label>
-          <input
-            id="wiki-create-title"
-            type="text"
-            value={createDraft.title}
-            onChange={(event) => setCreateDraft((current) => ({ ...current, title: event.target.value }))}
-          />
-
-          <label htmlFor="wiki-create-kind">Kind</label>
-          <select
-            id="wiki-create-kind"
-            value={createDraft.kind}
-            onChange={(event) =>
-              setCreateDraft((current) => ({ ...current, kind: event.target.value as DocumentKind }))
-            }
-          >
-            {KIND_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-
-          <label htmlFor="wiki-create-collection">Collection</label>
-          <select
-            id="wiki-create-collection"
-            value={createDraft.collectionId}
-            onChange={(event) =>
-              setCreateDraft((current) => ({ ...current, collectionId: event.target.value }))
-            }
-          >
-            <option value="">Uncategorized</option>
-            {collections.map((collection) => (
-              <option key={collection.id} value={collection.id}>
-                {collection.name}
-              </option>
-            ))}
-          </select>
-          <NewCollectionButton onCreate={onCreateCollection} onCreated={refreshTaxonomy} />
-
-          <label htmlFor="wiki-create-tags">Tags (comma-separated)</label>
-          <input
-            id="wiki-create-tags"
-            type="text"
-            list="wiki-known-tags"
-            value={createDraft.tagNames}
-            onChange={(event) =>
-              setCreateDraft((current) => ({ ...current, tagNames: event.target.value }))
-            }
-          />
-          <datalist id="wiki-known-tags">
-            {tags.map((tag) => (
-              <option key={tag.id} value={tag.name} />
-            ))}
-          </datalist>
-
-          <label htmlFor="wiki-create-body">Body (Markdown)</label>
-          <textarea
-            id="wiki-create-body"
-            value={createDraft.bodyMarkdown}
-            onChange={(event) =>
-              setCreateDraft((current) => ({ ...current, bodyMarkdown: event.target.value }))
-            }
-          />
-
-          {createError && (
-            <p className="view-error" role="alert">
-              {createError}
-            </p>
-          )}
-          <div className="wiki-create-actions">
-            <button type="button" onClick={submitCreate} disabled={!createDraft.title.trim()}>
-              Create
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setIsCreateOpen(false)
-                setCreateDraft(EMPTY_DRAFT)
-                setCreateError(null)
-              }}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function NewCollectionButton({
-  onCreate,
-  onCreated,
-}: {
-  onCreate: (name: string) => Promise<Collection>
-  onCreated: () => Promise<void>
-}) {
-  const [isOpen, setIsOpen] = useState(false)
-  const [name, setName] = useState('')
-
-  if (!isOpen) {
-    return (
-      <button type="button" onClick={() => setIsOpen(true)}>
-        + New collection
-      </button>
-    )
-  }
-
-  return (
-    <div className="wiki-new-collection">
-      <input
-        type="text"
-        aria-label="New collection name"
-        value={name}
-        onChange={(event) => setName(event.target.value)}
-      />
-      <button
-        type="button"
-        disabled={!name.trim()}
-        onClick={async () => {
-          await onCreate(name.trim())
-          setName('')
-          setIsOpen(false)
-          await onCreated()
-        }}
-      >
-        Save
-      </button>
     </div>
   )
 }
