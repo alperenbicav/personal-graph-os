@@ -2098,6 +2098,13 @@ select.status-select {
   min-height: 220px;
 }
 
+.empty-state-icon {
+  font-size: 32px;
+  line-height: 1;
+  margin-bottom: var(--s1);
+  opacity: 0.85;
+}
+
 .empty-state-title {
   margin: 0;
   font-size: var(--text-base);

@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { AppView } from './NavTabs'
 import type { GraphNode, Resource, WikiDocument, WorkItem, Canvas } from '../types'
 import { useModalDialog } from '../lib/useModalDialog'
-import { Pill, type PillTone } from './ui'
+import { EmptyState, Pill, type PillTone } from './ui'
 
 export interface CommandPaletteProps {
   isOpen: boolean
@@ -484,12 +484,11 @@ export function CommandPalette({
 
         <div className="command-palette-list" ref={listRef} role="listbox">
           {allItems.length === 0 ? (
-            <div className="command-palette-empty" role="status">
-              <p className="command-palette-empty-title">No matching results</p>
-              <p className="command-palette-empty-hint">
-                No commands, notes, tasks, or research items match &ldquo;{query}&rdquo;.
-              </p>
-            </div>
+            <EmptyState
+              icon="🔍"
+              title="No matching results"
+              hint={`No commands, notes, tasks, or research items match "${query}".`}
+            />
           ) : (
             allItems.map((item, index) => {
               const isActive = index === activeIndex

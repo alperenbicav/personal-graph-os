@@ -432,8 +432,9 @@ export function ResearchView({
       </div>
       {filtered.length === 0 ? (
         <EmptyState
-          title="Nothing here"
-          hint="Adjust the filters above, or add a new paper/article."
+          icon="🔬"
+          title="No research items in this bucket"
+          hint="Adjust the filters above, or add a paper / article using the form above."
         />
       ) : (
         <div className="list-view">

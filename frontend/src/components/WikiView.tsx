@@ -376,6 +376,7 @@ export function WikiView({
         {!detail ? (
           <div className="wiki-page-scroll">
             <EmptyState
+              icon="📄"
               title="Nothing open"
               hint="Pick a page from the sidebar, or create a new one to start writing."
               action={

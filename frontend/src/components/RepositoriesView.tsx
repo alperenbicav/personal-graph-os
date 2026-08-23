@@ -283,8 +283,9 @@ export function RepositoriesView({
 
       {filtered.length === 0 ? (
         <EmptyState
-          title="No repositories here"
-          hint="Adjust the label filter, or add a repository with its GitHub URL."
+          icon="📦"
+          title="No repositories tracked yet"
+          hint="Adjust the label filter above, or paste a GitHub repository URL above."
         />
       ) : (
         <div className="list-view">

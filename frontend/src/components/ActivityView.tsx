@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ActivityEvent, ActivityEventSummary } from '../types'
-import { SkeletonRow } from './ui'
+import { EmptyState, SkeletonRow } from './ui'
 
 interface ActivityViewProps {
   onLoadPage: (
@@ -335,9 +335,11 @@ export function ActivityView({ onLoadPage, onLoadDetail, onUndo }: ActivityViewP
       )}
       {isLoading && visibleEvents.length === 0 && <SkeletonRow count={4} />}
       {!loadError && visibleEvents.length === 0 && !isLoading && (
-        <p className="view-empty" role="status">
-          No activity recorded yet.
-        </p>
+        <EmptyState
+          icon="⏱️"
+          title="No activity recorded yet"
+          hint="Mutations, edits, and graph creations will appear here in chronological day groups."
+        />
       )}
 
       <div className="activity-feed">

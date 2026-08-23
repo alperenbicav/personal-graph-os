@@ -786,8 +786,18 @@ export function TasksView({
       <main className="tasks-main">
         {filteredItems.length === 0 ? (
           <EmptyState
-            title="Nothing matches"
-            hint="Adjust the filter, or create a new work item."
+            icon="📋"
+            title="No work items found"
+            hint="Adjust the filter, or create a new work item to start tracking."
+            action={
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={() => setIsCreateOpen(true)}
+              >
+                + New work item
+              </button>
+            }
           />
         ) : viewMode === 'board' ? (
           <div className="tasks-board" aria-label="Task board">
