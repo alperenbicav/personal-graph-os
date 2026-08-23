@@ -81,8 +81,19 @@ export function CommandPalette({
       setQuery('')
       setActiveIndex(0)
       setTimeout(() => inputRef.current?.focus(), 10)
+
+      function handleGlobalEscape(event: KeyboardEvent) {
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          event.stopPropagation()
+          onClose()
+        }
+      }
+
+      document.addEventListener('keydown', handleGlobalEscape, true)
+      return () => document.removeEventListener('keydown', handleGlobalEscape, true)
     }
-  }, [isOpen])
+  }, [isOpen, onClose])
 
   const staticCommands = useMemo<PaletteItem[]>(() => {
     const cmds: PaletteItem[] = [
@@ -432,6 +443,10 @@ export function CommandPalette({
       setActiveIndex((prev) =>
         allItems.length > 0 ? (prev - 1 + allItems.length) % allItems.length : 0,
       )
+    } else if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      onClose()
     } else if (event.key === 'Enter') {
       event.preventDefault()
       if (allItems[activeIndex]) {
