@@ -837,11 +837,6 @@ export function TasksView({
           <EmptyState
             title="No work yet"
             hint="Create your first epic, story, or task."
-            action={
-              <button type="button" onClick={() => setIsCreateOpen(true)}>
-                + New work item
-              </button>
-            }
           />
         ) : (
           <div className="list-view">
@@ -864,15 +859,6 @@ export function TasksView({
             icon="📋"
             title="No work items found"
             hint="Adjust the filter, or create a new work item to start tracking."
-            action={
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={() => setIsCreateOpen(true)}
-              >
-                + New work item
-              </button>
-            }
           />
         ) : viewMode === 'board' ? (
           <div className="tasks-board" aria-label="Task board">

@@ -2116,7 +2116,7 @@ select.status-select {
 .empty-state-title {
   margin: 0;
   font-size: var(--text-base);
-  color: var(--ink-soft);
+  color: var(--ink);
   font-weight: 600;
 }
 
